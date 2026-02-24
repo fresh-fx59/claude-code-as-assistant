@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.6.0"
+VERSION: str = "0.7.0"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -38,5 +38,6 @@ CLAUDE_WORKING_DIR: str | None = (
 )
 if CLAUDE_WORKING_DIR:
     os.makedirs(CLAUDE_WORKING_DIR, exist_ok=True)
-MAX_RESPONSE_TIMEOUT: int = int(os.getenv("MAX_RESPONSE_TIMEOUT", "300"))
+IDLE_TIMEOUT: int = int(os.getenv("IDLE_TIMEOUT", "120"))
+PROGRESS_DEBOUNCE_SECONDS: float = float(os.getenv("PROGRESS_DEBOUNCE_SECONDS", "3.0"))
 METRICS_PORT: int = int(os.getenv("METRICS_PORT", "9101"))

@@ -24,7 +24,7 @@ CLAUDE_RESPONSE_DURATION = Histogram(
     "telegrambot_claude_response_duration_seconds",
     "Claude response time in seconds",
     ["model"],
-    buckets=[1, 2, 5, 10, 20, 30, 60, 120, 300],
+    buckets=[1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200],
 )
 
 CLAUDE_COST_USD = Counter(

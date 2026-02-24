@@ -1,24 +1,27 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.6.0`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.7.0`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
 ## Architecture
 
 - **aiogram 3.x** async Telegram bot with long-polling
-- **asyncio subprocess** runs `claude -p` per message with `--output-format json` and `--dangerously-skip-permissions`
+- **asyncio subprocess** runs `claude -p` per message with `--output-format stream-json` and `--dangerously-skip-permissions`
 - **`--resume <session_id>`** for conversation continuity
-- **Per-chat asyncio.Lock** prevents overlapping Claude invocations
+- **Streaming output** with idle timeout (default 120s) — kills process only when Claude stops producing output
+- **Live progress updates** show current Claude activity (Reading, Editing, Running commands, etc.)
+- **Per-chat state** with asyncio.Lock prevents overlapping Claude invocations
 
 ## Project Structure
 
 ```
 src/
-├── main.py       # Entry point, dispatcher setup, polling, metrics server start
-├── config.py     # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, METRICS_PORT
-├── bot.py        # Telegram handlers: /start, /new, /model, /status, messages
-├── bridge.py     # Runs `claude -p` subprocess, parses JSON response
+├── main.py       # Entry point, dispatcher setup, polling, metrics server
+├── config.py     # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, IDLE_TIMEOUT, PROGRESS_DEBOUNCE_SECONDS
+├── bot.py        # Telegram handlers: /start, /new, /model, /status, /cancel, messages
+├── bridge.py     # Runs `claude -p` subprocess, yields stream events (TOOL_START, TOOL_INPUT, RESULT)
+├── progress.py   # ProgressReporter: manages live progress message with debounced edits
 ├── sessions.py   # Maps chat_id → claude session_id, persists to sessions.json
 ├── formatter.py  # Markdown→HTML conversion, message splitting
 └── metrics.py    # Prometheus metrics: counters, histograms, gauges
@@ -42,6 +45,7 @@ src/
 - `/new` — Start fresh conversation
 - `/model [sonnet|opus|haiku]` — Switch model
 - `/status` — Show current session info
+- `/cancel` — Cancel the current request
 
 ## Deployment (systemd)
 
@@ -75,8 +79,8 @@ The bot exposes metrics on port `9101` (configurable via `METRICS_PORT`).
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `telegrambot_messages_total` | Counter | `status` | Messages received (success/error/unauthorized/busy) |
-| `telegrambot_claude_requests_total` | Counter | `model`, `status` | Claude CLI invocations (success/error/timeout) |
+| `telegrambot_messages_total` | Counter | `status` | Messages received (success/error/unauthorized/busy/cancelled) |
+| `telegrambot_claude_requests_total` | Counter | `model`, `status` | Claude CLI invocations (success/error/timeout/cancelled) |
 | `telegrambot_claude_response_duration_seconds` | Histogram | `model` | Claude response latency |
 | `telegrambot_claude_cost_usd_total` | Counter | `model` | Cumulative API cost in USD |
 | `telegrambot_claude_turns_total` | Counter | `model` | Cumulative agentic turns |
@@ -102,7 +106,7 @@ Then reload: `docker exec prometheus kill -HUP 1`
 Every commit message **must** start with the version prefix:
 
 ```
-v0.5.0: Short description of the change
+v0.7.0: Short description of the change
 ```
 
 Rules:

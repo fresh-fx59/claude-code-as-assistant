@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 import logging
 
 from aiogram import Router, F
@@ -8,6 +9,7 @@ from aiogram.enums import ChatAction
 from . import bridge, config
 from .sessions import SessionManager
 from .formatter import markdown_to_html, split_message, strip_html
+from .progress import ProgressReporter
 from . import metrics
 
 logger = logging.getLogger(__name__)
@@ -15,16 +17,26 @@ router = Router()
 
 session_manager = SessionManager()
 
-# Per-chat locks to prevent overlapping Claude invocations
-_chat_locks: dict[int, asyncio.Lock] = {}
-
 VALID_MODELS = {"sonnet", "opus", "haiku"}
 
 
-def _get_lock(chat_id: int) -> asyncio.Lock:
-    if chat_id not in _chat_locks:
-        _chat_locks[chat_id] = asyncio.Lock()
-    return _chat_locks[chat_id]
+@dataclass
+class _ChatState:
+    """State for each active chat."""
+    lock: asyncio.Lock
+    process_handle: dict | None  # Will contain {"proc": proc} when running
+    cancel_requested: bool
+
+
+# Per-chat state dict
+_chat_states: dict[int, _ChatState] = {}
+
+
+def _get_state(chat_id: int) -> _ChatState:
+    """Get or create state for a chat."""
+    if chat_id not in _chat_states:
+        _chat_states[chat_id] = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
+    return _chat_states[chat_id]
 
 
 def _is_authorized(user_id: int | None) -> bool:
@@ -43,7 +55,8 @@ async def cmd_start(message: Message) -> None:
         "<b>Commands:</b>\n"
         "/new — Start a fresh conversation\n"
         "/model [sonnet|opus|haiku] — Switch model\n"
-        "/status — Show current session info",
+        "/status — Show current session info\n"
+        "/cancel — Cancel current request",
         parse_mode="HTML",
     )
 
@@ -91,32 +104,83 @@ async def cmd_status(message: Message) -> None:
     )
 
 
+@router.message(F.text == "/cancel")
+async def cmd_cancel(message: Message) -> None:
+    """Cancel the current request if one is running."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+
+    state = _get_state(message.chat.id)
+
+    if not state.lock.locked() or not state.process_handle or not state.process_handle.get("proc"):
+        await message.answer("Nothing to cancel.")
+        return
+
+    # Kill the process
+    proc = state.process_handle["proc"]
+    proc.kill()
+    state.cancel_requested = True
+    metrics.CLAUDE_REQUESTS_TOTAL.labels(model=session_manager.get(message.chat.id).model, status="cancelled").inc()
+
+
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         metrics.MESSAGES_TOTAL.labels(status="unauthorized").inc()
         return
 
-    lock = _get_lock(message.chat.id)
-    if lock.locked():
+    state = _get_state(message.chat.id)
+
+    if state.lock.locked():
         metrics.MESSAGES_TOTAL.labels(status="busy").inc()
         await message.answer("Still processing your previous message, please wait...")
         return
 
-    async with lock:
+    async with state.lock:
+        # Reset cancellation state
+        state.cancel_requested = False
+        state.process_handle = {}
+
         session = session_manager.get(message.chat.id)
+
+        # Create progress reporter
+        progress = ProgressReporter(message)
 
         # Send typing indicator periodically
         typing_task = asyncio.create_task(_keep_typing(message))
 
+        final_response: bridge.ClaudeResponse | None = None
+
         try:
-            response = await bridge.send_message(
+            async for event in bridge.stream_message(
                 prompt=message.text or "",
                 session_id=session.claude_session_id,
                 model=session.model,
-                working_dir=config.CLAUDE_WORKING_DIR,
-                timeout=config.MAX_RESPONSE_TIMEOUT,
-            )
+                working_dir=config.CLAUDE_WORK_DIR,
+                process_handle=state.process_handle,
+            ):
+                if state.cancel_requested:
+                    # User cancelled the request
+                    await progress.show_cancelled()
+                    final_response = bridge.ClaudeResponse(
+                        text="Request cancelled.",
+                        session_id=session.claude_session_id,
+                        is_error=True,
+                        cost_usd=0,
+                        duration_ms=0,
+                        num_turns=0,
+                    )
+                    break
+
+                match event.event_type:
+                    case bridge.StreamEventType.TOOL_START | bridge.StreamEventType.TOOL_INPUT:
+                        if event.tool_name:
+                            await progress.report_tool(event.tool_name, event.tool_input)
+                    case bridge.StreamEventType.RESULT:
+                        if event.response:
+                            final_response = event.response
+                        break
+
         finally:
             typing_task.cancel()
             try:
@@ -124,30 +188,39 @@ async def handle_message(message: Message) -> None:
             except asyncio.CancelledError:
                 pass
 
+        # Clean up progress
+        if state.cancel_requested:
+            await progress.finish()
+        elif final_response:
+            if final_response.is_error:
+                await message.answer(final_response.text)
+                await progress.finish()
+            else:
+                # Send response, then finish progress
+                html = markdown_to_html(final_response.text)
+                chunks = split_message(html)
+
+                for chunk in chunks:
+                    try:
+                        await message.answer(chunk, parse_mode="HTML")
+                    except Exception:
+                        # Fallback: strip HTML and send as plain text
+                        plain = strip_html(chunk)
+                        for plain_chunk in split_message(plain):
+                            await message.answer(plain_chunk)
+
+                await progress.finish()
+
         # Update session ID if we got one back
-        if response.session_id and response.session_id != session.claude_session_id:
-            session_manager.update_session_id(message.chat.id, response.session_id)
+        if final_response and final_response.session_id and final_response.session_id != session.claude_session_id:
+            session_manager.update_session_id(message.chat.id, final_response.session_id)
 
         # Track metrics
-        status = "error" if response.is_error else "success"
-        metrics.MESSAGES_TOTAL.labels(status=status).inc()
-
-        # Format and send response
-        if response.is_error:
-            await message.answer(response.text)
-            return
-
-        html = markdown_to_html(response.text)
-        chunks = split_message(html)
-
-        for chunk in chunks:
-            try:
-                await message.answer(chunk, parse_mode="HTML")
-            except Exception:
-                # Fallback: strip HTML and send as plain text
-                plain = strip_html(chunk)
-                for plain_chunk in split_message(plain):
-                    await message.answer(plain_chunk)
+        if final_response:
+            status = "error" if final_response.is_error else "success"
+            if state.cancel_requested:
+                status = "cancelled"
+            metrics.MESSAGES_TOTAL.labels(status=status).inc()
 
 
 async def _keep_typing(message: Message) -> None:

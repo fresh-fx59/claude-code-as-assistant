@@ -26,6 +26,7 @@ async def main() -> None:
         BotCommand(command="new", description="Start fresh conversation"),
         BotCommand(command="model", description="Switch model (sonnet/opus/haiku)"),
         BotCommand(command="status", description="Show current session info"),
+        BotCommand(command="cancel", description="Cancel current request"),
     ])
 
     logging.info("Bot starting...")
