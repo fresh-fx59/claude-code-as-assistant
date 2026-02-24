@@ -38,7 +38,7 @@ async def cmd_start(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         return
     await message.answer(
-        "Hello! I'm a Claude Code assistant.\n\n"
+        f"Hello! I'm a Claude Code assistant. <b>v{config.VERSION}</b>\n\n"
         "Send me any message and I'll respond using Claude.\n\n"
         "<b>Commands:</b>\n"
         "/new — Start a fresh conversation\n"
@@ -84,6 +84,7 @@ async def cmd_status(message: Message) -> None:
     session = session_manager.get(message.chat.id)
     sid = session.claude_session_id or "none (new conversation)"
     await message.answer(
+        f"<b>Version:</b> {config.VERSION}\n"
         f"<b>Session:</b> <code>{sid}</code>\n"
         f"<b>Model:</b> {session.model}",
         parse_mode="HTML",

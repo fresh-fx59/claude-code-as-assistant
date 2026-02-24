@@ -1,5 +1,7 @@
 # Claude Code as Telegram Assistant
 
+**Current version: `0.5.0`** — defined in `src/config.py` as `VERSION`.
+
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
 ## Architecture
@@ -94,3 +96,17 @@ Add a scrape job to your `prometheus.yml`:
 ```
 
 Then reload: `docker exec prometheus kill -HUP 1`
+
+## Versioning & Commit Convention
+
+Every commit message **must** start with the version prefix:
+
+```
+v0.5.0: Short description of the change
+```
+
+Rules:
+1. **Bump the version** in `src/config.py` (`VERSION`) with every commit
+2. **Update the version** in this file's header to match
+3. Use **semver**: bump patch for fixes, minor for features, major for breaking changes
+4. The commit message format is: `v<version>: <description>`

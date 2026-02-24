@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+VERSION: str = "0.5.0"
+
 BOT_TOKEN: str = os.environ["TELEGRAM_BOT_TOKEN"]
 
 _raw_ids = os.getenv("ALLOWED_USER_IDS", "")
