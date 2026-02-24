@@ -156,7 +156,7 @@ async def handle_message(message: Message) -> None:
                 prompt=message.text or "",
                 session_id=session.claude_session_id,
                 model=session.model,
-                working_dir=config.CLAUDE_WORK_DIR,
+                working_dir=config.CLAUDE_WORKING_DIR,
                 process_handle=state.process_handle,
             ):
                 if state.cancel_requested:
