@@ -26,8 +26,13 @@ src/
 
 1. Create bot via @BotFather, get token
 2. `cp .env.example .env` and fill in values
-3. `pip install -r requirements.txt`
-4. `python -m src.main`
+3. Create a virtual environment and install dependencies:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+4. `python -m src.main` (or use `./run.sh` which activates the venv automatically)
 
 ## Bot Commands
 
@@ -39,8 +44,9 @@ src/
 ## Deployment (systemd)
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Create venv and install dependencies
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
 
 # Copy and enable the service
 sudo cp telegram-bot.service /etc/systemd/system/
