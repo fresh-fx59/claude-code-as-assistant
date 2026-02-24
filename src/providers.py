@@ -1,0 +1,173 @@
+"""Provider fallback manager.
+
+Loads a chain of LLM providers from ``providers.json`` and automatically
+switches to the next one when a rate-limit (or similar) error is detected.
+
+Each provider is a dict with ``name``, ``description``, and ``env`` (extra
+environment variables passed to the ``claude -p`` subprocess).  The first
+provider with an empty ``env`` is assumed to be the native Anthropic backend.
+"""
+
+import json
+import logging
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "providers.json"
+
+
+@dataclass
+class Provider:
+    name: str
+    description: str
+    env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class _ProviderConfig:
+    providers: list[Provider]
+    rate_limit_patterns: list[re.Pattern[str]]
+    cooldown_minutes: int
+
+
+def _load_config() -> _ProviderConfig:
+    """Load and parse providers.json."""
+    if not _CONFIG_PATH.exists():
+        logger.info("No providers.json found — using defaults (claude only)")
+        return _ProviderConfig(
+            providers=[Provider(name="claude", description="Anthropic Claude")],
+            rate_limit_patterns=[],
+            cooldown_minutes=30,
+        )
+
+    with open(_CONFIG_PATH) as f:
+        raw = json.load(f)
+
+    providers = [
+        Provider(
+            name=p["name"],
+            description=p.get("description", p["name"]),
+            env=p.get("env", {}),
+        )
+        for p in raw.get("providers", [])
+    ]
+    if not providers:
+        providers = [Provider(name="claude", description="Anthropic Claude")]
+
+    patterns = [
+        re.compile(pat, re.IGNORECASE)
+        for pat in raw.get("rate_limit_patterns", [])
+    ]
+
+    return _ProviderConfig(
+        providers=providers,
+        rate_limit_patterns=patterns,
+        cooldown_minutes=int(raw.get("cooldown_minutes", 30)),
+    )
+
+
+class ProviderManager:
+    """Manages provider fallback chain with per-chat state.
+
+    Usage::
+
+        mgr = ProviderManager()
+        provider = mgr.get_provider(chat_id)  # returns current provider
+        if mgr.is_rate_limit_error(error_text):
+            next_prov = mgr.advance(chat_id)   # switch to next fallback
+    """
+
+    def __init__(self) -> None:
+        self._cfg = _load_config()
+        # chat_id → index in self._cfg.providers
+        self._chat_provider_idx: dict[int, int] = {}
+        # chat_id → timestamp when fallback was activated
+        self._fallback_since: dict[int, float] = {}
+        logger.info(
+            "Loaded %d providers: %s",
+            len(self._cfg.providers),
+            ", ".join(p.name for p in self._cfg.providers),
+        )
+
+    def reload(self) -> None:
+        """Reload providers.json from disk."""
+        self._cfg = _load_config()
+        logger.info("Reloaded providers: %s",
+                     ", ".join(p.name for p in self._cfg.providers))
+
+    @property
+    def providers(self) -> list[Provider]:
+        return self._cfg.providers
+
+    def get_provider(self, chat_id: int) -> Provider:
+        """Return the current provider for a chat, auto-recovering if cooldown passed."""
+        idx = self._chat_provider_idx.get(chat_id, 0)
+
+        # Auto-recover to primary after cooldown
+        if idx > 0 and chat_id in self._fallback_since:
+            elapsed = time.monotonic() - self._fallback_since[chat_id]
+            if elapsed >= self._cfg.cooldown_minutes * 60:
+                logger.info(
+                    "Chat %d: cooldown expired (%.0f min), restoring primary provider",
+                    chat_id, elapsed / 60,
+                )
+                self._chat_provider_idx[chat_id] = 0
+                self._fallback_since.pop(chat_id, None)
+                idx = 0
+
+        return self._cfg.providers[idx]
+
+    def advance(self, chat_id: int) -> Provider | None:
+        """Move to the next provider in the chain.
+
+        Returns the new provider, or ``None`` if we've exhausted all fallbacks.
+        """
+        current_idx = self._chat_provider_idx.get(chat_id, 0)
+        next_idx = current_idx + 1
+
+        if next_idx >= len(self._cfg.providers):
+            logger.warning("Chat %d: all providers exhausted", chat_id)
+            return None
+
+        self._chat_provider_idx[chat_id] = next_idx
+        self._fallback_since[chat_id] = time.monotonic()
+        provider = self._cfg.providers[next_idx]
+        logger.info("Chat %d: switched to provider '%s'", chat_id, provider.name)
+        return provider
+
+    def reset(self, chat_id: int) -> Provider:
+        """Reset to primary provider."""
+        self._chat_provider_idx.pop(chat_id, None)
+        self._fallback_since.pop(chat_id, None)
+        return self._cfg.providers[0]
+
+    def set_provider(self, chat_id: int, name: str) -> Provider | None:
+        """Manually select a provider by name."""
+        for i, p in enumerate(self._cfg.providers):
+            if p.name.lower() == name.lower():
+                self._chat_provider_idx[chat_id] = i
+                if i > 0:
+                    self._fallback_since[chat_id] = time.monotonic()
+                else:
+                    self._fallback_since.pop(chat_id, None)
+                logger.info("Chat %d: manually set provider to '%s'", chat_id, p.name)
+                return p
+        return None
+
+    def is_rate_limit_error(self, text: str) -> bool:
+        """Check if an error message indicates a rate limit / quota issue."""
+        if not text:
+            return False
+        return any(pat.search(text) for pat in self._cfg.rate_limit_patterns)
+
+    def subprocess_env(self, provider: Provider) -> dict[str, str]:
+        """Build subprocess environment with provider's env vars applied."""
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        env.update(provider.env)
+        return env

@@ -99,7 +99,7 @@ def _extract_tool_input_partial(tool_name: str, partial_json: str) -> str | None
     return None
 
 
-def _subprocess_env() -> dict[str, str]:
+def _default_subprocess_env() -> dict[str, str]:
     """Build a clean env for the claude subprocess.
 
     Strips CLAUDECODE to prevent the nested-session guard from blocking
@@ -116,6 +116,7 @@ async def stream_message(
     model: str = "sonnet",
     working_dir: str | None = None,
     process_handle: dict | None = None,
+    subprocess_env: dict[str, str] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Stream Claude's response as events with idle timeout.
 
@@ -163,7 +164,7 @@ async def stream_message(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=working_dir,
-        env=_subprocess_env(),
+        env=subprocess_env or _default_subprocess_env(),
     )
 
     if process_handle is not None:

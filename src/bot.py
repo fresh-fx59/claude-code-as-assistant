@@ -6,16 +6,17 @@ from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums import ChatAction
 
-from . import bridge, config
+from . import bridge, config, metrics
 from .sessions import SessionManager
 from .formatter import markdown_to_html, split_message, strip_html
 from .progress import ProgressReporter
-from . import metrics
+from .providers import ProviderManager
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 session_manager = SessionManager()
+provider_manager = ProviderManager()
 
 VALID_MODELS = {"sonnet", "opus", "haiku"}
 
@@ -55,6 +56,7 @@ async def cmd_start(message: Message) -> None:
         "<b>Commands:</b>\n"
         "/new — Start a fresh conversation\n"
         "/model [sonnet|opus|haiku] — Switch model\n"
+        "/provider [name] — Switch or view LLM provider\n"
         "/status — Show current session info\n"
         "/cancel — Cancel current request",
         parse_mode="HTML",
@@ -90,16 +92,50 @@ async def cmd_model(message: Message) -> None:
     await message.answer(f"Model switched to <b>{model}</b>.", parse_mode="HTML")
 
 
+@router.message(F.text.startswith("/provider"))
+async def cmd_provider(message: Message) -> None:
+    """View or switch the LLM provider."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+
+    parts = (message.text or "").split()
+    current = provider_manager.get_provider(message.chat.id)
+
+    if len(parts) < 2:
+        lines = [f"<b>Current provider:</b> {current.name} — {current.description}\n"]
+        lines.append("<b>Available:</b>")
+        for p in provider_manager.providers:
+            marker = " (active)" if p.name == current.name else ""
+            lines.append(f"  <code>{p.name}</code> — {p.description}{marker}")
+        lines.append(f"\nUsage: /provider [{'|'.join(p.name for p in provider_manager.providers)}]")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+        return
+
+    name = parts[1].lower()
+    provider = provider_manager.set_provider(message.chat.id, name)
+    if not provider:
+        names = ", ".join(p.name for p in provider_manager.providers)
+        await message.answer(f"Unknown provider. Choose from: {names}")
+        return
+
+    await message.answer(
+        f"Provider switched to <b>{provider.name}</b> — {provider.description}",
+        parse_mode="HTML",
+    )
+
+
 @router.message(F.text == "/status")
 async def cmd_status(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         return
     session = session_manager.get(message.chat.id)
     sid = session.claude_session_id or "none (new conversation)"
+    provider = provider_manager.get_provider(message.chat.id)
     await message.answer(
         f"<b>Version:</b> {config.VERSION}\n"
         f"<b>Session:</b> <code>{sid}</code>\n"
-        f"<b>Model:</b> {session.model}",
+        f"<b>Model:</b> {session.model}\n"
+        f"<b>Provider:</b> {provider.name} — {provider.description}",
         parse_mode="HTML",
     )
 
@@ -123,6 +159,45 @@ async def cmd_cancel(message: Message) -> None:
     metrics.CLAUDE_REQUESTS_TOTAL.labels(model=session_manager.get(message.chat.id).model, status="cancelled").inc()
 
 
+async def _run_claude(
+    message: Message,
+    state: _ChatState,
+    session: object,
+    progress: ProgressReporter,
+    subprocess_env: dict[str, str] | None = None,
+) -> bridge.ClaudeResponse | None:
+    """Run a single Claude subprocess attempt. Returns the response or None."""
+    state.process_handle = {}
+
+    async for event in bridge.stream_message(
+        prompt=message.text or "",
+        session_id=session.claude_session_id,
+        model=session.model,
+        working_dir=config.CLAUDE_WORKING_DIR,
+        process_handle=state.process_handle,
+        subprocess_env=subprocess_env,
+    ):
+        if state.cancel_requested:
+            await progress.show_cancelled()
+            return bridge.ClaudeResponse(
+                text="Request cancelled.",
+                session_id=session.claude_session_id,
+                is_error=True,
+                cost_usd=0,
+                duration_ms=0,
+                num_turns=0,
+            )
+
+        match event.event_type:
+            case bridge.StreamEventType.TOOL_USE:
+                if event.tool_name:
+                    await progress.report_tool(event.tool_name, event.tool_input)
+            case bridge.StreamEventType.RESULT:
+                return event.response
+
+    return None
+
+
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
@@ -139,47 +214,41 @@ async def handle_message(message: Message) -> None:
     async with state.lock:
         # Reset cancellation state
         state.cancel_requested = False
-        state.process_handle = {}
 
         session = session_manager.get(message.chat.id)
-
-        # Create progress reporter
         progress = ProgressReporter(message)
-
-        # Send typing indicator periodically
         typing_task = asyncio.create_task(_keep_typing(message))
 
         final_response: bridge.ClaudeResponse | None = None
 
         try:
-            async for event in bridge.stream_message(
-                prompt=message.text or "",
-                session_id=session.claude_session_id,
-                model=session.model,
-                working_dir=config.CLAUDE_WORKING_DIR,
-                process_handle=state.process_handle,
-            ):
-                if state.cancel_requested:
-                    # User cancelled the request
-                    await progress.show_cancelled()
-                    final_response = bridge.ClaudeResponse(
-                        text="Request cancelled.",
-                        session_id=session.claude_session_id,
-                        is_error=True,
-                        cost_usd=0,
-                        duration_ms=0,
-                        num_turns=0,
-                    )
-                    break
+            provider = provider_manager.get_provider(message.chat.id)
+            env = provider_manager.subprocess_env(provider)
 
-                match event.event_type:
-                    case bridge.StreamEventType.TOOL_USE:
-                        if event.tool_name:
-                            await progress.report_tool(event.tool_name, event.tool_input)
-                    case bridge.StreamEventType.RESULT:
-                        if event.response:
-                            final_response = event.response
-                        break
+            final_response = await _run_claude(message, state, session, progress, env)
+
+            # ── Fallback on rate-limit ────────────────────────────
+            if (
+                final_response
+                and final_response.is_error
+                and not state.cancel_requested
+                and provider_manager.is_rate_limit_error(final_response.text)
+            ):
+                next_provider = provider_manager.advance(message.chat.id)
+                if next_provider:
+                    await message.answer(
+                        f"Rate limited on <b>{provider.name}</b>. "
+                        f"Switching to <b>{next_provider.name}</b>...",
+                        parse_mode="HTML",
+                    )
+                    logger.info(
+                        "Chat %d: rate limit on '%s', retrying with '%s'",
+                        message.chat.id, provider.name, next_provider.name,
+                    )
+                    env = provider_manager.subprocess_env(next_provider)
+                    final_response = await _run_claude(
+                        message, state, session, progress, env,
+                    )
 
         finally:
             typing_task.cancel()
@@ -188,7 +257,7 @@ async def handle_message(message: Message) -> None:
             except asyncio.CancelledError:
                 pass
 
-        # Clean up progress
+        # ── Send response ─────────────────────────────────────
         if state.cancel_requested:
             await progress.finish()
         elif final_response:
@@ -196,7 +265,6 @@ async def handle_message(message: Message) -> None:
                 await message.answer(final_response.text)
                 await progress.finish()
             else:
-                # Send response, then finish progress
                 html = markdown_to_html(final_response.text)
                 chunks = split_message(html)
 
@@ -204,7 +272,6 @@ async def handle_message(message: Message) -> None:
                     try:
                         await message.answer(chunk, parse_mode="HTML")
                     except Exception:
-                        # Fallback: strip HTML and send as plain text
                         plain = strip_html(chunk)
                         for plain_chunk in split_message(plain):
                             await message.answer(plain_chunk)

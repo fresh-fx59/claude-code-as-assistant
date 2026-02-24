@@ -1,0 +1,40 @@
+{
+  "providers": [
+    {
+      "name": "claude",
+      "description": "Anthropic Claude (default)",
+      "env": {}
+    },
+    {
+      "name": "glm4.7",
+      "description": "GLM-4.7 via Cloud.ru (LiteLLM :4001)",
+      "env": {
+        "ANTHROPIC_BASE_URL": "http://0.0.0.0:4001",
+        "ANTHROPIC_AUTH_TOKEN": "any-placeholder-value"
+      }
+    },
+    {
+      "name": "qwen3-coder",
+      "description": "Qwen3-Coder-480B via DeepInfra (LiteLLM :4000)",
+      "env": {
+        "ANTHROPIC_BASE_URL": "http://0.0.0.0:4000",
+        "ANTHROPIC_AUTH_TOKEN": "any-placeholder-value"
+      }
+    }
+  ],
+  "rate_limit_patterns": [
+    "rate limit",
+    "rate_limit",
+    "overloaded",
+    "over capacity",
+    "429",
+    "too many requests",
+    "token limit",
+    "billing",
+    "quota exceeded",
+    "usage cap",
+    "credit",
+    "exceeded your"
+  ],
+  "cooldown_minutes": 30
+}
