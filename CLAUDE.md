@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.9.0`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.9.1`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -104,6 +104,8 @@ Add a scrape job to your `prometheus.yml`:
 Then reload: `docker exec prometheus kill -HUP 1`
 
 ## Versioning & Commit Convention
+
+**IMPORTANT: Update the version on EVERY commit** — this is mandatory. Do not skip version bumps for any reason.
 
 Every commit message **must** start with the version prefix:
 
