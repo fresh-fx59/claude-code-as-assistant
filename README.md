@@ -115,7 +115,8 @@ All settings are in the `.env` file. Edit it anytime and restart the bot.
 | `ALLOWED_USER_IDS` | Yes | — | Comma-separated Telegram user IDs |
 | `DEFAULT_MODEL` | No | `sonnet` | Default Claude model |
 | `CLAUDE_WORKING_DIR` | No | — | Working directory for Claude |
-| `MAX_RESPONSE_TIMEOUT` | No | `300` | Max wait time in seconds |
+| `IDLE_TIMEOUT` | No | `120` | Seconds without output before timeout |
+| `PROGRESS_DEBOUNCE_SECONDS` | No | `3.0` | Min seconds between progress updates |
 | `METRICS_PORT` | No | `9101` | Prometheus metrics port (0 to disable) |
 
 ## Monitoring (Optional)
