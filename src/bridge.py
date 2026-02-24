@@ -120,8 +120,7 @@ async def stream_message(
         "claude",
         "-p",
         prompt,
-        "--print",
-        "--output-format=stream-json",
+        "--output-format", "json",
         "--model", model,
         "--dangerously-skip-permissions",
     ]
