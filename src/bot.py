@@ -3,10 +3,12 @@ from dataclasses import dataclass
 import json
 import logging
 from datetime import datetime, timezone as tz
+from pathlib import Path
 
 import yaml
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError
 
@@ -92,11 +94,10 @@ async def cmd_start(message: Message) -> None:
         "",
         "<b>Commands:</b>",
         "/new — Start a fresh conversation",
-        "/model [sonnet|opus|haiku] — Switch model",
-        "/provider [name] — Switch or view LLM provider",
+        "/model — Switch model",
+        "/provider — Switch LLM provider",
         "/status — Show current session info",
         "/memory — Show what I remember",
-        "/forget — Clear all memory",
         "/tools — Show available tools",
         "/cancel — Cancel current request",
     ])
@@ -148,62 +149,104 @@ async def _reflect(chat_id: int, session: object) -> None:
         logger.warning("Chat %d: reflection failed", chat_id, exc_info=True)
 
 
-@router.message(F.text.startswith("/model"))
+@router.message(F.text == "/model")
 async def cmd_model(message: Message) -> None:
+    """Show model selection keyboard."""
     if not _is_authorized(message.from_user and message.from_user.id):
         return
-    parts = (message.text or "").split()
-    if len(parts) < 2:
-        current = session_manager.get(message.chat.id).model
-        await message.answer(
-            f"Current model: <b>{current}</b>\n"
-            f"Usage: /model [sonnet|opus|haiku]",
-            parse_mode="HTML",
-        )
+
+    current = session_manager.get(message.chat.id).model
+
+    lines = [f"<b>Current model:</b> {current}\n"]
+    lines.append("<b>Select a model:</b>")
+
+    # Build inline keyboard
+    keyboard = InlineKeyboardBuilder()
+    for model in sorted(VALID_MODELS):
+        button_text = f"{'✓ ' if model == current else ''}{model}"
+        keyboard.button(text=button_text, callback_data=f"model:{model}")
+
+    await message.answer("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("model:"))
+async def cb_model_switch(callback: CallbackQuery) -> None:
+    """Handle model button click."""
+    if not _is_authorized(callback.from_user and callback.from_user.id):
         return
-    model = parts[1].lower()
+
+    chat_id = callback.message.chat.id
+    model = callback.data.split(":", 1)[1]
+    logger.info("Chat %d: model selection 'model:%s'", chat_id, model)
+
     if model not in VALID_MODELS:
-        await message.answer(f"Invalid model. Choose from: {', '.join(sorted(VALID_MODELS))}")
+        await callback.answer("Invalid model", show_alert=True)
         return
-    session_manager.set_model(message.chat.id, model)
-    # Also persist provider change (keep current provider)
-    await message.answer(f"Model switched to <b>{model}</b>.", parse_mode="HTML")
+
+    session_manager.set_model(chat_id, model)
+
+    # Update keyboard state
+    lines = [f"<b>Current model:</b> {model}\n"]
+    lines.append("<b>Select a model:</b>")
+
+    keyboard = InlineKeyboardBuilder()
+    for m in sorted(VALID_MODELS):
+        button_text = f"{'✓ ' if m == model else ''}{m}"
+        keyboard.button(text=button_text, callback_data=f"model:{m}")
+
+    await callback.message.edit_text("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer(f"Switched to {model}")
 
 
-@router.message(F.text.startswith("/provider"))
+@router.message(F.text == "/provider")
 async def cmd_provider(message: Message) -> None:
-    """View or switch the LLM provider."""
+    """Show provider selection keyboard."""
     if not _is_authorized(message.from_user and message.from_user.id):
         return
 
-    parts = (message.text or "").split()
     current = provider_manager.get_provider(message.chat.id)
 
-    if len(parts) < 2:
-        lines = [f"<b>Current provider:</b> {current.name} — {current.description}\n"]
-        lines.append("<b>Available:</b>")
-        for p in provider_manager.providers:
-            marker = " (active)" if p.name == current.name else ""
-            lines.append(f"  <code>{p.name}</code> — {p.description}{marker}")
-        lines.append(f"\nUsage: /provider [{'|'.join(p.name for p in provider_manager.providers)}]")
-        await message.answer("\n".join(lines), parse_mode="HTML")
+    lines = [f"<b>Current provider:</b> {current.name}\n<i>{current.description}</i>\n"]
+    lines.append("<b>Select a provider:</b>")
+
+    # Build inline keyboard
+    keyboard = InlineKeyboardBuilder()
+    for p in provider_manager.providers:
+        button_text = f"{'✓ ' if p.name == current.name else ''}{p.name}"
+        keyboard.button(text=button_text, callback_data=f"provider:{p.name}")
+
+    await message.answer("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("provider:"))
+async def cb_provider_switch(callback: CallbackQuery) -> None:
+    """Handle provider button click."""
+    if not _is_authorized(callback.from_user and callback.from_user.id):
         return
 
-    name = parts[1].lower()
-    logger.info("Chat %d: /provider %s requested", message.chat.id, name)
-    provider = provider_manager.set_provider(message.chat.id, name)
+    chat_id = callback.message.chat.id
+    name = callback.data.split(":", 1)[1]
+    logger.info("Chat %d: provider selection 'provider:%s'", chat_id, name)
+
+    provider = provider_manager.set_provider(chat_id, name)
     if not provider:
-        names = ", ".join(p.name for p in provider_manager.providers)
-        await message.answer(f"Unknown provider. Choose from: {names}")
+        await callback.answer("Provider not found", show_alert=True)
         return
 
     # Persist provider to session
-    session_manager.set_provider(message.chat.id, provider.name)
+    session_manager.set_provider(chat_id, provider.name)
 
-    await message.answer(
-        f"Provider switched to <b>{provider.name}</b> — {provider.description}",
-        parse_mode="HTML",
-    )
+    # Update keyboard state
+    lines = [f"<b>Current provider:</b> {provider.name}\n<i>{provider.description}</i>\n"]
+    lines.append("<b>Select a provider:</b>")
+
+    keyboard = InlineKeyboardBuilder()
+    for p in provider_manager.providers:
+        button_text = f"{'✓ ' if p.name == provider.name else ''}{p.name}"
+        keyboard.button(text=button_text, callback_data=f"provider:{p.name}")
+
+    await callback.message.edit_text("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await callback.answer(f"Switched to {provider.name}")
 
 
 @router.message(F.text == "/status")
@@ -233,18 +276,6 @@ async def cmd_memory(message: Message) -> None:
             await message.answer(chunk, parse_mode="HTML")
         except Exception:
             await message.answer(strip_html(chunk))
-
-
-@router.message(F.text == "/forget")
-async def cmd_forget(message: Message) -> None:
-    """Clear all memory."""
-    if not _is_authorized(message.from_user and message.from_user.id):
-        return
-    memory_manager.clear()
-    await message.answer(
-        "Memory cleared. I've forgotten everything.\n"
-        "Session unchanged — use /new to also start a fresh conversation.",
-    )
 
 
 @router.message(F.text == "/tools")

@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.11.5`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.11.6`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -47,11 +47,10 @@ src/
 
 - `/start` — Welcome message
 - `/new` — Start fresh conversation
-- `/model [sonnet|opus|haiku]` — Switch model
-- `/provider [name]` — View/switch LLM provider (auto-switches on rate limit)
+- `/model` — Switch model (sonnet|opus|haiku) via inline keyboard
+- `/provider` — Switch LLM provider via inline keyboard (auto-switches on rate limit)
 - `/status` — Show current session info
 - `/memory` — Show what the bot remembers (profile + episodes)
-- `/forget` — Clear all memory
 - `/tools` — Show available tools
 - `/cancel` — Cancel the current request
 

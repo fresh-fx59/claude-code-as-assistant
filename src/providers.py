@@ -8,6 +8,7 @@ environment variables passed to the ``claude -p`` subprocess).  The first
 provider with an empty ``env`` is assumed to be the native Anthropic backend.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -15,10 +16,51 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Thread
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "providers.json"
+
+
+class _ConfigFileWatcher:
+    """Watches providers.json for changes and reloads ProviderManager."""
+
+    def __init__(self, provider_manager: "ProviderManager") -> None:
+        self._manager = provider_manager
+        self._observer = Observer()
+
+    def start(self) -> None:
+        event_handler = _ConfigEventHandler(self._manager)
+        self._observer.schedule(event_handler, str(_CONFIG_PATH.parent))
+        self._observer.start()
+        logger.info(" Started watching %s for changes", _CONFIG_PATH.name)
+
+    def stop(self) -> None:
+        if self._observer.is_alive():
+            self._observer.stop()
+            self._observer.join()
+
+
+class _ConfigEventHandler(FileSystemEventHandler):
+    """Handles filesystem events for providers.json."""
+
+    def __init__(self, provider_manager: "ProviderManager") -> None:
+        super().__init__()
+        self._manager = provider_manager
+        self._last_reload = 0.0
+
+    def on_modified(self, event) -> None:
+        if event.src_path != str(_CONFIG_PATH):
+            return
+        # Debounce: ignore rapid successive events
+        now = time.time()
+        if now - self._last_reload < 0.5:
+            return
+        self._last_reload = now
+        self._manager.reload()
 
 
 @dataclass
@@ -86,17 +128,29 @@ class ProviderManager:
             next_prov = mgr.advance(chat_id)   # switch to next fallback
     """
 
-    def __init__(self) -> None:
+    def __init__(self, watch_config: bool = True) -> None:
         self._cfg = _load_config()
         # chat_id → index in self._cfg.providers
         self._chat_provider_idx: dict[int, int] = {}
         # chat_id → timestamp when fallback was activated
         self._fallback_since: dict[int, float] = {}
+        self._watcher: _ConfigFileWatcher | None = None
+
+        if watch_config and _CONFIG_PATH.exists():
+            self._watcher = _ConfigFileWatcher(self)
+            self._watcher.start()
+
         logger.info(
             "Loaded %d providers: %s",
             len(self._cfg.providers),
             ", ".join(str(p) for p in self._cfg.providers),
         )
+
+    def shutdown(self) -> None:
+        """Stop the config file watcher."""
+        if self._watcher:
+            self._watcher.stop()
+            self._watcher = None
 
     def reload(self) -> None:
         """Reload providers.json from disk."""
