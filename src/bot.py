@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import json
 import logging
 
 from aiogram import Router, F
@@ -9,6 +10,7 @@ from aiogram.enums import ChatAction
 from . import bridge, config, metrics
 from .sessions import SessionManager
 from .formatter import markdown_to_html, split_message, strip_html
+from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
 
@@ -17,6 +19,7 @@ router = Router()
 
 session_manager = SessionManager()
 provider_manager = ProviderManager()
+memory_manager = MemoryManager(config.MEMORY_DIR)
 
 VALID_MODELS = {"sonnet", "opus", "haiku"}
 
@@ -58,6 +61,8 @@ async def cmd_start(message: Message) -> None:
         "/model [sonnet|opus|haiku] — Switch model\n"
         "/provider [name] — Switch or view LLM provider\n"
         "/status — Show current session info\n"
+        "/memory — Show what I remember\n"
+        "/forget — Clear all memory\n"
         "/cancel — Cancel current request",
         parse_mode="HTML",
     )
@@ -67,8 +72,44 @@ async def cmd_start(message: Message) -> None:
 async def cmd_new(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         return
+    session = session_manager.get(message.chat.id)
+    if session.claude_session_id:
+        asyncio.create_task(_reflect(message.chat.id, session))
     session_manager.new_conversation(message.chat.id)
     await message.answer("Conversation cleared. Send a message to start fresh.")
+
+
+async def _reflect(chat_id: int, session: object) -> None:
+    """Background: ask Claude to summarize the conversation, store as episode."""
+    try:
+        reflect_prompt = (
+            "Summarize this conversation concisely. Output ONLY valid JSON, no markdown:\n"
+            '{"summary": "one-sentence summary", "topics": ["topic1"], '
+            '"decisions": ["decision1"], "entities": ["entity1"]}'
+        )
+        async for event in bridge.stream_message(
+            prompt=reflect_prompt,
+            session_id=session.claude_session_id,
+            model="haiku",
+            working_dir=config.CLAUDE_WORKING_DIR,
+        ):
+            if event.event_type == bridge.StreamEventType.RESULT and event.response:
+                text = event.response.text.strip()
+                # Strip markdown code fences if present
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                data = json.loads(text)
+                memory_manager.add_episode(
+                    chat_id=chat_id,
+                    summary=data.get("summary", ""),
+                    topics=data.get("topics"),
+                    decisions=data.get("decisions"),
+                    entities=data.get("entities"),
+                )
+                logger.info("Chat %d: reflection stored", chat_id)
+                return
+    except Exception:
+        logger.warning("Chat %d: reflection failed", chat_id, exc_info=True)
 
 
 @router.message(F.text.startswith("/model"))
@@ -112,6 +153,7 @@ async def cmd_provider(message: Message) -> None:
         return
 
     name = parts[1].lower()
+    logger.info("Chat %d: /provider %s requested", message.chat.id, name)
     provider = provider_manager.set_provider(message.chat.id, name)
     if not provider:
         names = ", ".join(p.name for p in provider_manager.providers)
@@ -137,6 +179,31 @@ async def cmd_status(message: Message) -> None:
         f"<b>Model:</b> {session.model}\n"
         f"<b>Provider:</b> {provider.name} — {provider.description}",
         parse_mode="HTML",
+    )
+
+
+@router.message(F.text == "/memory")
+async def cmd_memory(message: Message) -> None:
+    """Show current memory state."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+    content = memory_manager.format_for_display()
+    for chunk in split_message(content):
+        try:
+            await message.answer(chunk, parse_mode="HTML")
+        except Exception:
+            await message.answer(strip_html(chunk))
+
+
+@router.message(F.text == "/forget")
+async def cmd_forget(message: Message) -> None:
+    """Clear all memory."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+    memory_manager.clear()
+    await message.answer(
+        "Memory cleared. I've forgotten everything.\n"
+        "Session unchanged — use /new to also start a fresh conversation.",
     )
 
 
@@ -169,8 +236,17 @@ async def _run_claude(
     """Run a single Claude subprocess attempt. Returns the response or None."""
     state.process_handle = {}
 
+    # Build memory-augmented prompt
+    raw_prompt = message.text or ""
+    memory_context = memory_manager.build_context(raw_prompt)
+    memory_instructions = memory_manager.build_instructions()
+    if memory_context:
+        prompt = f"{memory_context}\n\n{raw_prompt}{memory_instructions}"
+    else:
+        prompt = f"{raw_prompt}{memory_instructions}"
+
     async for event in bridge.stream_message(
-        prompt=message.text or "",
+        prompt=prompt,
         session_id=session.claude_session_id,
         model=session.model,
         working_dir=config.CLAUDE_WORKING_DIR,
@@ -224,6 +300,12 @@ async def handle_message(message: Message) -> None:
         try:
             provider = provider_manager.get_provider(message.chat.id)
             env = provider_manager.subprocess_env(provider)
+            logger.info(
+                "Chat %d: using provider '%s' with env=%s",
+                message.chat.id,
+                provider.name,
+                {k: v for k, v in env.items() if k.startswith("ANTHROPIC_")},
+            )
 
             final_response = await _run_claude(message, state, session, progress, env)
 
@@ -249,7 +331,6 @@ async def handle_message(message: Message) -> None:
                     final_response = await _run_claude(
                         message, state, session, progress, env,
                     )
-
         finally:
             typing_task.cancel()
             try:

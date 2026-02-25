@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.9.4`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.10.0`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -12,14 +12,16 @@ Telegram bot that bridges messages to Claude Code's `--print` mode via subproces
 - **Streaming output** with idle timeout (default 120s) — checks if subprocess is still alive on timeout; only fails if process actually dies
 - **Live progress updates** show current Claude activity (Reading, Editing, Running commands, etc.) with heartbeat animation for long-running tasks
 - **Per-chat state** with asyncio.Lock prevents overlapping Claude invocations
+- **Persistent memory** — YAML profile + SQLite FTS5 episodic memory, injected as XML context before each message
 
 ## Project Structure
 
 ```
 src/
 ├── main.py       # Entry point, dispatcher setup, polling, metrics server
-├── config.py     # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, IDLE_TIMEOUT, PROGRESS_DEBOUNCE_SECONDS
-├── bot.py        # Telegram handlers: /start, /new, /model, /provider, /status, /cancel, messages
+├── config.py     # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, IDLE_TIMEOUT, MEMORY_DIR
+├── bot.py        # Telegram handlers: /start, /new, /model, /provider, /status, /memory, /forget, /cancel
+├── memory.py     # Persistent memory: YAML profile + SQLite FTS5 episodic, context injection
 ├── bridge.py     # Runs `claude -p` subprocess, yields stream events (TOOL_USE, RESULT)
 ├── providers.py  # Provider fallback chain: auto-switches LLM on rate limit
 ├── progress.py   # ProgressReporter: manages live progress message with debounced edits
@@ -47,6 +49,8 @@ src/
 - `/model [sonnet|opus|haiku]` — Switch model
 - `/provider [name]` — View/switch LLM provider (auto-switches on rate limit)
 - `/status` — Show current session info
+- `/memory` — Show what the bot remembers (profile + episodes)
+- `/forget` — Clear all memory
 - `/cancel` — Cancel the current request
 
 ## Deployment (systemd)
@@ -174,3 +178,48 @@ When Claude hits rate limits or quota errors, the bot automatically falls back t
 1. Start a LiteLLM proxy: `litellm --model openai/your-model --api_base https://api.example.com/v1 --alias claude-3-5-sonnet-latest --drop_params --port 4002`
 2. Add an entry to `providers.json` with the proxy's `ANTHROPIC_BASE_URL`
 3. The bot picks it up on next restart (or `/provider reload` — future feature)
+
+## Memory System
+
+Persistent, global memory that makes the assistant smarter over time. Layered architecture:
+
+| Layer | Storage | Description |
+|-------|---------|-------------|
+| **Core** | `memory/user_profile.yaml` | User profile: name, timezone, communication style, languages |
+| **Semantic** | `memory/user_profile.yaml` | Facts with confidence scores (0.0–1.0), source (explicit/inferred), date |
+| **Episodic** | `memory/episodes.db` | Conversation summaries in SQLite with FTS5 full-text search |
+| **Working** | In-context (`--resume`) | Current session state, handled by Claude Code natively |
+
+### How it works
+
+1. **Before each message**: `MemoryManager.build_context()` reads YAML profile + searches SQLite FTS5 by keywords from the user's message, builds an XML `<memory>` block prepended to the prompt
+2. **Memory instructions**: Absolute path to `user_profile.yaml` is appended so Claude can edit it directly with its file tools
+3. **REMEMBER/FORGET**: Claude updates the YAML file naturally — no special command parsing needed
+4. **REFLECT**: On `/new`, a background haiku call summarizes the conversation and stores it as an episode in SQLite
+5. **RECALL**: FTS5 keyword search against the user's message surfaces relevant past episodes
+
+### Context injection format
+
+```xml
+<memory>
+<core>Name: Alice / Timezone: UTC+3 / Style: concise technical</core>
+<relevant_facts>
+- main_project: telegram-claude-bot
+- preferred_model: opus
+</relevant_facts>
+<recent_episodes>
+- 2026-02-23: Implemented stream-json format in v0.8.0
+</recent_episodes>
+</memory>
+
+[user message]
+<memory_instructions>
+Your profile + facts file: /absolute/path/to/memory/user_profile.yaml
+</memory_instructions>
+```
+
+### Configuration
+
+- `MEMORY_DIR` env var (default: `memory/` relative to working directory)
+- Facts with confidence < 0.6 are stored but not injected into context
+- Episode search returns top 5 FTS5 matches, falls back to most recent if no keyword match

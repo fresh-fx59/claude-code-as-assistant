@@ -149,7 +149,8 @@ async def stream_message(
     if session_id:
         cmd.extend(["--resume", session_id])
 
-    logger.info("Running: %s", " ".join(cmd[:6]) + " ...")
+    base_url = subprocess_env.get("ANTHROPIC_BASE_URL") if subprocess_env else None
+    logger.info("Running: %s [base_url=%s]", " ".join(cmd[:6]) + " ...", base_url or "default")
 
     start = time.monotonic()
     # Track the tool currently being streamed via stream_event deltas

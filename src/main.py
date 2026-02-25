@@ -25,7 +25,10 @@ async def main() -> None:
         BotCommand(command="start", description="Welcome message"),
         BotCommand(command="new", description="Start fresh conversation"),
         BotCommand(command="model", description="Switch model (sonnet/opus/haiku)"),
+        BotCommand(command="provider", description="Switch or view LLM provider"),
         BotCommand(command="status", description="Show current session info"),
+        BotCommand(command="memory", description="Show what I remember"),
+        BotCommand(command="forget", description="Clear all memory"),
         BotCommand(command="cancel", description="Cancel current request"),
     ])
 

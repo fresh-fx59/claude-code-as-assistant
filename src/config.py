@@ -1,11 +1,12 @@
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.9.4"
+VERSION: str = "0.10.0"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -41,3 +42,10 @@ if CLAUDE_WORKING_DIR:
 IDLE_TIMEOUT: int = int(os.getenv("IDLE_TIMEOUT", "120"))
 PROGRESS_DEBOUNCE_SECONDS: float = float(os.getenv("PROGRESS_DEBOUNCE_SECONDS", "3.0"))
 METRICS_PORT: int = int(os.getenv("METRICS_PORT", "9101"))
+
+# ── Memory system ─────────────────────────────────────────
+_raw_memory_dir = os.getenv("MEMORY_DIR") or None
+MEMORY_DIR: Path = Path(
+    os.path.expanduser(_raw_memory_dir) if _raw_memory_dir else "memory"
+)
+os.makedirs(MEMORY_DIR, exist_ok=True)

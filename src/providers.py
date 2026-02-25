@@ -27,6 +27,10 @@ class Provider:
     description: str
     env: dict[str, str] = field(default_factory=dict)
 
+    def __str__(self) -> str:
+        env_str = ", ".join(f"{k}={v}" for k, v in self.env.items()) or "(default env)"
+        return f"Provider({self.name}, {env_str})"
+
 
 @dataclass
 class _ProviderConfig:
@@ -91,7 +95,7 @@ class ProviderManager:
         logger.info(
             "Loaded %d providers: %s",
             len(self._cfg.providers),
-            ", ".join(p.name for p in self._cfg.providers),
+            ", ".join(str(p) for p in self._cfg.providers),
         )
 
     def reload(self) -> None:
