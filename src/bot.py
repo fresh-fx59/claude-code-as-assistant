@@ -26,6 +26,11 @@ provider_manager = ProviderManager()
 memory_manager = MemoryManager(config.MEMORY_DIR)
 tool_registry = ToolRegistry(config.TOOLS_DIR)
 
+# Restore persisted provider selections from sessions
+for _chat_id, _session in session_manager.sessions.items():
+    if _session.provider:
+        provider_manager.set_provider(_chat_id, _session.provider)
+
 VALID_MODELS = {"sonnet", "opus", "haiku"}
 
 

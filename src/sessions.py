@@ -35,6 +35,10 @@ class SessionManager:
         data = {str(k): asdict(v) for k, v in self._sessions.items()}
         SESSIONS_FILE.write_text(json.dumps(data, indent=2))
 
+    @property
+    def sessions(self) -> dict[int, "ChatSession"]:
+        return self._sessions
+
     def get(self, chat_id: int) -> ChatSession:
         if chat_id not in self._sessions:
             self._sessions[chat_id] = ChatSession()
