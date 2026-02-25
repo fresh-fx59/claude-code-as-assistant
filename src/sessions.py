@@ -12,6 +12,7 @@ SESSIONS_FILE = Path("sessions.json")
 class ChatSession:
     claude_session_id: str | None = None
     model: str = "sonnet"
+    provider: str | None = None
 
 
 class SessionManager:
@@ -52,4 +53,9 @@ class SessionManager:
     def set_model(self, chat_id: int, model: str) -> None:
         session = self.get(chat_id)
         session.model = model
+        self._save()
+
+    def set_provider(self, chat_id: int, provider: str) -> None:
+        session = self.get(chat_id)
+        session.provider = provider
         self._save()

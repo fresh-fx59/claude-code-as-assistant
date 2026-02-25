@@ -2,12 +2,14 @@ import asyncio
 from dataclasses import dataclass
 import json
 import logging
+from datetime import datetime, timezone as tz
 
+import yaml
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.enums import ChatAction
 
-from . import bridge, config, metrics
+from . import bridge, config
 from .sessions import SessionManager
 from .formatter import markdown_to_html, split_message, strip_html
 from .memory import MemoryManager
@@ -55,20 +57,45 @@ def _is_authorized(user_id: int | None) -> bool:
 async def cmd_start(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         return
-    await message.answer(
-        f"Hello! I'm a Claude Code assistant. <b>v{config.VERSION}</b>\n\n"
-        "Send me any message and I'll respond using Claude.\n\n"
-        "<b>Commands:</b>\n"
-        "/new — Start a fresh conversation\n"
-        "/model [sonnet|opus|haiku] — Switch model\n"
-        "/provider [name] — Switch or view LLM provider\n"
-        "/status — Show current session info\n"
-        "/memory — Show what I remember\n"
-        "/forget — Clear all memory\n"
-        "/tools — Show available tools\n"
+
+    # Get user timezone if set
+    user_tz = None
+    try:
+        data = yaml.safe_load((config.MEMORY_DIR / "user_profile.yaml"))
+        prefs = data.get("preferences", {})
+        user_tz = prefs.get("timezone")
+    except Exception:
+        pass
+
+    status_lines = [
+        f"Hello! I'm a Claude Code assistant. <b>v{config.VERSION}</b>",
+    ]
+    if user_tz:
+        try:
+            from datetime import datetime, timezone as tz
+            tz_obj = tz.timezone(user_tz)
+            now = datetime.now(tz.utc).astimezone(tz_obj)
+            time_str = now.strftime("%H:%M")
+            status_lines.append(f"<b>Time:</b> {time_str} ({user_tz})")
+        except Exception:
+            pass
+
+    status_lines.extend([
+        "",
+        "Send me any message and I'll respond using Claude.",
+        "",
+        "<b>Commands:</b>",
+        "/new — Start a fresh conversation",
+        "/model [sonnet|opus|haiku] — Switch model",
+        "/provider [name] — Switch or view LLM provider",
+        "/status — Show current session info",
+        "/memory — Show what I remember",
+        "/forget — Clear all memory",
+        "/tools — Show available tools",
         "/cancel — Cancel current request",
-        parse_mode="HTML",
-    )
+    ])
+
+    await message.answer("\n".join(status_lines), parse_mode="HTML")
 
 
 @router.message(F.text == "/new")
@@ -133,6 +160,7 @@ async def cmd_model(message: Message) -> None:
         await message.answer(f"Invalid model. Choose from: {', '.join(sorted(VALID_MODELS))}")
         return
     session_manager.set_model(message.chat.id, model)
+    # Also persist provider change (keep current provider)
     await message.answer(f"Model switched to <b>{model}</b>.", parse_mode="HTML")
 
 
@@ -162,6 +190,9 @@ async def cmd_provider(message: Message) -> None:
         names = ", ".join(p.name for p in provider_manager.providers)
         await message.answer(f"Unknown provider. Choose from: {names}")
         return
+
+    # Persist provider to session
+    session_manager.set_provider(message.chat.id, provider.name)
 
     await message.answer(
         f"Provider switched to <b>{provider.name}</b> — {provider.description}",
