@@ -10,6 +10,8 @@ WorkingDirectory=/home/claude-developer/claude-code-as-assistant
 ExecStart=/home/claude-developer/claude-code-as-assistant/run.sh
 Restart=always
 RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=600
 EnvironmentFile=/home/claude-developer/claude-code-as-assistant/.env
 Environment=PATH=/home/claude-developer/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 

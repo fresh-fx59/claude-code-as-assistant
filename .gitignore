@@ -13,3 +13,4 @@ build/
 .eggs/
 work-dir/
 resume-work.md
+.deploy/

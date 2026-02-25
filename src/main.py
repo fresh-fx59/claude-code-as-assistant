@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import subprocess
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
@@ -7,6 +9,23 @@ from aiogram.types import BotCommand
 from .config import BOT_TOKEN, METRICS_PORT
 from .bot import router, provider_manager
 from .metrics import start_metrics_server
+
+
+def mark_good_commit() -> None:
+    """Mark current git commit as known-good after successful startup."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            commit = result.stdout.strip()
+            deploy_dir = Path(__file__).parent.parent / ".deploy"
+            deploy_dir.mkdir(exist_ok=True)
+            (deploy_dir / "good_commit").write_text(commit)
+            logging.info("Marked commit %s as last-known-good", commit[:8])
+    except Exception as e:
+        logging.warning("Could not mark good commit: %s", e)
 
 
 async def main() -> None:
@@ -31,6 +50,8 @@ async def main() -> None:
         BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="cancel", description="Cancel current request"),
     ])
+
+    mark_good_commit()
 
     logging.info("Bot starting...")
     try:
