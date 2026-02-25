@@ -6,6 +6,7 @@ __pycache__/
 venv/
 .venv/
 sessions.json
+memory/
 *.egg-info/
 dist/
 build/
