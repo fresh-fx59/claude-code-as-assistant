@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.10.1"
+VERSION: str = "0.11.0"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -49,3 +49,10 @@ MEMORY_DIR: Path = Path(
     os.path.expanduser(_raw_memory_dir) if _raw_memory_dir else "memory"
 )
 os.makedirs(MEMORY_DIR, exist_ok=True)
+
+# ── Tool system ───────────────────────────────────────────
+_raw_tools_dir = os.getenv("TOOLS_DIR") or None
+TOOLS_DIR: Path = Path(
+    os.path.expanduser(_raw_tools_dir) if _raw_tools_dir else "tools"
+)
+# Note: TOOLS_DIR is optional — no auto-create, tools/ may not exist

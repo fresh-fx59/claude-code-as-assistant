@@ -1,0 +1,25 @@
+name: web_search
+description: Search the web for current information
+triggers: [search, google, find online, latest news, current events, what is new, today, recent, up to date]
+instructions: |
+  You have a web search tool available via the `websearch` command.
+
+  Usage:
+    websearch "your search query here"
+
+  The `websearch` command returns JSON results with:
+    - title: The page title
+    - url: The link to the page
+    - snippet: A brief excerpt matching your query
+
+  Use this tool when:
+    - The user asks about current events or recent news
+    - You need information that may have changed since your training cutoff
+    - The user asks for "latest" or "current" information
+    - You need to verify facts that could be outdated
+
+  Example:
+    User: "What's the latest news about AI?"
+    Run: websearch "latest news AI"
+
+setup: tools/bin/websearch

@@ -13,6 +13,7 @@ from .formatter import markdown_to_html, split_message, strip_html
 from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
+from .tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -20,6 +21,7 @@ router = Router()
 session_manager = SessionManager()
 provider_manager = ProviderManager()
 memory_manager = MemoryManager(config.MEMORY_DIR)
+tool_registry = ToolRegistry(config.TOOLS_DIR)
 
 VALID_MODELS = {"sonnet", "opus", "haiku"}
 
@@ -63,6 +65,7 @@ async def cmd_start(message: Message) -> None:
         "/status — Show current session info\n"
         "/memory — Show what I remember\n"
         "/forget — Clear all memory\n"
+        "/tools — Show available tools\n"
         "/cancel — Cancel current request",
         parse_mode="HTML",
     )
@@ -207,6 +210,18 @@ async def cmd_forget(message: Message) -> None:
     )
 
 
+@router.message(F.text == "/tools")
+async def cmd_tools(message: Message) -> None:
+    """List available tools."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+    content = tool_registry.format_for_display()
+    try:
+        await message.answer(content, parse_mode="HTML")
+    except Exception:
+        await message.answer(strip_html(content))
+
+
 @router.message(F.text == "/cancel")
 async def cmd_cancel(message: Message) -> None:
     """Cancel the current request if one is running."""
@@ -236,14 +251,21 @@ async def _run_claude(
     """Run a single Claude subprocess attempt. Returns the response or None."""
     state.process_handle = {}
 
-    # Build memory-augmented prompt
+    # Build memory and tool-augmented prompt
     raw_prompt = message.text or ""
     memory_context = memory_manager.build_context(raw_prompt)
+    tool_context = tool_registry.build_context(raw_prompt)
     memory_instructions = memory_manager.build_instructions()
+
+    # Assemble prompt with all context layers
+    prompt_parts = []
     if memory_context:
-        prompt = f"{memory_context}\n\n{raw_prompt}{memory_instructions}"
-    else:
-        prompt = f"{raw_prompt}{memory_instructions}"
+        prompt_parts.append(memory_context)
+    if tool_context:
+        prompt_parts.append(tool_context)
+    prompt_parts.append(raw_prompt + memory_instructions)
+
+    prompt = "\n\n".join(prompt_parts)
 
     async for event in bridge.stream_message(
         prompt=prompt,

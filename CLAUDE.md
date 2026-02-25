@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.10.1`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.11.0`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -19,9 +19,10 @@ Telegram bot that bridges messages to Claude Code's `--print` mode via subproces
 ```
 src/
 ├── main.py       # Entry point, dispatcher setup, polling, metrics server
-├── config.py     # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, IDLE_TIMEOUT, MEMORY_DIR
-├── bot.py        # Telegram handlers: /start, /new, /model, /provider, /status, /memory, /forget, /cancel
+├── config.py     # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, IDLE_TIMEOUT, MEMORY_DIR, TOOLS_DIR
+├── bot.py        # Telegram handlers: /start, /new, /model, /provider, /status, /memory, /forget, /tools, /cancel
 ├── memory.py     # Persistent memory: YAML profile + SQLite FTS5 episodic, context injection
+├── tools.py      # Tool registry: lazy loads YAML tool definitions, injects context
 ├── bridge.py     # Runs `claude -p` subprocess, yields stream events (TOOL_USE, RESULT)
 ├── providers.py  # Provider fallback chain: auto-switches LLM on rate limit
 ├── progress.py   # ProgressReporter: manages live progress message with debounced edits
@@ -51,6 +52,7 @@ src/
 - `/status` — Show current session info
 - `/memory` — Show what the bot remembers (profile + episodes)
 - `/forget` — Clear all memory
+- `/tools` — Show available tools
 - `/cancel` — Cancel the current request
 
 ## Deployment (systemd)
@@ -223,3 +225,64 @@ Your profile + facts file: /absolute/path/to/memory/user_profile.yaml
 - `MEMORY_DIR` env var (default: `memory/` relative to working directory)
 - Facts with confidence < 0.6 are stored but not injected into context
 - Episode search returns top 5 FTS5 matches, falls back to most recent if no keyword match
+
+## Tool System
+
+Custom tools that extend Claude Code's capabilities (web search, GitHub, APIs) with lazy loading to keep prompts lean.
+
+### Architecture
+
+Two-phase loading:
+- **Phase 1 (Manifest)**: All tools' names, descriptions, and trigger keywords are always in context (~20 tokens per tool)
+- **Phase 2 (Full)**: When a trigger keyword matches the user's message, the full tool instructions are loaded and injected
+
+Tools are defined as YAML files in `tools/` directory with this structure:
+```yaml
+name: web_search
+description: Search the web for current information
+triggers: [search, google, find online, latest news, current events]
+instructions: |
+  You have a web search tool. Run: websearch "query"
+  Returns JSON with title, url, snippet fields.
+setup: tools/bin/websearch  # Optional: path to executable
+```
+
+### How it works
+
+1. Before each message, `ToolRegistry.match_tools()` scans the user's message for trigger keywords
+2. Matched tools' full instructions are loaded (cached for reuse)
+3. Context injection builds an XML `<tools>` block with two sections:
+   - `<available>`: All tools' manifest summaries (always included)
+   - `<active>`: Full instructions for matched tools only
+4. Claude sees `<tools>` context and knows when/how to use the external scripts
+5. The `setup` field references a script that Claude can run via its built-in bash tool
+
+### Context injection format
+
+```xml
+<tools>
+<available>
+- web_search: Search the web for current information
+- github_pr: GitHub pull request operations
+</available>
+<active>
+<tool name="web_search">
+You have a web search tool. Run: websearch "query"
+Returns JSON with title, url, snippet fields.
+</tool>
+</active>
+</tools>
+
+[user message]
+```
+
+### Configuration
+
+- `TOOLS_DIR` env var (default: `tools/` relative to working directory)
+- Tools directory is optional — no error if missing
+- Maximum 3 active tools injected per message to avoid bloat
+- Trigger matching uses substring detection (not word boundaries) for multi-word phrases like "latest news"
+
+### Bot Commands
+
+- `/tools` — List all available tools with trigger keywords

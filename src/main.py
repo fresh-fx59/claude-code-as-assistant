@@ -29,6 +29,7 @@ async def main() -> None:
         BotCommand(command="status", description="Show current session info"),
         BotCommand(command="memory", description="Show what I remember"),
         BotCommand(command="forget", description="Clear all memory"),
+        BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="cancel", description="Cancel current request"),
     ])
 
