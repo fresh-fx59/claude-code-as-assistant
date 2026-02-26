@@ -235,6 +235,11 @@ def _codex_model_arg(session: object, provider) -> str | None:
     return model
 
 
+def _codex_working_dir() -> str:
+    """Run Codex from user home so it can access files under that tree."""
+    return str(Path.home())
+
+
 @router.message(F.text == "/start")
 async def cmd_start(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
@@ -830,7 +835,7 @@ async def _run_codex(
         session_id=session_id,
         model=model,
         resume_arg=resume_arg,
-        working_dir=config.CLAUDE_WORKING_DIR,
+        working_dir=_codex_working_dir(),
         process_handle=state.process_handle,
         subprocess_env=subprocess_env,
     ):
