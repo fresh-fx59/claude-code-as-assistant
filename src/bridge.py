@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from asyncio import LimitOverrunError
 from dataclasses import dataclass
 from enum import Enum
 from typing import AsyncGenerator
@@ -11,6 +12,20 @@ from typing import AsyncGenerator
 from . import config, metrics
 
 logger = logging.getLogger(__name__)
+
+
+async def _drain_oversized_line(
+    stream: asyncio.StreamReader,
+    consumed_hint: int | None = None,
+) -> None:
+    """Drain bytes until newline so stream processing can continue."""
+    if consumed_hint and consumed_hint > 0:
+        await stream.read(consumed_hint)
+
+    while True:
+        chunk = await stream.read(64 * 1024)
+        if not chunk or b"\n" in chunk:
+            return
 
 
 class StreamEventType(Enum):
@@ -204,6 +219,7 @@ async def stream_message(
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
             env=subprocess_env or _default_subprocess_env(),
+            limit=1024 * 1024,
         )
     except FileNotFoundError:
         yield StreamEvent(
@@ -254,6 +270,17 @@ async def stream_message(
                     )
                 )
                 return
+            except LimitOverrunError as e:
+                logger.warning(
+                    "Claude stream line exceeded buffer; draining oversized line (consumed=%d)",
+                    e.consumed,
+                )
+                await _drain_oversized_line(proc.stdout, consumed_hint=e.consumed)
+                continue
+            except ValueError:
+                logger.warning("Claude stream line raised ValueError; draining oversized line")
+                await _drain_oversized_line(proc.stdout)
+                continue
 
             if not line:
                 break
@@ -454,6 +481,7 @@ async def stream_codex_message(
             stderr=asyncio.subprocess.PIPE,
             cwd=working_dir,
             env=subprocess_env or _default_subprocess_env(),
+            limit=1024 * 1024,
         )
     except FileNotFoundError:
         yield StreamEvent(
@@ -502,6 +530,17 @@ async def stream_codex_message(
                     )
                 )
                 return
+            except LimitOverrunError as e:
+                logger.warning(
+                    "Codex stream line exceeded buffer; draining oversized line (consumed=%d)",
+                    e.consumed,
+                )
+                await _drain_oversized_line(proc.stdout, consumed_hint=e.consumed)
+                continue
+            except ValueError:
+                logger.warning("Codex stream line raised ValueError; draining oversized line")
+                await _drain_oversized_line(proc.stdout)
+                continue
 
             if not line:
                 break
