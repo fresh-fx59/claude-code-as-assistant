@@ -4,7 +4,7 @@ Reproducible setup for Alex's server. Follow this if migrating to a new server.
 
 ## Server Info
 
-- **IP**: 176.212.185.27
+- **IP**: 31.220.78.216
 - **OS**: Ubuntu 24.04.4 LTS (Noble Numbat)
 - **Kernel**: 6.8.0-101-generic
 - **User**: `claude-developer` (UID 1000, groups: sudo, docker)
@@ -228,7 +228,7 @@ docker compose restart
 
 Access web UI via SSH tunnel:
 ```bash
-ssh -L 8384:localhost:8384 claude-developer@176.212.185.27
+ssh -L 8384:localhost:8384 claude-developer@31.220.78.216
 # Then open http://localhost:8384 in browser
 ```
 

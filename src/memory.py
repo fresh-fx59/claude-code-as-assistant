@@ -120,6 +120,12 @@ class MemoryManager:
         finally:
             con.close()
 
+    def _ensure_storage(self) -> None:
+        """Recreate storage if external cleanup removed the directory or DB file."""
+        self._dir.mkdir(parents=True, exist_ok=True)
+        if not self._db_path.exists():
+            self._init_db()
+
     # ── Context building ─────────────────────────────────────
 
     def build_context(self, user_message: str) -> str:
@@ -195,6 +201,7 @@ class MemoryManager:
         entities: list[str] | None = None,
     ) -> None:
         """Insert a new episode into the database."""
+        self._ensure_storage()
         con = sqlite3.connect(self._db_path)
         try:
             con.execute(
@@ -216,6 +223,7 @@ class MemoryManager:
 
     def search_episodes(self, query: str, limit: int = 5) -> list[dict]:
         """Search episodes via FTS5. Falls back to recent episodes if no query match."""
+        self._ensure_storage()
         keywords = self._extract_keywords(query)
 
         con = sqlite3.connect(self._db_path)
@@ -262,6 +270,7 @@ class MemoryManager:
 
     def format_for_display(self) -> str:
         """Human-readable memory dump for /memory command."""
+        self._ensure_storage()
         parts: list[str] = []
 
         # Profile
@@ -291,6 +300,7 @@ class MemoryManager:
 
     def clear(self) -> None:
         """Reset all memory to defaults."""
+        self._ensure_storage()
         self._profile_path.write_text(_PROFILE_TEMPLATE)
         con = sqlite3.connect(self._db_path)
         try:

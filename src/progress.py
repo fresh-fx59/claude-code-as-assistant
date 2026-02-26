@@ -34,7 +34,9 @@ class ProgressReporter:
         self._message = message
         self._chat_id = message.chat.id
         self._bot = message.bot
-        self._debounce_seconds = debounce_seconds or config.PROGRESS_DEBOUNCE_SECONDS
+        self._debounce_seconds = (
+            config.PROGRESS_DEBOUNCE_SECONDS if debounce_seconds is None else debounce_seconds
+        )
 
         self._progress_message_id: int | None = None
         self._history: deque[str] = deque(maxlen=5)  # Keep last ~5 actions

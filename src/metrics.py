@@ -79,5 +79,15 @@ CURRENT_MODEL = Gauge(
 
 def start_metrics_server(port: int) -> None:
     """Start the Prometheus metrics HTTP server."""
-    start_http_server(port)
-    logger.info("Prometheus metrics server started on port %d", port)
+    if port <= 0:
+        logger.info("Prometheus metrics server disabled (METRICS_PORT=%d)", port)
+        return
+    try:
+        start_http_server(port)
+        logger.info("Prometheus metrics server started on port %d", port)
+    except OSError as exc:
+        logger.warning(
+            "Prometheus metrics server disabled: failed to bind port %d (%s)",
+            port,
+            exc,
+        )

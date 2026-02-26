@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import inspect
 import json
 import logging
 import os
@@ -522,7 +523,9 @@ async def cmd_cancel(message: Message) -> None:
 
     # Kill the process
     proc = state.process_handle["proc"]
-    proc.kill()
+    kill_result = proc.kill()
+    if inspect.isawaitable(kill_result):
+        await kill_result
     state.cancel_requested = True
     session = session_manager.get(message.chat.id)
     provider = _current_provider(message.chat.id)
@@ -773,14 +776,23 @@ async def _run_claude(
 
     prompt = "\n\n".join(prompt_parts)
 
-    async for event in bridge.stream_message(
+    stream = bridge.stream_message(
         prompt=prompt,
         session_id=session.claude_session_id,
         model=session.model,
         working_dir=config.CLAUDE_WORKING_DIR,
         process_handle=state.process_handle,
         subprocess_env=subprocess_env,
-    ):
+    )
+    if hasattr(stream, "__aiter__"):
+        iterator = stream
+    else:
+        async def _iter_sync():
+            for item in stream:
+                yield item
+        iterator = _iter_sync()
+
+    async for event in iterator:
         if state.cancel_requested:
             await progress.show_cancelled()
             return bridge.ClaudeResponse(
@@ -797,6 +809,11 @@ async def _run_claude(
                 if event.tool_name:
                     await progress.report_tool(event.tool_name, event.tool_input)
             case bridge.StreamEventType.RESULT:
+                return event.response
+            case "TOOL_USE":
+                if getattr(event, "tool_name", None):
+                    await progress.report_tool(event.tool_name, getattr(event, "tool_input", None))
+            case "RESULT":
                 return event.response
 
     return None
@@ -830,7 +847,7 @@ async def _run_codex(
 
     prompt = "\n\n".join(prompt_parts)
 
-    async for event in bridge.stream_codex_message(
+    stream = bridge.stream_codex_message(
         prompt=prompt,
         session_id=session_id,
         model=model,
@@ -838,7 +855,16 @@ async def _run_codex(
         working_dir=_codex_working_dir(),
         process_handle=state.process_handle,
         subprocess_env=subprocess_env,
-    ):
+    )
+    if hasattr(stream, "__aiter__"):
+        iterator = stream
+    else:
+        async def _iter_sync():
+            for item in stream:
+                yield item
+        iterator = _iter_sync()
+
+    async for event in iterator:
         if state.cancel_requested:
             await progress.show_cancelled()
             return bridge.ClaudeResponse(
@@ -855,6 +881,11 @@ async def _run_codex(
                 if event.tool_name:
                     await progress.report_tool(event.tool_name, event.tool_input)
             case bridge.StreamEventType.RESULT:
+                return event.response
+            case "TOOL_USE":
+                if getattr(event, "tool_name", None):
+                    await progress.report_tool(event.tool_name, getattr(event, "tool_input", None))
+            case "RESULT":
                 return event.response
 
     return None

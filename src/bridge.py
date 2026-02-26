@@ -461,7 +461,14 @@ async def stream_codex_message(
     subprocess_env: dict[str, str] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Stream Codex CLI responses as events with idle timeout."""
-    cmd = ["codex", "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt]
+    cmd = [
+        "codex",
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        prompt,
+    ]
     if model:
         cmd.extend(["--model", model])
     if session_id and resume_arg:
