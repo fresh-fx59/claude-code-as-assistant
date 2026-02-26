@@ -35,6 +35,7 @@ def clean_env(monkeypatch):
         monkeypatch.setenv("PROGRESS_DEBOUNCE_SECONDS", "1.0")
         monkeypatch.setenv("METRICS_PORT", "0")  # Disable metrics
         monkeypatch.setenv("CLAUDE_WORKING_DIR", str(tmppath / "work"))
+        monkeypatch.setenv("DISABLE_REFLECTION", "1")
         monkeypatch.delenv("CLAUDECODE", raising=False)
 
         # Create working dir
@@ -44,6 +45,17 @@ def clean_env(monkeypatch):
 
     # Restore original directory
     os.chdir(original_dir)
+
+
+# ── Fixture: Reset session state ────────────────────────────────
+@pytest.fixture(autouse=True)
+def reset_session_manager():
+    """Ensure session manager state is clean between tests."""
+    try:
+        from src.bot import session_manager
+        session_manager.sessions.clear()
+    except Exception:
+        pass
 
 
 # ── Fixture: Mock Telegram bot & message ───────────────────────────
@@ -73,6 +85,13 @@ def mock_message(mock_bot):
     msg.content_type = "text"
     msg.answer = AsyncMock()
     return msg
+
+
+# ── Fixture: temp path alias ────────────────────────────────────
+@pytest.fixture
+def tmppath() -> Path:
+    """Alias for current temp working directory set by clean_env."""
+    return Path.cwd()
 
 
 # ── Fixture: Mock subprocess results ──────────────────────────────

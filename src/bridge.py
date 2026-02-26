@@ -47,6 +47,8 @@ def _extract_tool_input(tool_name: str, input_data: dict) -> str | None:
     match tool:
         case "bash":
             cmd = input_data.get("command", "")
+            if not cmd:
+                return None
             return (cmd[:80] + "...") if len(cmd) > 80 else cmd
         case "read" | "edit" | "write":
             return input_data.get("file_path")
@@ -108,6 +110,11 @@ def _default_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
     return env
+
+
+# Backward-compatible alias for tests and older code.
+def _subprocess_env() -> dict[str, str]:
+    return _default_subprocess_env()
 
 
 def _extract_codex_tool_input(item: dict) -> str | None:
@@ -237,7 +244,10 @@ async def stream_message(
             if not line:
                 break
 
-            line_str = line.decode().strip()
+            if isinstance(line, bytes):
+                line_str = line.decode().strip()
+            else:
+                line_str = str(line).strip()
             if not line_str:
                 continue
 
@@ -468,7 +478,10 @@ async def stream_codex_message(
             if not line:
                 break
 
-            line_str = line.decode().strip()
+            if isinstance(line, bytes):
+                line_str = line.decode().strip()
+            else:
+                line_str = str(line).strip()
             if not line_str:
                 continue
 

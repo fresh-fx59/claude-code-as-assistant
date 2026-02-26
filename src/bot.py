@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 import json
 import logging
+import os
 from datetime import datetime, timezone as tz
 from pathlib import Path
 
@@ -36,6 +37,7 @@ for _chat_id, _session in session_manager.sessions.items():
         provider_manager.set_provider(_chat_id, _session.provider)
 
 CLAUDE_MODELS = {"sonnet", "opus", "haiku"}
+VALID_MODELS = CLAUDE_MODELS
 
 
 @dataclass
@@ -58,9 +60,16 @@ def _get_state(chat_id: int) -> _ChatState:
 
 
 def _is_authorized(user_id: int | None) -> bool:
-    if not config.ALLOWED_USER_IDS:
+    raw_ids = os.getenv("ALLOWED_USER_IDS", "")
+    allowed = set(config.ALLOWED_USER_IDS)
+    if raw_ids:
+        parsed = {int(uid.strip()) for uid in raw_ids.split(",") if uid.strip()}
+        if parsed:
+            allowed |= parsed
+            config.ALLOWED_USER_IDS = allowed
+    if not allowed:
         return False
-    return user_id in config.ALLOWED_USER_IDS
+    return user_id in allowed
 
 
 def _current_provider(chat_id: int):
@@ -137,7 +146,7 @@ async def cmd_new(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         return
     session = session_manager.get(message.chat.id)
-    if session.claude_session_id:
+    if session.claude_session_id and os.getenv("DISABLE_REFLECTION") != "1":
         asyncio.create_task(_reflect(message.chat.id, session))
     session_manager.new_conversation(message.chat.id)
     session_manager.new_codex_conversation(message.chat.id)
@@ -177,7 +186,7 @@ async def _reflect(chat_id: int, session: object) -> None:
         logger.warning("Chat %d: reflection failed", chat_id, exc_info=True)
 
 
-@router.message(F.text == "/model")
+@router.message(F.text.startswith("/model"))
 async def cmd_model(message: Message) -> None:
     """Show model selection keyboard."""
     if not _is_authorized(message.from_user and message.from_user.id):
@@ -185,6 +194,25 @@ async def cmd_model(message: Message) -> None:
     session = session_manager.get(message.chat.id)
     provider = _current_provider(message.chat.id)
     current = _current_model_label(session, provider)
+
+    raw_text = message.text or ""
+    parts = raw_text.split(maxsplit=1)
+    if len(parts) > 1:
+        requested = parts[1].split()[0]
+        options = _model_options(provider)
+        if requested not in options:
+            await message.answer(f"Invalid model: {requested}. Use /model to see options.")
+            return
+
+        if provider.cli == "codex":
+            chosen = None if requested == "default" else requested
+            session_manager.set_codex_model(message.chat.id, chosen)
+        else:
+            session_manager.set_model(message.chat.id, requested)
+
+        current = _current_model_label(session_manager.get(message.chat.id), provider)
+        await message.answer(f"Switched to {current}")
+        return
 
     lines = [f"<b>Current model:</b> {current}\n"]
     lines.append("<b>Select a model:</b>")

@@ -11,7 +11,12 @@
       "description": "OpenAI Codex CLI",
       "cli": "codex",
       "models": [
-        "default"
+        "default",
+        "codex-mini-latest",
+        "gpt-5.2-chat-latest",
+        "gpt-5.1-chat-latest",
+        "gpt-5-chat-latest",
+        "chatgpt-4o-latest"
       ],
       "env": {}
     },
