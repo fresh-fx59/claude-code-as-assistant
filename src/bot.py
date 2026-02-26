@@ -73,6 +73,11 @@ def _is_authorized(user_id: int | None) -> bool:
     return user_id in allowed
 
 
+def _find_provider_cli(cli_name: str) -> str | None:
+    """Resolve provider executable path from current process PATH."""
+    return shutil.which(cli_name)
+
+
 def _current_provider(chat_id: int):
     return provider_manager.get_provider(chat_id)
 
@@ -658,7 +663,7 @@ async def handle_message(message: Message) -> None:
 
         try:
             provider = provider_manager.get_provider(message.chat.id)
-            if provider.cli != "claude" and shutil.which(provider.cli) is None:
+            if provider.cli != "claude" and _find_provider_cli(provider.cli) is None:
                 fallback = provider_manager.reset(message.chat.id)
                 session_manager.set_provider(message.chat.id, fallback.name)
                 await message.answer(

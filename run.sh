@@ -8,6 +8,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+NPM_PREFIX_BIN="$(npm config get prefix 2>/dev/null)/bin"
+export PATH="$NPM_PREFIX_BIN:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -114,6 +116,10 @@ if ! command -v claude &>/dev/null; then
     error "Claude Code CLI is not installed."
     echo "  Install it: npm install -g @anthropic-ai/claude-code"
     exit 1
+fi
+
+if ! command -v codex &>/dev/null; then
+    warn "Codex CLI not found in PATH. Install it first (e.g. npm install -g @openai/codex)."
 fi
 
 # ── Check .env exists ────────────────────────────────────────
