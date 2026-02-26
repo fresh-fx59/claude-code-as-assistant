@@ -4,12 +4,13 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 from datetime import datetime, timezone as tz
 from pathlib import Path
 
 import yaml
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ErrorEvent
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError
@@ -51,6 +52,7 @@ class _ChatState:
 
 # Per-chat state dict
 _chat_states: dict[int, _ChatState] = {}
+_error_counts: dict[int, int] = {}
 
 
 def _get_state(chat_id: int) -> _ChatState:
@@ -71,6 +73,135 @@ def _is_authorized(user_id: int | None) -> bool:
     if not allowed:
         return False
     return user_id in allowed
+
+
+def _is_admin(user_id: int | None) -> bool:
+    if user_id is None:
+        return False
+    return user_id in config.ALLOWED_USER_IDS
+
+
+def _record_error(chat_id: int) -> int:
+    count = _error_counts.get(chat_id, 0) + 1
+    _error_counts[chat_id] = count
+    return count
+
+
+def _clear_errors(chat_id: int) -> None:
+    _error_counts.pop(chat_id, None)
+
+
+def _should_suggest_rollback(chat_id: int) -> bool:
+    return _error_counts.get(chat_id, 0) >= 3
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _build_rollback_suggestion_markup(chat_id: int, user_id: int | None):
+    if not _is_admin(user_id) or not _should_suggest_rollback(chat_id):
+        return None
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Show rollback options", callback_data="rollback_auto")
+    return kb.as_markup()
+
+
+def _truncate_label(text: str, max_len: int = 52) -> str:
+    return text if len(text) <= max_len else text[: max_len - 3] + "..."
+
+
+def _get_recent_commits(limit: int = 10) -> list[tuple[str, str, str]]:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(_repo_root()),
+            "log",
+            f"-n{limit}",
+            "--pretty=format:%H%x09%h%x09%s",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "git log failed")
+
+    commits: list[tuple[str, str, str]] = []
+    for line in result.stdout.splitlines():
+        full_hash, short_hash, subject = (line.split("\t", 2) + ["", "", ""])[:3]
+        if full_hash and short_hash:
+            commits.append((full_hash, short_hash, subject))
+    return commits
+
+
+async def _show_rollback_options(chat_id: int, bot) -> None:
+    try:
+        commits = await asyncio.to_thread(_get_recent_commits, 10)
+    except Exception as e:
+        await bot.send_message(chat_id, f"Failed to load commit history: {e}")
+        return
+
+    if not commits:
+        await bot.send_message(chat_id, "No commits found for rollback.")
+        return
+
+    kb = InlineKeyboardBuilder()
+    for full_hash, short_hash, subject in commits:
+        kb.button(
+            text=_truncate_label(f"{short_hash} {subject}".strip()),
+            callback_data=f"rollback:{full_hash}",
+        )
+    kb.button(text="Cancel", callback_data="rollback_cancel")
+    kb.adjust(1)
+
+    await bot.send_message(
+        chat_id,
+        "Select a commit to rollback to:",
+        reply_markup=kb.as_markup(),
+    )
+
+
+async def _restart_service(chat_id: int, bot) -> None:
+    await asyncio.sleep(1)
+    proc = await asyncio.create_subprocess_exec(
+        "sudo",
+        "systemctl",
+        "restart",
+        "telegram-bot.service",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = (stderr or b"").decode().strip() or f"exit code {proc.returncode}"
+        await bot.send_message(chat_id, f"Rollback completed, but restart failed: {err[:500]}")
+
+
+def _reset_to_commit(target_hash: str) -> tuple[bool, str]:
+    verify = subprocess.run(
+        ["git", "-C", str(_repo_root()), "rev-parse", "--verify", f"{target_hash}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if verify.returncode != 0:
+        return False, verify.stderr.strip() or "Commit not found"
+
+    reset = subprocess.run(
+        ["git", "-C", str(_repo_root()), "reset", "--hard", target_hash],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if reset.returncode != 0:
+        return False, reset.stderr.strip() or "git reset --hard failed"
+
+    deploy_dir = _repo_root() / ".deploy"
+    deploy_dir.mkdir(exist_ok=True)
+    (deploy_dir / "start_times").write_text("")
+    return True, (reset.stdout.strip() or f"Rolled back to {target_hash}")
 
 
 def _find_provider_cli(cli_name: str) -> str | None:
@@ -142,6 +273,7 @@ async def cmd_start(message: Message) -> None:
         "/status — Show current session info",
         "/memory — Show what I remember",
         "/tools — Show available tools",
+        "/rollback — Roll back to previous version (admin)",
         "/bg <task> — Run task in background",
         "/bg_cancel <id> — Cancel background task",
         "/cancel — Cancel current request",
@@ -395,6 +527,88 @@ async def cmd_cancel(message: Message) -> None:
     ).inc()
 
 
+@router.message(F.text == "/rollback")
+async def cmd_rollback(message: Message) -> None:
+    if not _is_admin(message.from_user and message.from_user.id):
+        await message.answer("This command is admin-only.")
+        return
+    await _show_rollback_options(message.chat.id, message.bot)
+
+
+@router.callback_query(F.data == "rollback_auto")
+async def cb_rollback_auto(callback: CallbackQuery) -> None:
+    if not _is_admin(callback.from_user and callback.from_user.id):
+        await callback.answer("Admin only", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+    await callback.answer()
+    await _show_rollback_options(callback.message.chat.id, callback.bot)
+
+
+@router.callback_query(F.data.startswith("rollback:"))
+async def cb_rollback(callback: CallbackQuery) -> None:
+    if not _is_admin(callback.from_user and callback.from_user.id):
+        await callback.answer("Admin only", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+
+    target_hash = callback.data.split(":", 1)[1]
+    short_hash = target_hash[:8]
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"Yes, rollback to {short_hash}", callback_data=f"rollback_confirm:{target_hash}")
+    kb.button(text="No, cancel", callback_data="rollback_cancel")
+    kb.adjust(1)
+
+    await callback.message.edit_text(
+        f"Rollback to commit <code>{short_hash}</code>?\n\nThis will reset the repo and restart the bot service.",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("rollback_confirm:"))
+async def cb_rollback_confirm(callback: CallbackQuery) -> None:
+    if not _is_admin(callback.from_user and callback.from_user.id):
+        await callback.answer("Admin only", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+
+    target_hash = callback.data.split(":", 1)[1]
+    short_hash = target_hash[:8]
+    await callback.answer()
+    await callback.message.edit_text(
+        f"Rolling back to <code>{short_hash}</code>...",
+        parse_mode="HTML",
+    )
+
+    ok, details = await asyncio.to_thread(_reset_to_commit, target_hash)
+    if not ok:
+        await callback.message.answer(f"Rollback failed: {details}")
+        return
+
+    _clear_errors(callback.message.chat.id)
+    await callback.message.answer(
+        f"Rollback complete: <code>{short_hash}</code>\nRestarting <code>telegram-bot.service</code>...",
+        parse_mode="HTML",
+    )
+    asyncio.create_task(_restart_service(callback.message.chat.id, callback.bot))
+
+
+@router.callback_query(F.data == "rollback_cancel")
+async def cb_rollback_cancel(callback: CallbackQuery) -> None:
+    await callback.answer("Rollback cancelled")
+    if callback.message:
+        await callback.message.edit_text("Rollback cancelled.")
+
+
 @router.message(F.text.startswith("/bg "))
 async def cmd_bg(message: Message) -> None:
     """Run a task in the background."""
@@ -643,6 +857,23 @@ async def _run_codex(
 
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
+    try:
+        await _handle_message_inner(message)
+    except Exception:
+        logger.exception("Unhandled exception in handle_message")
+        metrics.MESSAGES_TOTAL.labels(status="error").inc()
+        _record_error(message.chat.id)
+        reply_markup = _build_rollback_suggestion_markup(
+            message.chat.id,
+            message.from_user and message.from_user.id,
+        )
+        await message.answer(
+            "An internal error occurred while processing your request.",
+            reply_markup=reply_markup,
+        )
+
+
+async def _handle_message_inner(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         metrics.MESSAGES_TOTAL.labels(status="unauthorized").inc()
         return
@@ -744,10 +975,16 @@ async def handle_message(message: Message) -> None:
         # ── Send response ─────────────────────────────────────
         if state.cancel_requested:
             await progress.finish()
+            _clear_errors(message.chat.id)
         elif final_response:
             if final_response.is_error:
                 error_text = final_response.text or "(No response)"
-                await message.answer(error_text)
+                _record_error(message.chat.id)
+                reply_markup = _build_rollback_suggestion_markup(
+                    message.chat.id,
+                    message.from_user and message.from_user.id,
+                )
+                await message.answer(error_text, reply_markup=reply_markup)
                 await progress.finish()
             else:
                 html = markdown_to_html(final_response.text)
@@ -773,6 +1010,18 @@ async def handle_message(message: Message) -> None:
                             await message.answer(plain_chunk)
 
                 await progress.finish()
+                _clear_errors(message.chat.id)
+        else:
+            _record_error(message.chat.id)
+            reply_markup = _build_rollback_suggestion_markup(
+                message.chat.id,
+                message.from_user and message.from_user.id,
+            )
+            await message.answer(
+                "An internal error occurred while processing your request.",
+                reply_markup=reply_markup,
+            )
+            await progress.finish()
 
         # Update session ID if we got one back
         if (
@@ -796,6 +1045,40 @@ async def handle_message(message: Message) -> None:
             if state.cancel_requested:
                 status = "cancelled"
             metrics.MESSAGES_TOTAL.labels(status=status).inc()
+
+
+@router.errors()
+async def on_router_error(event: ErrorEvent) -> bool:
+    logger.exception("Unhandled router error: %s", event.exception)
+
+    update = event.update
+    message = getattr(update, "message", None)
+    callback = getattr(update, "callback_query", None)
+
+    if message:
+        chat_id = message.chat.id
+        user_id = message.from_user and message.from_user.id
+        _record_error(chat_id)
+        reply_markup = _build_rollback_suggestion_markup(chat_id, user_id)
+        await message.answer(
+            "An internal error occurred while processing your request.",
+            reply_markup=reply_markup,
+        )
+    elif callback and callback.message:
+        chat_id = callback.message.chat.id
+        user_id = callback.from_user and callback.from_user.id
+        _record_error(chat_id)
+        reply_markup = _build_rollback_suggestion_markup(chat_id, user_id)
+        try:
+            await callback.answer("An internal error occurred.", show_alert=True)
+        except Exception:
+            pass
+        await callback.message.answer(
+            "An internal error occurred while processing your request.",
+            reply_markup=reply_markup,
+        )
+
+    return True
 
 
 async def _keep_typing(message: Message) -> None:

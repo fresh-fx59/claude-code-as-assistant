@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.16.0`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.16.3`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -20,7 +20,7 @@ Telegram bot that bridges messages to Claude Code's `--print` mode via subproces
 src/
 ├── main.py       # Entry point, dispatcher setup, polling, metrics server
 ├── config.py     # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, IDLE_TIMEOUT, MEMORY_DIR, TOOLS_DIR
-├── bot.py        # Telegram handlers: /start, /new, /model, /provider, /status, /memory, /forget, /tools, /bg, /cancel
+├── bot.py        # Telegram handlers: /start, /new, /model, /provider, /status, /memory, /tools, /rollback, /bg, /cancel
 ├── memory.py     # Persistent memory: YAML profile + SQLite FTS5 episodic, context injection
 ├── tools.py      # Tool registry: lazy loads YAML tool definitions, injects context
 ├── tasks.py      # Background task manager with queue and completion notifications
@@ -53,6 +53,7 @@ src/
 - `/status` — Show current session info
 - `/memory` — Show what the bot remembers (profile + episodes)
 - `/tools` — Show available tools
+- `/rollback` — Show rollback options and restore a previous commit (admin-only)
 - `/bg <task>` — Run a task in background (non-blocking)
 - `/bg-list` — List active background tasks
 - `/bg-cancel <task_id>` — Cancel a background task
@@ -438,3 +439,4 @@ Returns JSON with title, url, snippet fields.
 ### Bot Commands
 
 - `/tools` — List all available tools with trigger keywords
+- `/rollback` — Show rollback options and restore a previous commit (admin-only)

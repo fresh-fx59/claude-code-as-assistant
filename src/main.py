@@ -84,6 +84,7 @@ async def main() -> None:
         BotCommand(command="status", description="Show current session info"),
         BotCommand(command="memory", description="Show what I remember"),
         BotCommand(command="tools", description="Show available tools"),
+        BotCommand(command="rollback", description="Rollback to previous version (admin)"),
         BotCommand(command="bg", description="Run task in background"),
         BotCommand(command="bg_cancel", description="Cancel background task"),
         BotCommand(command="cancel", description="Cancel current request"),
