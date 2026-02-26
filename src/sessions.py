@@ -11,7 +11,9 @@ SESSIONS_FILE = Path("sessions.json")
 @dataclass
 class ChatSession:
     claude_session_id: str | None = None
+    codex_session_id: str | None = None
     model: str = "sonnet"
+    codex_model: str | None = None
     provider: str | None = None
 
 
@@ -59,7 +61,22 @@ class SessionManager:
         session.model = model
         self._save()
 
+    def set_codex_model(self, chat_id: int, model: str | None) -> None:
+        session = self.get(chat_id)
+        session.codex_model = model
+        self._save()
+
     def set_provider(self, chat_id: int, provider: str) -> None:
         session = self.get(chat_id)
         session.provider = provider
+        self._save()
+
+    def update_codex_session_id(self, chat_id: int, session_id: str) -> None:
+        session = self.get(chat_id)
+        session.codex_session_id = session_id
+        self._save()
+
+    def new_codex_conversation(self, chat_id: int) -> None:
+        session = self.get(chat_id)
+        session.codex_session_id = None
         self._save()

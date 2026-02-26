@@ -110,6 +110,36 @@ def _default_subprocess_env() -> dict[str, str]:
     return env
 
 
+def _extract_codex_tool_input(item: dict) -> str | None:
+    """Extract a concise tool input from a Codex CLI item."""
+    if not item:
+        return None
+
+    for key in ("command", "path", "file_path", "query", "url", "tool", "name"):
+        val = item.get(key)
+        if isinstance(val, str) and val:
+            return (val[:120] + "...") if len(val) > 120 else val
+
+    # Fallback to any structured input
+    if "input" in item:
+        try:
+            s = json.dumps(item["input"], separators=(",", ":"))
+            return (s[:120] + "...") if len(s) > 120 else s
+        except TypeError:
+            pass
+
+    return None
+
+
+def _extract_codex_session_id(payload: dict) -> str | None:
+    """Best-effort extraction of a Codex session/thread identifier."""
+    for key in ("thread_id", "session_id", "conversation_id"):
+        val = payload.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
 async def stream_message(
     prompt: str,
     session_id: str | None = None,
@@ -362,6 +392,177 @@ async def stream_message(
             response=ClaudeResponse(
                 text="An unexpected error occurred while processing your request.",
                 session_id=session_id,
+                is_error=True,
+                cost_usd=0,
+                duration_ms=0,
+                num_turns=0,
+            )
+        )
+
+
+async def stream_codex_message(
+    prompt: str,
+    session_id: str | None = None,
+    model: str | None = None,
+    resume_arg: str | None = None,
+    working_dir: str | None = None,
+    process_handle: dict | None = None,
+    subprocess_env: dict[str, str] | None = None,
+) -> AsyncGenerator[StreamEvent, None]:
+    """Stream Codex CLI responses as events with idle timeout."""
+    cmd = ["codex", "exec", "--json", prompt]
+    if model:
+        cmd.extend(["--model", model])
+    if session_id and resume_arg:
+        cmd.extend([resume_arg, session_id])
+
+    logger.info("Running: %s", " ".join(cmd[:4]) + " ...")
+
+    start = time.monotonic()
+    last_message: str | None = None
+    error_text: str | None = None
+    codex_session_id: str | None = session_id
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=working_dir,
+        env=subprocess_env or _default_subprocess_env(),
+    )
+
+    if process_handle is not None:
+        process_handle["proc"] = proc
+
+    try:
+        while True:
+            try:
+                line = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=config.IDLE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                if proc.returncode is None:
+                    logger.debug("Codex readline timeout but process still running, continuing to wait...")
+                    continue
+                logger.warning("Codex process idle timeout (%d s) - process terminated", config.IDLE_TIMEOUT)
+                proc.kill()
+                await proc.wait()
+                elapsed = time.monotonic() - start
+                metrics.CLAUDE_REQUESTS_TOTAL.labels(model=model or "codex", status="timeout").inc()
+                metrics.CLAUDE_RESPONSE_DURATION.labels(model=model or "codex").observe(elapsed)
+                yield StreamEvent(
+                    event_type=StreamEventType.RESULT,
+                    response=ClaudeResponse(
+                        text="Request idle timed out. Codex stopped producing output.",
+                        session_id=codex_session_id,
+                        is_error=True,
+                        cost_usd=0,
+                        duration_ms=elapsed * 1000,
+                        num_turns=0,
+                        idle_timeout=True,
+                    )
+                )
+                return
+
+            if not line:
+                break
+
+            line_str = line.decode().strip()
+            if not line_str:
+                continue
+
+            try:
+                data = json.loads(line_str)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse Codex stream line: %s", line_str[:100])
+                continue
+
+            event_type = data.get("type")
+            item = data.get("item", {})
+            codex_session_id = (
+                codex_session_id
+                or _extract_codex_session_id(data)
+                or _extract_codex_session_id(item)
+            )
+
+            if event_type in ("item.started", "item.completed"):
+                item_type = item.get("type")
+                if item_type in ("agent_message", "assistant_message"):
+                    text = item.get("text") or item.get("message")
+                    if text:
+                        last_message = text
+                    continue
+
+                tool_name = item_type or "codex_item"
+                tool_input = _extract_codex_tool_input(item)
+                yield StreamEvent(
+                    event_type=StreamEventType.TOOL_USE,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                )
+            elif event_type == "error":
+                error_text = data.get("message") or data.get("error", {}).get("message")
+
+        # Process exited - gather stderr for diagnostics
+        elapsed = time.monotonic() - start
+        stderr = (await proc.stderr.read()).decode()
+        if stderr:
+            logger.warning("Codex stderr: %s", stderr.strip()[:500])
+
+        if error_text:
+            metrics.CLAUDE_REQUESTS_TOTAL.labels(model=model or "codex", status="error").inc()
+            metrics.CLAUDE_RESPONSE_DURATION.labels(model=model or "codex").observe(elapsed)
+            yield StreamEvent(
+                event_type=StreamEventType.RESULT,
+                response=ClaudeResponse(
+                    text=error_text,
+                    session_id=codex_session_id,
+                    is_error=True,
+                    cost_usd=0,
+                    duration_ms=elapsed * 1000,
+                    num_turns=0,
+                )
+            )
+            return
+
+        if last_message:
+            metrics.CLAUDE_REQUESTS_TOTAL.labels(model=model or "codex", status="success").inc()
+            metrics.CLAUDE_RESPONSE_DURATION.labels(model=model or "codex").observe(elapsed)
+            yield StreamEvent(
+                event_type=StreamEventType.RESULT,
+                response=ClaudeResponse(
+                    text=last_message,
+                    session_id=codex_session_id,
+                    is_error=False,
+                    cost_usd=0,
+                    duration_ms=elapsed * 1000,
+                    num_turns=0,
+                )
+            )
+            return
+
+        # If we got here, no usable result
+        metrics.CLAUDE_REQUESTS_TOTAL.labels(model=model or "codex", status="error").inc()
+        metrics.CLAUDE_RESPONSE_DURATION.labels(model=model or "codex").observe(elapsed)
+        yield StreamEvent(
+            event_type=StreamEventType.RESULT,
+            response=ClaudeResponse(
+                text="Codex process exited without producing a result.",
+                session_id=codex_session_id,
+                is_error=True,
+                cost_usd=0,
+                duration_ms=elapsed * 1000,
+                num_turns=0,
+            )
+        )
+    except Exception:
+        logger.exception("Unexpected error in stream_codex_message")
+        yield StreamEvent(
+            event_type=StreamEventType.RESULT,
+            response=ClaudeResponse(
+                text="An unexpected error occurred while processing your request.",
+                session_id=codex_session_id,
                 is_error=True,
                 cost_usd=0,
                 duration_ms=0,

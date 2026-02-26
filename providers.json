@@ -3,11 +3,22 @@
     {
       "name": "claude",
       "description": "Anthropic Claude (default)",
+      "cli": "claude",
+      "env": {}
+    },
+    {
+      "name": "codex",
+      "description": "OpenAI Codex CLI",
+      "cli": "codex",
+      "models": [
+        "default"
+      ],
       "env": {}
     },
     {
       "name": "glm4.7",
       "description": "GLM-4.7 via Cloud.ru (LiteLLM :4000)",
+      "cli": "claude",
       "env": {
         "ANTHROPIC_BASE_URL": "http://0.0.0.0:4000",
         "ANTHROPIC_AUTH_TOKEN": "any-placeholder-value",
@@ -17,6 +28,7 @@
     {
       "name": "qwen3-coder",
       "description": "Qwen3-Coder-480B via DeepInfra (LiteLLM :4001)",
+      "cli": "claude",
       "env": {
         "ANTHROPIC_BASE_URL": "http://0.0.0.0:4001",
         "ANTHROPIC_AUTH_TOKEN": "any-placeholder-value",
@@ -26,6 +38,7 @@
     {
       "name": "glm4.7-flash-lm-studio",
       "description": "GLM-4.7 Flash MLX (LM Studio :4002)",
+      "cli": "claude",
       "env": {
         "ANTHROPIC_BASE_URL": "http://0.0.0.0:4002",
         "ANTHROPIC_AUTH_TOKEN": "any-placeholder-value",

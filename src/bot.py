@@ -35,7 +35,7 @@ for _chat_id, _session in session_manager.sessions.items():
     if _session.provider:
         provider_manager.set_provider(_chat_id, _session.provider)
 
-VALID_MODELS = {"sonnet", "opus", "haiku"}
+CLAUDE_MODELS = {"sonnet", "opus", "haiku"}
 
 
 @dataclass
@@ -61,6 +61,29 @@ def _is_authorized(user_id: int | None) -> bool:
     if not config.ALLOWED_USER_IDS:
         return False
     return user_id in config.ALLOWED_USER_IDS
+
+
+def _current_provider(chat_id: int):
+    return provider_manager.get_provider(chat_id)
+
+
+def _current_model_label(session: object, provider) -> str:
+    if provider.cli == "codex":
+        return session.codex_model or provider.model or "default"
+    return session.model
+
+
+def _model_options(provider) -> list[str]:
+    if provider.cli == "codex":
+        return provider.models or ["default"]
+    return sorted(CLAUDE_MODELS)
+
+
+def _codex_model_arg(session: object, provider) -> str | None:
+    model = session.codex_model or provider.model
+    if model == "default":
+        return None
+    return model
 
 
 @router.message(F.text == "/start")
@@ -117,6 +140,7 @@ async def cmd_new(message: Message) -> None:
     if session.claude_session_id:
         asyncio.create_task(_reflect(message.chat.id, session))
     session_manager.new_conversation(message.chat.id)
+    session_manager.new_codex_conversation(message.chat.id)
     await message.answer("Conversation cleared. Send a message to start fresh.")
 
 
@@ -158,15 +182,16 @@ async def cmd_model(message: Message) -> None:
     """Show model selection keyboard."""
     if not _is_authorized(message.from_user and message.from_user.id):
         return
-
-    current = session_manager.get(message.chat.id).model
+    session = session_manager.get(message.chat.id)
+    provider = _current_provider(message.chat.id)
+    current = _current_model_label(session, provider)
 
     lines = [f"<b>Current model:</b> {current}\n"]
     lines.append("<b>Select a model:</b>")
 
     # Build inline keyboard with buttons
     keyboard = InlineKeyboardBuilder()
-    for model in sorted(VALID_MODELS):
+    for model in _model_options(provider):
         button_text = f"{'✓ ' if model == current else ''}{model}"
         keyboard.button(text=button_text, callback_data=f"model:{model}")
     keyboard.adjust(2)  # 2 buttons per row
@@ -184,24 +209,31 @@ async def cb_model_switch(callback: CallbackQuery) -> None:
     model = callback.data.split(":", 1)[1]
     logger.info("Chat %d: model selection 'model:%s'", chat_id, model)
 
-    if model not in VALID_MODELS:
+    provider = _current_provider(chat_id)
+    options = _model_options(provider)
+    if model not in options:
         await callback.answer("Invalid model", show_alert=True)
         return
 
-    session_manager.set_model(chat_id, model)
+    if provider.cli == "codex":
+        chosen = None if model == "default" else model
+        session_manager.set_codex_model(chat_id, chosen)
+    else:
+        session_manager.set_model(chat_id, model)
 
     # Update keyboard state
-    lines = [f"<b>Current model:</b> {model}\n"]
+    current = _current_model_label(session_manager.get(chat_id), provider)
+    lines = [f"<b>Current model:</b> {current}\n"]
     lines.append("<b>Select a model:</b>")
 
     keyboard = InlineKeyboardBuilder()
-    for m in sorted(VALID_MODELS):
-        button_text = f"{'✓ ' if m == model else ''}{m}"
+    for m in options:
+        button_text = f"{'✓ ' if m == current else ''}{m}"
         keyboard.button(text=button_text, callback_data=f"model:{m}")
     keyboard.adjust(2)  # 2 buttons per row
 
     await callback.message.edit_text("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    await callback.answer(f"Switched to {model}")
+    await callback.answer(f"Switched to {current}")
 
 
 @router.message(F.text == "/provider")
@@ -262,12 +294,16 @@ async def cmd_status(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
         return
     session = session_manager.get(message.chat.id)
-    sid = session.claude_session_id or "none (new conversation)"
     provider = provider_manager.get_provider(message.chat.id)
+    if provider.cli == "codex":
+        sid = session.codex_session_id or "none (new conversation)"
+    else:
+        sid = session.claude_session_id or "none (new conversation)"
+    current_model = _current_model_label(session, provider)
     await message.answer(
         f"<b>Version:</b> {config.VERSION}\n"
         f"<b>Session:</b> <code>{sid}</code>\n"
-        f"<b>Model:</b> {session.model}\n"
+        f"<b>Model:</b> {current_model}\n"
         f"<b>Provider:</b> {provider.name} — {provider.description}",
         parse_mode="HTML",
     )
@@ -314,7 +350,12 @@ async def cmd_cancel(message: Message) -> None:
     proc = state.process_handle["proc"]
     proc.kill()
     state.cancel_requested = True
-    metrics.CLAUDE_REQUESTS_TOTAL.labels(model=session_manager.get(message.chat.id).model, status="cancelled").inc()
+    session = session_manager.get(message.chat.id)
+    provider = _current_provider(message.chat.id)
+    metrics.CLAUDE_REQUESTS_TOTAL.labels(
+        model=_current_model_label(session, provider),
+        status="cancelled",
+    ).inc()
 
 
 @router.message(F.text.startswith("/bg "))
@@ -505,6 +546,64 @@ async def _run_claude(
     return None
 
 
+async def _run_codex(
+    message: Message,
+    state: _ChatState,
+    session: object,
+    progress: ProgressReporter,
+    model: str | None = None,
+    session_id: str | None = None,
+    resume_arg: str | None = None,
+    subprocess_env: dict[str, str] | None = None,
+) -> bridge.ClaudeResponse | None:
+    """Run a single Codex CLI subprocess attempt. Returns the response or None."""
+    state.process_handle = {}
+
+    # Build memory and tool-augmented prompt
+    raw_prompt = message.text or ""
+    memory_context = memory_manager.build_context(raw_prompt)
+    tool_context = tool_registry.build_context(raw_prompt)
+    memory_instructions = memory_manager.build_instructions()
+
+    prompt_parts = []
+    if memory_context:
+        prompt_parts.append(memory_context)
+    if tool_context:
+        prompt_parts.append(tool_context)
+    prompt_parts.append(raw_prompt + memory_instructions)
+
+    prompt = "\n\n".join(prompt_parts)
+
+    async for event in bridge.stream_codex_message(
+        prompt=prompt,
+        session_id=session_id,
+        model=model,
+        resume_arg=resume_arg,
+        working_dir=config.CLAUDE_WORKING_DIR,
+        process_handle=state.process_handle,
+        subprocess_env=subprocess_env,
+    ):
+        if state.cancel_requested:
+            await progress.show_cancelled()
+            return bridge.ClaudeResponse(
+                text="Request cancelled.",
+                session_id=session_id,
+                is_error=True,
+                cost_usd=0,
+                duration_ms=0,
+                num_turns=0,
+            )
+
+        match event.event_type:
+            case bridge.StreamEventType.TOOL_USE:
+                if event.tool_name:
+                    await progress.report_tool(event.tool_name, event.tool_input)
+            case bridge.StreamEventType.RESULT:
+                return event.response
+
+    return None
+
+
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id):
@@ -532,13 +631,27 @@ async def handle_message(message: Message) -> None:
             provider = provider_manager.get_provider(message.chat.id)
             env = provider_manager.subprocess_env(provider)
             logger.info(
-                "Chat %d: using provider '%s' with env=%s",
+                "Chat %d: using provider '%s' (cli=%s) with env=%s",
                 message.chat.id,
                 provider.name,
+                provider.cli,
                 {k: v for k, v in env.items() if k.startswith("ANTHROPIC_")},
             )
 
-            final_response = await _run_claude(message, state, session, progress, env)
+            if provider.cli == "codex":
+                codex_model = _codex_model_arg(session, provider)
+                final_response = await _run_codex(
+                    message,
+                    state,
+                    session,
+                    progress,
+                    codex_model,
+                    session.codex_session_id,
+                    provider.resume_arg,
+                    env,
+                )
+            else:
+                final_response = await _run_claude(message, state, session, progress, env)
 
             # ── Fallback on rate-limit ────────────────────────────
             if (
@@ -559,9 +672,22 @@ async def handle_message(message: Message) -> None:
                         message.chat.id, provider.name, next_provider.name,
                     )
                     env = provider_manager.subprocess_env(next_provider)
-                    final_response = await _run_claude(
-                        message, state, session, progress, env,
-                    )
+                    if next_provider.cli == "codex":
+                        codex_model = _codex_model_arg(session, next_provider)
+                        final_response = await _run_codex(
+                            message,
+                            state,
+                            session,
+                            progress,
+                            codex_model,
+                            session.codex_session_id,
+                            next_provider.resume_arg,
+                            env,
+                        )
+                    else:
+                        final_response = await _run_claude(
+                            message, state, session, progress, env,
+                        )
         finally:
             typing_task.cancel()
             try:
@@ -603,8 +729,20 @@ async def handle_message(message: Message) -> None:
                 await progress.finish()
 
         # Update session ID if we got one back
-        if final_response and final_response.session_id and final_response.session_id != session.claude_session_id:
+        if (
+            final_response
+            and provider.cli != "codex"
+            and final_response.session_id
+            and final_response.session_id != session.claude_session_id
+        ):
             session_manager.update_session_id(message.chat.id, final_response.session_id)
+        if (
+            final_response
+            and provider.cli == "codex"
+            and final_response.session_id
+            and final_response.session_id != session.codex_session_id
+        ):
+            session_manager.update_codex_session_id(message.chat.id, final_response.session_id)
 
         # Track metrics
         if final_response:

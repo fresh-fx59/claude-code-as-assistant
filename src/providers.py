@@ -3,9 +3,11 @@
 Loads a chain of LLM providers from ``providers.json`` and automatically
 switches to the next one when a rate-limit (or similar) error is detected.
 
-Each provider is a dict with ``name``, ``description``, and ``env`` (extra
-environment variables passed to the ``claude -p`` subprocess).  The first
-provider with an empty ``env`` is assumed to be the native Anthropic backend.
+Each provider is a dict with ``name``, ``description``, optional ``cli`` (the
+backend executable, e.g. ``claude`` or ``codex``), optional ``model``/``models``,
+optional ``resume_arg`` (CLI flag to resume a session), and ``env`` (extra
+environment variables passed to the subprocess). The first provider with an
+empty ``env`` is assumed to be the native Anthropic backend.
 """
 
 import asyncio
@@ -67,11 +69,16 @@ class _ConfigEventHandler(FileSystemEventHandler):
 class Provider:
     name: str
     description: str
+    cli: str = "claude"
+    model: str | None = None
+    models: list[str] | None = None
+    resume_arg: str | None = None
     env: dict[str, str] = field(default_factory=dict)
 
     def __str__(self) -> str:
         env_str = ", ".join(f"{k}={v}" for k, v in self.env.items()) or "(default env)"
-        return f"Provider({self.name}, {env_str})"
+        model_str = f", model={self.model}" if self.model else ""
+        return f"Provider({self.name}, cli={self.cli}{model_str}, {env_str})"
 
 
 @dataclass
@@ -98,6 +105,10 @@ def _load_config() -> _ProviderConfig:
         Provider(
             name=p["name"],
             description=p.get("description", p["name"]),
+            cli=p.get("cli", "claude"),
+            model=p.get("model"),
+            models=p.get("models"),
+            resume_arg=p.get("resume_arg"),
             env=p.get("env", {}),
         )
         for p in raw.get("providers", [])
