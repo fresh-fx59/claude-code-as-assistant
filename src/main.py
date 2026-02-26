@@ -6,7 +6,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
-from .config import BOT_TOKEN, METRICS_PORT
+from .config import BOT_TOKEN, METRICS_PORT, ALLOWED_USER_IDS, VERSION
 from .bot import router, provider_manager, task_manager
 from .metrics import start_metrics_server
 
@@ -20,12 +20,61 @@ def mark_good_commit() -> None:
         )
         if result.returncode == 0:
             commit = result.stdout.strip()
+            short_commit = result.stdout.strip()[:8]
             deploy_dir = Path(__file__).parent.parent / ".deploy"
             deploy_dir.mkdir(exist_ok=True)
             (deploy_dir / "good_commit").write_text(commit)
-            logging.info("Marked commit %s as last-known-good", commit[:8])
+            logging.info("Marked commit %s as last-known-good", short_commit)
+            return short_commit
     except Exception as e:
         logging.warning("Could not mark good commit: %s", e)
+        return None
+
+
+async def send_startup_notification(bot: Bot, commit: str | None = None) -> None:
+    """Send startup notification to all admins."""
+    if not ALLOWED_USER_IDS:
+        return
+
+    try:
+        # Get first admin user for nicer formatting
+        first_admin = min(ALLOWED_USER_IDS)
+
+        commit_line = f"📦 Commit: <code>{commit}</code>" if commit else ""
+
+        # Add uptime info
+        try:
+            uptime_result = subprocess.run(
+                ["systemctl", "show", "telegram-bot.service", "--property=UptimeMSec"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if uptime_result.returncode == 0:
+                uptime_sec = float(uptime_result.stdout.strip()) / 1000
+                uptime_str = f"Uptime: {uptime_sec:.0f}s"
+                if uptime_sec > 3600:
+                    hours = int(uptime_sec // 3600)
+                    mins = int((uptime_sec % 3600) / 60)
+                    uptime_str = f"Uptime: {hours}h {mins}m"
+        except Exception:
+            uptime_str = ""
+
+        message = (
+            f"🚀 <b>Bot restarted</b>\n\n"
+            f"📦 Version: <code>{VERSION}</code>\n"
+            f"{commit_line}\n" if commit else f"📦 Version: <code>{VERSION}</code>\n"
+            f"{uptime_str}\n" if uptime_str else ""
+            f"✅ Ready to assist!"
+        )
+
+        # Send to first admin (others can type /start)
+        try:
+            await bot.send_message(chat_id=first_admin, text=message, parse_mode="HTML")
+            logging.info("Sent startup notification to admin %s", first_admin)
+        except Exception as e:
+            logging.warning("Failed to send startup notification: %s", e)
+
+    except Exception as e:
+        logging.warning("Could not send startup notification: %s", e)
 
 
 async def main() -> None:
@@ -59,7 +108,10 @@ async def main() -> None:
         BotCommand(command="cancel", description="Cancel current request"),
     ])
 
-    mark_good_commit()
+    short_commit = mark_good_commit()
+
+    # Send startup notification
+    await send_startup_notification(bot, short_commit)
 
     logging.info("Bot starting...")
     try:

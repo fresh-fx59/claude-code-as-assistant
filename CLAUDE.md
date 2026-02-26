@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.13.0`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.14.0`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -153,6 +153,21 @@ Three-layer safety system prevents the bot from going silent after a bad deploy:
 
 **IMPORTANT: Follow this procedure for every deploy to ensure rollback safety.**
 
+#### Automatic Deployment (GitHub Actions)
+
+Push to `main` branch triggers automatic deployment via GitHub Actions:
+- Pulls latest code
+- Restarts `telegram-bot.service`
+- Bot sends you a startup notification via Telegram
+
+Required secrets in GitHub repo:
+- `SERVER_HOST` - Your server hostname or IP
+- `SERVER_USER` - SSH username
+- `SSH_PRIVATE_KEY` - Private SSH key for connection
+- `SSH_PORT` - SSH port (optional, defaults to 22)
+
+#### Manual Deployment
+
 After committing changes:
 ```bash
 # 1. Copy updated service file (only if telegram-bot.service changed)
@@ -169,6 +184,26 @@ cat .deploy/deploy.log | tail -5
 # 4. Confirm good_commit was updated (wait a few seconds for bot to connect)
 cat .deploy/good_commit
 ```
+
+### Startup Notification
+
+When the bot starts (or restarts), it sends a Telegram notification to the first admin user:
+
+```
+🚀 Bot restarted
+
+📦 Version: v0.14.0
+📦 Commit: 7aa872a
+Uptime: 2h 35m
+
+✅ Ready to assist!
+```
+
+This confirms:
+- Which version is running (`VERSION` in config.py)
+- Which git commit was deployed
+- Bot uptime (from systemd service)
+- Bot is ready to accept messages
 
 If something goes wrong, the bot will auto-rollback after 3 crash restarts. Check `.deploy/deploy.log` for details.
 
