@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import logging
 import os
+import shutil
 from datetime import datetime, timezone as tz
 from pathlib import Path
 
@@ -657,6 +658,15 @@ async def handle_message(message: Message) -> None:
 
         try:
             provider = provider_manager.get_provider(message.chat.id)
+            if provider.cli != "claude" and shutil.which(provider.cli) is None:
+                fallback = provider_manager.reset(message.chat.id)
+                session_manager.set_provider(message.chat.id, fallback.name)
+                await message.answer(
+                    f"Provider <b>{provider.name}</b> requires missing CLI "
+                    f"<code>{provider.cli}</code>. Switched to <b>{fallback.name}</b>.",
+                    parse_mode="HTML",
+                )
+                provider = fallback
             env = provider_manager.subprocess_env(provider)
             logger.info(
                 "Chat %d: using provider '%s' (cli=%s) with env=%s",

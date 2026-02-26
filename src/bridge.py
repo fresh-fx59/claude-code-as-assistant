@@ -197,13 +197,27 @@ async def stream_message(
     # can skip them to avoid double-reporting with stale input text.
     reported_tools: set[str] = set()
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=working_dir,
-        env=subprocess_env or _default_subprocess_env(),
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=working_dir,
+            env=subprocess_env or _default_subprocess_env(),
+        )
+    except FileNotFoundError:
+        yield StreamEvent(
+            event_type=StreamEventType.RESULT,
+            response=ClaudeResponse(
+                text="Claude CLI is not installed or not in PATH on the server.",
+                session_id=session_id,
+                is_error=True,
+                cost_usd=0,
+                duration_ms=0,
+                num_turns=0,
+            ),
+        )
+        return
 
     if process_handle is not None:
         process_handle["proc"] = proc
@@ -433,13 +447,27 @@ async def stream_codex_message(
     error_text: str | None = None
     codex_session_id: str | None = session_id
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=working_dir,
-        env=subprocess_env or _default_subprocess_env(),
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=working_dir,
+            env=subprocess_env or _default_subprocess_env(),
+        )
+    except FileNotFoundError:
+        yield StreamEvent(
+            event_type=StreamEventType.RESULT,
+            response=ClaudeResponse(
+                text="Codex CLI is not installed or not in PATH on the server.",
+                session_id=codex_session_id,
+                is_error=True,
+                cost_usd=0,
+                duration_ms=0,
+                num_turns=0,
+            ),
+        )
+        return
 
     if process_handle is not None:
         process_handle["proc"] = proc
