@@ -85,7 +85,7 @@ async def main() -> None:
         BotCommand(command="memory", description="Show what I remember"),
         BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="bg", description="Run task in background"),
-        BotCommand(command="bg-cancel", description="Cancel background task"),
+        BotCommand(command="bg_cancel", description="Cancel background task"),
         BotCommand(command="cancel", description="Cancel current request"),
     ])
 

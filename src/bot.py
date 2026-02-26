@@ -102,7 +102,7 @@ async def cmd_start(message: Message) -> None:
         "/memory — Show what I remember",
         "/tools — Show available tools",
         "/bg <task> — Run task in background",
-        "/bg-cancel <id> — Cancel background task",
+        "/bg_cancel <id> — Cancel background task",
         "/cancel — Cancel current request",
     ])
 
@@ -367,7 +367,7 @@ async def cmd_bg(message: Message) -> None:
         f"",
         f"<b>Commands:</b>",
         f"/bg-list — List active tasks",
-        f"/bg-cancel {task_id} — Cancel this task",
+        f"/bg_cancel {task_id} — Cancel this task",
     ]
     await message.answer("\n".join(lines), parse_mode="HTML")
 
@@ -408,7 +408,7 @@ async def cmd_bg_list(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.message(F.text.startswith("/bg-cancel "))
+@router.message(F.text.startswith("/bg_cancel "))
 async def cmd_bg_cancel(message: Message) -> None:
     """Cancel a background task."""
     if not _is_authorized(message.from_user and message.from_user.id):
@@ -420,7 +420,7 @@ async def cmd_bg_cancel(message: Message) -> None:
 
     task_id = message.text[11:].strip()
     if not task_id:
-        await message.answer("Please provide a task ID.\n\nExample: /bg-cancel abc123")
+        await message.answer("Please provide a task ID.\n\nExample: /bg_cancel abc123")
         return
 
     # Find full task ID from partial match
