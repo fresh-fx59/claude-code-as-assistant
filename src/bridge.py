@@ -461,7 +461,7 @@ async def stream_codex_message(
     subprocess_env: dict[str, str] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Stream Codex CLI responses as events with idle timeout."""
-    cmd = ["codex", "exec", "--json", "--full-auto", prompt]
+    cmd = ["codex", "exec", "--json", "--full-auto", "--skip-git-repo-check", prompt]
     if model:
         cmd.extend(["--model", model])
     if session_id and resume_arg:
@@ -623,6 +623,22 @@ async def stream_codex_message(
             return
 
         # If we got here, no usable result
+        if proc.returncode != 0 and stderr.strip():
+            metrics.CLAUDE_REQUESTS_TOTAL.labels(model=model or "codex", status="error").inc()
+            metrics.CLAUDE_RESPONSE_DURATION.labels(model=model or "codex").observe(elapsed)
+            yield StreamEvent(
+                event_type=StreamEventType.RESULT,
+                response=ClaudeResponse(
+                    text=stderr.strip(),
+                    session_id=codex_session_id,
+                    is_error=True,
+                    cost_usd=0,
+                    duration_ms=elapsed * 1000,
+                    num_turns=0,
+                )
+            )
+            return
+
         metrics.CLAUDE_REQUESTS_TOTAL.labels(model=model or "codex", status="error").inc()
         metrics.CLAUDE_RESPONSE_DURATION.labels(model=model or "codex").observe(elapsed)
         yield StreamEvent(
