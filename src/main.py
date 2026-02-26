@@ -32,7 +32,12 @@ def mark_good_commit() -> None:
 
 
 async def send_startup_notification(bot: Bot, commit: str | None = None) -> None:
-    """Send startup notification to all admins."""
+    """Send startup notification to all admins.
+
+    Note: GitHub Actions deployments don't mark good_commit, so repeated
+    restarts won't trigger crash loop protection. Always test new code
+    manually after GitHub Actions deploys using /bg commands.
+    """
     if not ALLOWED_USER_IDS:
         return
 
@@ -41,6 +46,11 @@ async def send_startup_notification(bot: Bot, commit: str | None = None) -> None
         first_admin = min(ALLOWED_USER_IDS)
 
         commit_line = f"📦 Commit: <code>{commit}</code>" if commit else ""
+
+        # Check if running via GitHub Actions or manual restart
+        # If good_commit missing, it's a GitHub Actions deploy
+        from_path = Path(__file__).parent.parent / ".deploy" / "good_commit"
+        is_github_actions_deploy = not from_path.exists()
 
         # Add uptime info
         try:
@@ -63,8 +73,19 @@ async def send_startup_notification(bot: Bot, commit: str | None = None) -> None
             f"📦 Version: <code>{VERSION}</code>\n"
             f"{commit_line}\n" if commit else f"📦 Version: <code>{VERSION}</code>\n"
             f"{uptime_str}\n" if uptime_str else ""
-            f"✅ Ready to assist!"
         )
+
+        # Add note about GitHub Actions limitation
+        if is_github_actions_deploy and commit:
+            message += (
+                "\n\n⚠️ <b>GitHub Actions deployment detected</b>\n\n"
+                "Crash loop protection disabled for this restart.\n"
+                "Please test new code manually with /bg commands.\n"
+                "If new code has issues, use manual rollback:\n"
+                f"  <code>git reset --hard {commit}~1</code>"
+            )
+
+        message += "\n\n✅ Ready to assist!"
 
         # Send to first admin (others can type /start)
         try:

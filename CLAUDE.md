@@ -160,6 +160,12 @@ Push to `main` branch triggers automatic deployment via GitHub Actions:
 - Restarts `telegram-bot.service`
 - Bot sends you a startup notification via Telegram
 
+⚠️ **Important: Rollback Safety**
+The GitHub Actions restart is simplified and doesn't update the `good_commit` marker. This means:
+- Auto-rollback detection in `run.sh` won't recognize repeated restarts as crash loops
+- If the new code crashes repeatedly, you'll need to manually intervene
+- For full rollback safety after bad deploys via GitHub Actions, run restarts manually using **Manual Deployment** steps below
+
 Required secrets in GitHub repo:
 - `SERVER_HOST` - Your server hostname or IP
 - `SERVER_USER` - SSH username
