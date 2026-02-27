@@ -45,6 +45,7 @@ async def send_startup_notification(bot: Bot, commit: str | None = None) -> None
             lines.append(f"📦 Commit: <code>{commit}</code>")
 
         lines.append("\n✅ Ready to assist!")
+        lines.append("💬 Ready to accept messages.")
 
         message = "\n".join(lines)
 
