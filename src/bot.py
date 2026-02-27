@@ -62,6 +62,12 @@ class _ChatState:
 # Per-chat state dict
 _chat_states: dict[int, _ChatState] = {}
 _error_counts: dict[int, int] = {}
+_CODEX_TRANSIENT_ERROR_PATTERNS = (
+    re.compile(r"stream disconnected before completion", re.IGNORECASE),
+    re.compile(r"transport error:\s*timeout", re.IGNORECASE),
+    re.compile(r"\breconnecting\.\.\.\s*\d+/\d+", re.IGNORECASE),
+    re.compile(r"\b(etimedout|econnreset|connection reset)\b", re.IGNORECASE),
+)
 
 
 def _get_state(chat_id: int) -> _ChatState:
@@ -129,6 +135,12 @@ def _truncate_output(text: str, max_len: int = 2000) -> str:
 
 def _as_text(value: object) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _is_transient_codex_error(text: str | None) -> bool:
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _CODEX_TRANSIENT_ERROR_PATTERNS)
 
 
 def _default_timezone_name() -> str:
@@ -1311,6 +1323,53 @@ async def _run_codex(
     return None
 
 
+async def _run_codex_with_retries(
+    message: Message,
+    state: _ChatState,
+    session: object,
+    progress: ProgressReporter,
+    model: str | None = None,
+    session_id: str | None = None,
+    resume_arg: str | None = None,
+    subprocess_env: dict[str, str] | None = None,
+) -> bridge.ClaudeResponse | None:
+    retries_left = max(0, config.CODEX_TRANSIENT_MAX_RETRIES)
+    attempt = 0
+    next_session_id = session_id
+
+    while True:
+        attempt += 1
+        response = await _run_codex(
+            message,
+            state,
+            session,
+            progress,
+            model,
+            next_session_id,
+            resume_arg,
+            subprocess_env,
+        )
+        if not response:
+            return None
+        if state.cancel_requested or not response.is_error or not _is_transient_codex_error(response.text):
+            return response
+        if retries_left <= 0:
+            return response
+
+        retries_left -= 1
+        logger.warning(
+            "Chat %d: transient Codex error on attempt %d, retrying (%d retries left): %s",
+            message.chat.id,
+            attempt,
+            retries_left,
+            response.text[:200],
+        )
+        if next_session_id:
+            # First retry starts a fresh Codex conversation to bypass stale stream state.
+            next_session_id = None
+        await asyncio.sleep(max(0.0, config.CODEX_TRANSIENT_RETRY_BACKOFF_SECONDS))
+
+
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
     try:
@@ -1373,7 +1432,7 @@ async def _handle_message_inner(message: Message) -> None:
 
             if provider.cli == "codex":
                 codex_model = _codex_model_arg(session, provider)
-                final_response = await _run_codex(
+                final_response = await _run_codex_with_retries(
                     message,
                     state,
                     session,
@@ -1407,7 +1466,7 @@ async def _handle_message_inner(message: Message) -> None:
                     env = provider_manager.subprocess_env(next_provider)
                     if next_provider.cli == "codex":
                         codex_model = _codex_model_arg(session, next_provider)
-                        final_response = await _run_codex(
+                        final_response = await _run_codex_with_retries(
                             message,
                             state,
                             session,

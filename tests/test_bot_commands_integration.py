@@ -26,6 +26,8 @@ from src.bot import (
     _ChatState,
     _get_state,
     _is_authorized,
+    _is_transient_codex_error,
+    _run_codex_with_retries,
     VALID_MODELS,
 )
 
@@ -497,3 +499,51 @@ class TestModelValidation:
         assert "sonnet" in VALID_MODELS
         assert "opus" in VALID_MODELS
         assert "haiku" in VALID_MODELS
+
+
+class TestCodexTransientRetries:
+    def test_detects_transient_codex_stream_timeout(self):
+        assert _is_transient_codex_error(
+            "Reconnecting... 1/5 (stream disconnected before completion: Transport error: timeout)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_retries_and_recovers_on_transient_codex_error(self, mock_message):
+        response_error = type("obj", (object,), {
+            "text": "Reconnecting... 1/5 (stream disconnected before completion: Transport error: timeout)",
+            "session_id": None,
+            "is_error": True,
+            "cost_usd": 0.0,
+            "duration_ms": 0,
+            "num_turns": 0,
+        })()
+        response_ok = type("obj", (object,), {
+            "text": "Recovered answer",
+            "session_id": "sess-ok",
+            "is_error": False,
+            "cost_usd": 0.0,
+            "duration_ms": 0,
+            "num_turns": 0,
+        })()
+
+        state = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
+        with (
+            patch("src.bot._run_codex", new=AsyncMock(side_effect=[response_error, response_ok])) as run_mock,
+            patch("src.bot.config.CODEX_TRANSIENT_MAX_RETRIES", 1),
+            patch("src.bot.config.CODEX_TRANSIENT_RETRY_BACKOFF_SECONDS", 0),
+        ):
+            result = await _run_codex_with_retries(
+                message=mock_message,
+                state=state,
+                session=object(),
+                progress=AsyncMock(),
+                model=None,
+                session_id="sess-in",
+                resume_arg=None,
+                subprocess_env=None,
+            )
+
+        assert result is response_ok
+        assert run_mock.await_count == 2
+        # Second attempt should reset session to avoid stale resume streams
+        assert run_mock.await_args_list[1].args[5] is None
