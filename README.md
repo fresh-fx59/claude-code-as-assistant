@@ -168,6 +168,7 @@ Tracked metrics include: message counts, response times, API costs, and active s
 │   ├── good_commit       # Last known-good git commit hash
 │   ├── start_times       # Recent start timestamps for crash detection
 │   └── deploy.log        # Persistent log of deploys, crashes, rollbacks
+├── sandbox/              # Candidate self-modification workspace before promotion
 └── src/
     ├── core/             # Stable orchestration primitives
     │   └── context_plugins.py
@@ -181,6 +182,7 @@ Tracked metrics include: message counts, response times, API costs, and active s
     ├── providers.py      # Provider fallback chain
     ├── memory.py         # Persistent memory (YAML profile + SQLite episodes)
     ├── tools.py          # Backward-compatible shim to tools plugin
+    ├── self_modify.py    # Stage/validate/promote/rollback helpers for sandboxed self-modification
     ├── progress.py       # Live progress updates
     ├── formatter.py      # Markdown-to-HTML conversion
     └── metrics.py        # Prometheus metrics

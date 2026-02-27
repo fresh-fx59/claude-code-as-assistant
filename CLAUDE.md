@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.16.10`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.16.11`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -28,6 +28,7 @@ src/
 ├── memory.py               # Persistent memory: YAML profile + SQLite FTS5 episodic, context injection
 ├── tools.py                # Backward-compatible shim to plugins/tools_plugin.py
 ├── tasks.py                # Background task manager with queue and completion notifications
+├── self_modify.py          # Sandboxed self-modification workflow: stage -> validate -> promote -> rollback helper
 ├── bridge.py               # Runs `claude -p` subprocess, yields stream events (TOOL_USE, RESULT)
 ├── providers.py            # Provider fallback chain: auto-switches LLM on rate limit
 ├── progress.py             # ProgressReporter: manages live progress message with debounced edits
