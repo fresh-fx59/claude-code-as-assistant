@@ -88,6 +88,7 @@ async def main() -> None:
         BotCommand(command="memory", description="Show what I remember"),
         BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="rollback", description="Rollback to previous version (admin)"),
+        BotCommand(command="selfmod_stage", description="Stage sandbox plugin candidate (admin)"),
         BotCommand(command="selfmod_apply", description="Apply sandbox plugin candidate (admin)"),
         BotCommand(command="schedule_every", description="Create recurring schedule"),
         BotCommand(command="schedule_daily", description="Create daily schedule"),

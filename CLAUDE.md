@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.16.14`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.16.15`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -60,6 +60,7 @@ src/
 - `/memory` — Show what the bot remembers (profile + episodes)
 - `/tools` — Show available tools
 - `/rollback` — Show rollback options and restore a previous commit (admin-only)
+- `/selfmod_stage <path.py>` + code block — Stage sandbox plugin candidate (admin-only)
 - `/selfmod_apply <path.py> [test_target]` — Validate+promote sandbox plugin candidate (admin-only)
 - `/schedule_every <minutes> <task>` — Create recurring background task
 - `/schedule_daily <HH:MM> <task>` — Create daily recurring background task
@@ -451,6 +452,7 @@ Returns JSON with title, url, snippet fields.
 
 - `/tools` — List all available tools with trigger keywords
 - `/rollback` — Show rollback options and restore a previous commit (admin-only)
+- `/selfmod_stage <path.py>` + code block — Stage sandbox plugin candidate (admin-only)
 - `/selfmod_apply <path.py> [test_target]` — Validate+promote sandbox plugin candidate (admin-only)
 - `/schedule_every <minutes> <task>` — Create recurring background task
 - `/schedule_daily <HH:MM> <task>` — Create daily recurring background task

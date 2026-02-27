@@ -144,6 +144,15 @@ def _default_timezone_name() -> str:
     return "UTC"
 
 
+def _strip_markdown_code_fence(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 2:
+            return "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
 def _get_recent_commits(limit: int = 10) -> list[tuple[str, str, str]]:
     result = subprocess.run(
         [
@@ -312,6 +321,7 @@ async def cmd_start(message: Message) -> None:
         "/memory — Show what I remember",
         "/tools — Show available tools",
         "/rollback — Roll back to previous version (admin)",
+        "/selfmod_stage — Stage sandbox plugin (admin)",
         "/selfmod_apply — Validate+promote sandbox plugin (admin)",
         "/schedule_every <min> <task> — Schedule recurring task",
         "/schedule_daily <HH:MM> <task> — Schedule daily recurring task",
@@ -652,6 +662,53 @@ async def cb_rollback_cancel(callback: CallbackQuery) -> None:
     await callback.answer("Rollback cancelled")
     if callback.message:
         await callback.message.edit_text("Rollback cancelled.")
+
+
+@router.message(F.text.startswith("/selfmod_stage"))
+async def cmd_selfmod_stage(message: Message) -> None:
+    """Admin-only: stage plugin candidate code into sandbox."""
+    if not _is_admin(message.from_user and message.from_user.id):
+        await message.answer("This command is admin-only.")
+        return
+
+    text = message.text or ""
+    header, sep, body = text.partition("\n")
+    parts = header.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            "Usage:\n"
+            "/selfmod_stage <relative_plugin_path.py>\n"
+            "```python\n# plugin code here\n```",
+            parse_mode="Markdown",
+        )
+        return
+    if not sep or not body.strip():
+        await message.answer("Provide plugin code on lines after the command.")
+        return
+
+    relative_path = parts[1].strip()
+    plugin_code = _strip_markdown_code_fence(body)
+    if not plugin_code:
+        await message.answer("Plugin code is empty after parsing.")
+        return
+
+    try:
+        staged_path = await asyncio.to_thread(
+            self_mod_manager.stage_plugin,
+            relative_path,
+            plugin_code + ("\n" if not plugin_code.endswith("\n") else ""),
+        )
+    except Exception as exc:
+        await message.answer(f"Staging failed: {exc}")
+        return
+
+    await message.answer(
+        "✅ Staged plugin candidate\n"
+        f"<b>Path:</b> <code>{relative_path}</code>\n"
+        f"<b>Sandbox file:</b> <code>{staged_path}</code>\n"
+        "Next: run /selfmod_apply with this path.",
+        parse_mode="HTML",
+    )
 
 
 @router.message(F.text.startswith("/selfmod_apply"))

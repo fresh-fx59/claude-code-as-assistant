@@ -15,6 +15,7 @@ from src.bot import (
     cmd_model,
     cmd_status,
     cmd_cancel,
+    cmd_selfmod_stage,
     cmd_selfmod_apply,
     cmd_schedule_every,
     cmd_schedule_daily,
@@ -335,6 +336,35 @@ class TestSelfModApplyCommand:
         apply_mock.assert_called_once()
         registry_mock.assert_called_once()
         context_registry_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+class TestSelfModStageCommand:
+    """/selfmod_stage should stage code into sandbox."""
+
+    async def test_selfmod_stage_requires_admin(self, mock_message):
+        mock_message.text = "/selfmod_stage tools_plugin.py\nprint('x')"
+        mock_message.from_user.id = 99999
+
+        await cmd_selfmod_stage(mock_message)
+
+        mock_message.answer.assert_called_once()
+        assert "admin-only" in mock_message.answer.call_args[0][0]
+
+    async def test_selfmod_stage_requires_body(self, mock_message):
+        mock_message.text = "/selfmod_stage tools_plugin.py"
+        await cmd_selfmod_stage(mock_message)
+        assert "provide plugin code" in mock_message.answer.call_args[0][0].lower()
+
+    async def test_selfmod_stage_success(self, mock_message):
+        mock_message.text = "/selfmod_stage tools_plugin.py\n```python\nX = 1\n```"
+        with patch("src.bot.self_mod_manager.stage_plugin") as stage_mock:
+            stage_mock.return_value = "/tmp/sandbox/plugins/tools_plugin.py"
+            await cmd_selfmod_stage(mock_message)
+
+        mock_message.answer.assert_called_once()
+        assert "staged plugin candidate" in mock_message.answer.call_args[0][0].lower()
+        stage_mock.assert_called_once()
 
 
 @pytest.mark.asyncio
