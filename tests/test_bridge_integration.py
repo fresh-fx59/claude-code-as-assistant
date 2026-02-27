@@ -12,6 +12,7 @@ import pytest
 
 from src.bridge import (
     stream_message,
+    stream_codex_message,
     StreamEventType,
     StreamEvent,
     ClaudeResponse,
@@ -442,6 +443,65 @@ class TestCommandLineArgs:
 
             _, kwargs = mock_subproc.call_args
             assert kwargs["cwd"] == "/tmp/test"
+
+
+@pytest.mark.asyncio
+class TestCodexCommandLineArgs:
+    """Should pass correct arguments to codex subprocess."""
+
+    async def test_codex_resume_defaults_to_subcommand(self):
+        """Should use `resume` subcommand when session_id is provided."""
+        lines = [
+            b'{"type":"item.completed","item":{"type":"assistant_message","text":"hello"}}\n'
+        ]
+
+        with patch('asyncio.create_subprocess_exec') as mock_subproc:
+            proc = AsyncMock()
+            proc.returncode = 0
+            proc.stdout = AsyncMock()
+            proc.stdout.readline = AsyncMock(side_effect=lines + [b""])
+            proc.stderr = AsyncMock()
+            proc.stderr.read = AsyncMock(return_value=b"")
+            proc.wait = AsyncMock(return_value=0)
+            mock_subproc.return_value = proc
+
+            async for _ in stream_codex_message("hello", session_id="sess-123"):
+                break
+
+            args, _ = mock_subproc.call_args
+            assert args[0] == "codex"
+            assert args[1] == "exec"
+            assert "resume" in args
+            resume_idx = args.index("resume")
+            assert args[resume_idx + 1] == "sess-123"
+
+    async def test_codex_resume_honors_legacy_flag(self):
+        """Should still support providers configured with `--resume`."""
+        lines = [
+            b'{"type":"item.completed","item":{"type":"assistant_message","text":"hello"}}\n'
+        ]
+
+        with patch('asyncio.create_subprocess_exec') as mock_subproc:
+            proc = AsyncMock()
+            proc.returncode = 0
+            proc.stdout = AsyncMock()
+            proc.stdout.readline = AsyncMock(side_effect=lines + [b""])
+            proc.stderr = AsyncMock()
+            proc.stderr.read = AsyncMock(return_value=b"")
+            proc.wait = AsyncMock(return_value=0)
+            mock_subproc.return_value = proc
+
+            async for _ in stream_codex_message(
+                "hello",
+                session_id="sess-123",
+                resume_arg="--resume",
+            ):
+                break
+
+            args, _ = mock_subproc.call_args
+            assert "--resume" in args
+            resume_idx = args.index("--resume")
+            assert args[resume_idx + 1] == "sess-123"
 
 
 # ── Contract 8: Cancellation support ──────────────────────────────

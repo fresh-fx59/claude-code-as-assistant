@@ -461,18 +461,31 @@ async def stream_codex_message(
     subprocess_env: dict[str, str] | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """Stream Codex CLI responses as events with idle timeout."""
-    cmd = [
-        "codex",
-        "exec",
+    cmd = ["codex", "exec"]
+    # Codex CLI resume changed across versions:
+    # - older: `codex exec --resume <id> ...`
+    # - newer: `codex exec resume <id> ...`
+    # Use explicit provider setting if present, otherwise default to the
+    # modern `resume` subcommand.
+    if session_id:
+        resume_token = (resume_arg or "resume").strip()
+        if resume_token and not resume_token.startswith("--"):
+            cmd.extend([resume_token, session_id])
+
+    cmd.extend([
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
-        prompt,
-    ]
+    ])
+
+    if session_id:
+        resume_token = (resume_arg or "resume").strip()
+        if resume_token.startswith("--"):
+            cmd.extend([resume_token, session_id])
+
     if model:
         cmd.extend(["--model", model])
-    if session_id and resume_arg:
-        cmd.extend([resume_arg, session_id])
+    cmd.append(prompt)
 
     logger.info("Running: %s", " ".join(cmd[:4]) + " ...")
 
