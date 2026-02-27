@@ -16,6 +16,9 @@ from src.bot import (
     cmd_status,
     cmd_cancel,
     cmd_selfmod_apply,
+    cmd_schedule_every,
+    cmd_schedule_list,
+    cmd_schedule_cancel,
     handle_message,
     _ChatState,
     _get_state,
@@ -331,6 +334,33 @@ class TestSelfModApplyCommand:
         apply_mock.assert_called_once()
         registry_mock.assert_called_once()
         context_registry_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+class TestScheduleCommands:
+    async def test_schedule_every_creates_schedule(self, mock_message):
+        mock_message.text = "/schedule_every 15 check backlog"
+        with patch("src.bot.schedule_manager") as sched_mock:
+            sched_mock.create_every = AsyncMock(return_value="abcd1234-1234")
+            await cmd_schedule_every(mock_message)
+
+        assert mock_message.answer.call_count == 1
+        assert "created" in mock_message.answer.call_args[0][0].lower()
+        sched_mock.create_every.assert_called_once()
+
+    async def test_schedule_list_shows_empty(self, mock_message):
+        mock_message.text = "/schedule_list"
+        with patch("src.bot.schedule_manager") as sched_mock:
+            sched_mock.list_for_chat = AsyncMock(return_value=[])
+            await cmd_schedule_list(mock_message)
+        assert "no recurring schedules" in mock_message.answer.call_args[0][0].lower()
+
+    async def test_schedule_cancel_not_found(self, mock_message):
+        mock_message.text = "/schedule_cancel deadbeef"
+        with patch("src.bot.schedule_manager") as sched_mock:
+            sched_mock.list_for_chat = AsyncMock(return_value=[])
+            await cmd_schedule_cancel(mock_message)
+        assert "not found" in mock_message.answer.call_args[0][0].lower()
 
 
 # ── Contract 7: Message handling ─────────────────────────────────

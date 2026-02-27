@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.16.12`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.16.13`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -24,10 +24,11 @@ src/
 │   └── tools_plugin.py     # Lazy YAML tool plugin used by prompt context pipeline
 ├── main.py                 # Entry point, dispatcher setup, polling, metrics server
 ├── config.py               # Env vars: BOT_TOKEN, ALLOWED_USER_IDS, DEFAULT_MODEL, IDLE_TIMEOUT, MEMORY_DIR, TOOLS_DIR
-├── bot.py                  # Telegram handlers: /start, /new, /model, /provider, /status, /memory, /tools, /rollback, /selfmod_apply, /bg, /cancel
+├── bot.py                  # Telegram handlers: /start, /new, /model, /provider, /status, /memory, /tools, /rollback, /selfmod_apply, /schedule_*, /bg, /cancel
 ├── memory.py               # Persistent memory: YAML profile + SQLite FTS5 episodic, context injection
 ├── tools.py                # Backward-compatible shim to plugins/tools_plugin.py
 ├── tasks.py                # Background task manager with queue and completion notifications
+├── scheduler.py            # Persistent recurring schedules, submits jobs to background task manager
 ├── self_modify.py          # Sandboxed self-modification workflow: stage -> validate -> promote -> rollback helper
 ├── bridge.py               # Runs `claude -p` subprocess, yields stream events (TOOL_USE, RESULT)
 ├── providers.py            # Provider fallback chain: auto-switches LLM on rate limit
@@ -60,6 +61,9 @@ src/
 - `/tools` — Show available tools
 - `/rollback` — Show rollback options and restore a previous commit (admin-only)
 - `/selfmod_apply <path.py> [test_target]` — Validate+promote sandbox plugin candidate (admin-only)
+- `/schedule_every <minutes> <task>` — Create recurring background task
+- `/schedule_list` — List recurring schedules
+- `/schedule_cancel <schedule_id>` — Cancel recurring schedule
 - `/bg <task>` — Run a task in background (non-blocking)
 - `/bg-list` — List active background tasks
 - `/bg-cancel <task_id>` — Cancel a background task
@@ -447,3 +451,6 @@ Returns JSON with title, url, snippet fields.
 - `/tools` — List all available tools with trigger keywords
 - `/rollback` — Show rollback options and restore a previous commit (admin-only)
 - `/selfmod_apply <path.py> [test_target]` — Validate+promote sandbox plugin candidate (admin-only)
+- `/schedule_every <minutes> <task>` — Create recurring background task
+- `/schedule_list` — List recurring schedules
+- `/schedule_cancel <schedule_id>` — Cancel recurring schedule

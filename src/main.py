@@ -6,8 +6,8 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
-from .config import BOT_TOKEN, METRICS_PORT, ALLOWED_USER_IDS, VERSION
-from .bot import router, provider_manager, task_manager
+from .config import BOT_TOKEN, METRICS_PORT, ALLOWED_USER_IDS, VERSION, MEMORY_DIR
+from .bot import router, provider_manager, task_manager, schedule_manager
 from .metrics import start_metrics_server
 
 
@@ -71,10 +71,13 @@ async def main() -> None:
     dp.include_router(router)
 
     # Initialize task manager
-    global task_manager
+    global task_manager, schedule_manager
     from .tasks import TaskManager
+    from .scheduler import ScheduleManager
     task_manager = TaskManager(bot)
     await task_manager.start()
+    schedule_manager = ScheduleManager(task_manager, MEMORY_DIR / "schedules.db")
+    await schedule_manager.start()
 
     await bot.set_my_commands([
         BotCommand(command="start", description="Welcome message"),
@@ -86,6 +89,9 @@ async def main() -> None:
         BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="rollback", description="Rollback to previous version (admin)"),
         BotCommand(command="selfmod_apply", description="Apply sandbox plugin candidate (admin)"),
+        BotCommand(command="schedule_every", description="Create recurring schedule"),
+        BotCommand(command="schedule_list", description="List recurring schedules"),
+        BotCommand(command="schedule_cancel", description="Cancel recurring schedule"),
         BotCommand(command="bg", description="Run task in background"),
         BotCommand(command="bg_cancel", description="Cancel background task"),
         BotCommand(command="cancel", description="Cancel current request"),
@@ -100,6 +106,8 @@ async def main() -> None:
     try:
         await dp.start_polling(bot)
     finally:
+        if schedule_manager:
+            await schedule_manager.stop()
         if task_manager:
             await task_manager.stop()
         provider_manager.shutdown()

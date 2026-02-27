@@ -24,6 +24,7 @@ from .formatter import markdown_to_html, split_message, strip_html
 from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
+from .scheduler import ScheduleManager
 from .plugins.tools_plugin import ToolRegistry
 from .self_modify import SelfModificationManager
 from .tasks import TaskManager, TaskStatus
@@ -38,6 +39,7 @@ tool_registry = ToolRegistry(config.TOOLS_DIR)
 context_plugins = ContextPluginRegistry([tool_registry])
 self_mod_manager = SelfModificationManager(Path(__file__).resolve().parent.parent)
 task_manager: TaskManager | None = None  # Set in main()
+schedule_manager: ScheduleManager | None = None  # Set in main()
 
 # Restore persisted provider selections from sessions
 for _chat_id, _session in session_manager.sessions.items():
@@ -122,6 +124,10 @@ def _truncate_output(text: str, max_len: int = 2000) -> str:
         return text
     remaining = len(text) - max_len
     return f"{text[:max_len]}\n... ({remaining} chars omitted)"
+
+
+def _as_text(value: object) -> str:
+    return value if isinstance(value, str) else ""
 
 
 def _get_recent_commits(limit: int = 10) -> list[tuple[str, str, str]]:
@@ -293,6 +299,9 @@ async def cmd_start(message: Message) -> None:
         "/tools — Show available tools",
         "/rollback — Roll back to previous version (admin)",
         "/selfmod_apply — Validate+promote sandbox plugin (admin)",
+        "/schedule_every <min> <task> — Schedule recurring task",
+        "/schedule_list — List recurring schedules",
+        "/schedule_cancel <id> — Cancel recurring schedule",
         "/bg <task> — Run task in background",
         "/bg_cancel <id> — Cancel background task",
         "/cancel — Cancel current request",
@@ -808,6 +817,120 @@ async def cmd_bg_cancel(message: Message) -> None:
         await message.answer(f"✅ Cancelled task <code>{full_task_id[:8]}</code>", parse_mode="HTML")
     else:
         await message.answer("Could not cancel task.")
+
+
+@router.message(F.text.startswith("/schedule_every"))
+async def cmd_schedule_every(message: Message) -> None:
+    """Create recurring background task schedule."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+    if not schedule_manager:
+        await message.answer("Scheduler not available.")
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Usage: /schedule_every <minutes> <task>\n"
+            "Example: /schedule_every 60 summarize open PRs"
+        )
+        return
+
+    try:
+        interval_minutes = int(parts[1])
+    except ValueError:
+        await message.answer("Minutes must be an integer.")
+        return
+
+    if interval_minutes < 1 or interval_minutes > 10080:
+        await message.answer("Minutes must be between 1 and 10080.")
+        return
+
+    task_text = parts[2].strip()
+    if not task_text:
+        await message.answer("Task text cannot be empty.")
+        return
+
+    session = session_manager.get(message.chat.id)
+    memory_context = _as_text(memory_manager.build_context(task_text))
+    tool_context = _as_text(context_plugins.build_context(task_text))
+    memory_instructions = _as_text(memory_manager.build_instructions())
+    prompt_parts = []
+    if memory_context:
+        prompt_parts.append(memory_context)
+    if tool_context:
+        prompt_parts.append(tool_context)
+    prompt_parts.append(task_text + memory_instructions)
+    full_prompt = "\n\n".join(prompt_parts)
+
+    schedule_id = await schedule_manager.create_every(
+        chat_id=message.chat.id,
+        user_id=message.from_user.id,
+        prompt=full_prompt,
+        interval_minutes=interval_minutes,
+        model=session.model,
+        session_id=session.claude_session_id,
+    )
+    await message.answer(
+        "✅ Recurring schedule created\n"
+        f"<b>ID:</b> <code>{schedule_id[:8]}</code>\n"
+        f"<b>Interval:</b> every {interval_minutes} min\n"
+        f"Use /schedule_list to view schedules.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(F.text == "/schedule_list")
+async def cmd_schedule_list(message: Message) -> None:
+    """List recurring schedules for this chat."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+    if not schedule_manager:
+        await message.answer("Scheduler not available.")
+        return
+
+    schedules = await schedule_manager.list_for_chat(message.chat.id)
+    if not schedules:
+        await message.answer("No recurring schedules.")
+        return
+
+    lines = ["<b>Recurring schedules:</b>", ""]
+    for item in schedules:
+        next_run_local = item.next_run_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        lines.append(
+            f"⏱ <code>{item.id[:8]}</code> — every {item.interval_minutes} min"
+        )
+        lines.append(f"   next: {next_run_local}")
+        lines.append(f"   {item.prompt[:80]}...")
+        lines.append("")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.startswith("/schedule_cancel "))
+async def cmd_schedule_cancel(message: Message) -> None:
+    """Cancel recurring schedule by full or short ID."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+    if not schedule_manager:
+        await message.answer("Scheduler not available.")
+        return
+
+    short_id = (message.text or "")[17:].strip()
+    if not short_id:
+        await message.answer("Usage: /schedule_cancel <schedule_id>")
+        return
+
+    schedules = await schedule_manager.list_for_chat(message.chat.id)
+    target = next((s for s in schedules if s.id.startswith(short_id)), None)
+    if not target:
+        await message.answer("Schedule not found.")
+        return
+
+    cancelled = await schedule_manager.cancel(target.id)
+    if cancelled:
+        await message.answer(f"✅ Cancelled schedule <code>{target.id[:8]}</code>", parse_mode="HTML")
+    else:
+        await message.answer("Could not cancel schedule.")
 
 
 async def _run_claude(

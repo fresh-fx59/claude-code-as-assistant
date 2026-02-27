@@ -182,6 +182,7 @@ Tracked metrics include: message counts, response times, API costs, and active s
     ├── providers.py      # Provider fallback chain
     ├── memory.py         # Persistent memory (YAML profile + SQLite episodes)
     ├── tools.py          # Backward-compatible shim to tools plugin
+    ├── scheduler.py      # Persistent recurring schedule runner
     ├── self_modify.py    # Stage/validate/promote/rollback helpers for sandboxed self-modification
     ├── progress.py       # Live progress updates
     ├── formatter.py      # Markdown-to-HTML conversion
