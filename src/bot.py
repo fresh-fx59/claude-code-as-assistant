@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone as tz
@@ -128,6 +129,19 @@ def _truncate_output(text: str, max_len: int = 2000) -> str:
 
 def _as_text(value: object) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _default_timezone_name() -> str:
+    profile_path = config.MEMORY_DIR / "user_profile.yaml"
+    try:
+        data = yaml.safe_load(profile_path.read_text()) or {}
+        prefs = data.get("preferences") or {}
+        tz_name = prefs.get("timezone")
+        if isinstance(tz_name, str) and tz_name.strip():
+            return tz_name.strip()
+    except Exception:
+        pass
+    return "UTC"
 
 
 def _get_recent_commits(limit: int = 10) -> list[tuple[str, str, str]]:
@@ -300,6 +314,7 @@ async def cmd_start(message: Message) -> None:
         "/rollback — Roll back to previous version (admin)",
         "/selfmod_apply — Validate+promote sandbox plugin (admin)",
         "/schedule_every <min> <task> — Schedule recurring task",
+        "/schedule_daily <HH:MM> <task> — Schedule daily recurring task",
         "/schedule_list — List recurring schedules",
         "/schedule_cancel <id> — Cancel recurring schedule",
         "/bg <task> — Run task in background",
@@ -897,13 +912,80 @@ async def cmd_schedule_list(message: Message) -> None:
     lines = ["<b>Recurring schedules:</b>", ""]
     for item in schedules:
         next_run_local = item.next_run_at.astimezone().strftime("%Y-%m-%d %H:%M")
-        lines.append(
-            f"⏱ <code>{item.id[:8]}</code> — every {item.interval_minutes} min"
-        )
+        if item.schedule_type == "daily" and item.daily_time:
+            tz_name = item.timezone_name or "UTC"
+            schedule_label = f"daily at {item.daily_time} ({tz_name})"
+        else:
+            schedule_label = f"every {item.interval_minutes} min"
+        lines.append(f"⏱ <code>{item.id[:8]}</code> — {schedule_label}")
         lines.append(f"   next: {next_run_local}")
         lines.append(f"   {item.prompt[:80]}...")
         lines.append("")
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(F.text.startswith("/schedule_daily"))
+async def cmd_schedule_daily(message: Message) -> None:
+    """Create daily recurring background task schedule."""
+    if not _is_authorized(message.from_user and message.from_user.id):
+        return
+    if not schedule_manager:
+        await message.answer("Scheduler not available.")
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Usage: /schedule_daily <HH:MM> <task>\n"
+            "Example: /schedule_daily 09:00 check PR reviews"
+        )
+        return
+
+    daily_time = parts[1].strip()
+    if not re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", daily_time):
+        await message.answer("Time must be in HH:MM 24-hour format.")
+        return
+
+    task_text = parts[2].strip()
+    if not task_text:
+        await message.answer("Task text cannot be empty.")
+        return
+
+    timezone_name = _default_timezone_name()
+
+    session = session_manager.get(message.chat.id)
+    memory_context = _as_text(memory_manager.build_context(task_text))
+    tool_context = _as_text(context_plugins.build_context(task_text))
+    memory_instructions = _as_text(memory_manager.build_instructions())
+    prompt_parts = []
+    if memory_context:
+        prompt_parts.append(memory_context)
+    if tool_context:
+        prompt_parts.append(tool_context)
+    prompt_parts.append(task_text + memory_instructions)
+    full_prompt = "\n\n".join(prompt_parts)
+
+    try:
+        schedule_id = await schedule_manager.create_daily(
+            chat_id=message.chat.id,
+            user_id=message.from_user.id,
+            prompt=full_prompt,
+            daily_time=daily_time,
+            timezone_name=timezone_name,
+            model=session.model,
+            session_id=session.claude_session_id,
+        )
+    except Exception as exc:
+        await message.answer(f"Could not create daily schedule: {exc}")
+        return
+
+    await message.answer(
+        "✅ Daily schedule created\n"
+        f"<b>ID:</b> <code>{schedule_id[:8]}</code>\n"
+        f"<b>Time:</b> {daily_time} ({timezone_name})\n"
+        f"Use /schedule_list to view schedules.",
+        parse_mode="HTML",
+    )
 
 
 @router.message(F.text.startswith("/schedule_cancel "))

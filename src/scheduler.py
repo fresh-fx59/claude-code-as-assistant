@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .tasks import TaskManager
 
@@ -21,7 +22,10 @@ class ScheduledTask:
     chat_id: int
     user_id: int
     prompt: str
+    schedule_type: str
     interval_minutes: int
+    daily_time: str | None
+    timezone_name: str | None
     model: str
     session_id: str | None
     next_run_at: datetime
@@ -55,6 +59,9 @@ class ScheduleManager:
                     user_id INTEGER NOT NULL,
                     prompt TEXT NOT NULL,
                     interval_minutes INTEGER NOT NULL,
+                    schedule_type TEXT NOT NULL DEFAULT 'interval',
+                    daily_time TEXT,
+                    timezone_name TEXT,
                     model TEXT NOT NULL,
                     session_id TEXT,
                     next_run_at TEXT NOT NULL,
@@ -62,6 +69,15 @@ class ScheduleManager:
                 )
                 """
             )
+            self._ensure_column(con, "schedule_type", "TEXT NOT NULL DEFAULT 'interval'")
+            self._ensure_column(con, "daily_time", "TEXT")
+            self._ensure_column(con, "timezone_name", "TEXT")
+
+    @staticmethod
+    def _ensure_column(con: sqlite3.Connection, name: str, definition: str) -> None:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(scheduled_tasks)")}
+        if name not in columns:
+            con.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {name} {definition}")
 
     async def start(self) -> None:
         if self._worker_task is None:
@@ -95,6 +111,39 @@ class ScheduleManager:
             user_id,
             prompt,
             interval_minutes,
+            "interval",
+            None,
+            None,
+            model,
+            session_id,
+            next_run.isoformat(),
+            now.isoformat(),
+        )
+        return task_id
+
+    async def create_daily(
+        self,
+        chat_id: int,
+        user_id: int,
+        prompt: str,
+        daily_time: str,
+        timezone_name: str,
+        model: str,
+        session_id: str | None = None,
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        next_run = self._next_daily_run(daily_time=daily_time, timezone_name=timezone_name, now_utc=now)
+        await asyncio.to_thread(
+            self._insert_schedule,
+            task_id,
+            chat_id,
+            user_id,
+            prompt,
+            0,
+            "daily",
+            daily_time,
+            timezone_name,
             model,
             session_id,
             next_run.isoformat(),
@@ -109,6 +158,9 @@ class ScheduleManager:
         user_id: int,
         prompt: str,
         interval_minutes: int,
+        schedule_type: str,
+        daily_time: str | None,
+        timezone_name: str | None,
         model: str,
         session_id: str | None,
         next_run_at: str,
@@ -118,8 +170,8 @@ class ScheduleManager:
             con.execute(
                 """
                 INSERT INTO scheduled_tasks
-                (id, chat_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, chat_id, user_id, prompt, interval_minutes, schedule_type, daily_time, timezone_name, model, session_id, next_run_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -127,6 +179,9 @@ class ScheduleManager:
                     user_id,
                     prompt,
                     interval_minutes,
+                    schedule_type,
+                    daily_time,
+                    timezone_name,
                     model,
                     session_id,
                     next_run_at,
@@ -143,6 +198,7 @@ class ScheduleManager:
             cur = con.execute(
                 """
                 SELECT id, chat_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at
+                       , schedule_type, daily_time, timezone_name
                 FROM scheduled_tasks
                 WHERE chat_id = ?
                 ORDER BY next_run_at ASC
@@ -180,7 +236,7 @@ class ScheduleManager:
             except Exception:
                 logger.exception("Failed to submit scheduled task %s", schedule.id)
             finally:
-                next_run = datetime.now(timezone.utc) + timedelta(minutes=schedule.interval_minutes)
+                next_run = self._next_run_for_schedule(schedule, datetime.now(timezone.utc))
                 await asyncio.to_thread(self._update_next_run, schedule.id, next_run.isoformat())
 
     def _fetch_due_rows(self, now_iso: str) -> list[sqlite3.Row]:
@@ -188,6 +244,7 @@ class ScheduleManager:
             cur = con.execute(
                 """
                 SELECT id, chat_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at
+                       , schedule_type, daily_time, timezone_name
                 FROM scheduled_tasks
                 WHERE next_run_at <= ?
                 ORDER BY next_run_at ASC
@@ -211,9 +268,37 @@ class ScheduleManager:
             chat_id=row["chat_id"],
             user_id=row["user_id"],
             prompt=row["prompt"],
+            schedule_type=row["schedule_type"] or "interval",
             interval_minutes=row["interval_minutes"],
+            daily_time=row["daily_time"],
+            timezone_name=row["timezone_name"],
             model=row["model"],
             session_id=row["session_id"],
             next_run_at=datetime.fromisoformat(row["next_run_at"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
+
+    @staticmethod
+    def _next_daily_run(daily_time: str, timezone_name: str, now_utc: datetime) -> datetime:
+        tz = ZoneInfo(timezone_name)
+        local_now = now_utc.astimezone(tz)
+        hour_str, minute_str = daily_time.split(":")
+        target = local_now.replace(
+            hour=int(hour_str),
+            minute=int(minute_str),
+            second=0,
+            microsecond=0,
+        )
+        if target <= local_now:
+            target += timedelta(days=1)
+        return target.astimezone(timezone.utc)
+
+    def _next_run_for_schedule(self, schedule: ScheduledTask, now_utc: datetime) -> datetime:
+        if schedule.schedule_type == "daily" and schedule.daily_time and schedule.timezone_name:
+            return self._next_daily_run(
+                daily_time=schedule.daily_time,
+                timezone_name=schedule.timezone_name,
+                now_utc=now_utc,
+            )
+        interval = schedule.interval_minutes if schedule.interval_minutes > 0 else 1
+        return now_utc + timedelta(minutes=interval)
