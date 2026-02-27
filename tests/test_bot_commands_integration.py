@@ -15,6 +15,7 @@ from src.bot import (
     cmd_model,
     cmd_status,
     cmd_cancel,
+    cmd_selfmod_apply,
     handle_message,
     _ChatState,
     _get_state,
@@ -296,6 +297,40 @@ class TestCancelCommand:
         await cmd_cancel(mock_message)
 
         mock_message.answer.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestSelfModApplyCommand:
+    """/selfmod_apply should run admin-only sandbox apply workflow."""
+
+    async def test_selfmod_apply_requires_admin(self, mock_message):
+        mock_message.text = "/selfmod_apply tools_plugin.py"
+        mock_message.from_user.id = 99999
+
+        await cmd_selfmod_apply(mock_message)
+
+        mock_message.answer.assert_called_once()
+        assert "admin-only" in mock_message.answer.call_args[0][0]
+
+    async def test_selfmod_apply_runs_workflow(self, mock_message):
+        mock_message.text = "/selfmod_apply tools_plugin.py tests/test_context_plugins.py"
+        with (
+            patch("src.bot.self_mod_manager.apply_candidate") as apply_mock,
+            patch("src.bot.ToolRegistry") as registry_mock,
+            patch("src.bot.ContextPluginRegistry") as context_registry_mock,
+        ):
+            apply_mock.return_value.ok = True
+            apply_mock.return_value.message = "Applied and hot-reloaded src.plugins.tools_plugin"
+            apply_mock.return_value.validation_output = "ok"
+
+            await cmd_selfmod_apply(mock_message)
+
+        assert mock_message.answer.call_count == 2
+        assert "Applying sandbox candidate" in mock_message.answer.call_args_list[0][0][0]
+        assert "succeeded" in mock_message.answer.call_args_list[1][0][0]
+        apply_mock.assert_called_once()
+        registry_mock.assert_called_once()
+        context_registry_mock.assert_called_once()
 
 
 # ── Contract 7: Message handling ─────────────────────────────────

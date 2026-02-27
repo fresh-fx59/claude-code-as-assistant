@@ -85,6 +85,7 @@ async def main() -> None:
         BotCommand(command="memory", description="Show what I remember"),
         BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="rollback", description="Rollback to previous version (admin)"),
+        BotCommand(command="selfmod_apply", description="Apply sandbox plugin candidate (admin)"),
         BotCommand(command="bg", description="Run task in background"),
         BotCommand(command="bg_cancel", description="Cancel background task"),
         BotCommand(command="cancel", description="Cancel current request"),

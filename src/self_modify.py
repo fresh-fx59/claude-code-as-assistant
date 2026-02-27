@@ -6,6 +6,7 @@ stage candidate code -> validate -> promote -> rollback helper.
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,13 @@ from pathlib import Path
 class ValidationResult:
     ok: bool
     output: str
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    ok: bool
+    message: str
+    validation_output: str = ""
 
 
 class SelfModificationManager:
@@ -60,6 +68,60 @@ class SelfModificationManager:
         output = (proc.stdout or "") + (proc.stderr or "")
         trimmed = output[-4000:] if len(output) > 4000 else output
         return ValidationResult(ok=proc.returncode == 0, output=trimmed.strip())
+
+    def reload_plugin_module(self, relative_plugin_path: str) -> tuple[bool, str]:
+        rel_path = self._normalize_relative_path(relative_plugin_path)
+        if rel_path.suffix != ".py":
+            return False, "Only .py plugin modules can be hot-reloaded"
+
+        module_suffix = ".".join(rel_path.with_suffix("").parts)
+        module_name = f"src.plugins.{module_suffix}"
+        try:
+            importlib.invalidate_caches()
+            module = importlib.import_module(module_name)
+            importlib.reload(module)
+            return True, module_name
+        except Exception as exc:
+            return False, f"{module_name}: {exc}"
+
+    def apply_candidate(
+        self,
+        relative_plugin_path: str,
+        test_target: str = "tests/test_context_plugins.py",
+        timeout: int = 180,
+    ) -> ApplyResult:
+        validation = self.validate(test_target=test_target, timeout=timeout)
+        if not validation.ok:
+            return ApplyResult(
+                ok=False,
+                message="Validation failed",
+                validation_output=validation.output,
+            )
+
+        try:
+            self.promote_plugin(relative_plugin_path)
+        except Exception as exc:
+            return ApplyResult(
+                ok=False,
+                message=f"Promotion failed: {exc}",
+                validation_output=validation.output,
+            )
+
+        reloaded, reload_msg = self.reload_plugin_module(relative_plugin_path)
+        if reloaded:
+            return ApplyResult(
+                ok=True,
+                message=f"Applied and hot-reloaded {reload_msg}",
+                validation_output=validation.output,
+            )
+
+        rb_ok, rb_details = self.rollback_to_good_commit()
+        rollback_text = f"rollback to {rb_details}" if rb_ok else f"rollback failed: {rb_details}"
+        return ApplyResult(
+            ok=False,
+            message=f"Reload failed ({reload_msg}); {rollback_text}",
+            validation_output=validation.output,
+        )
 
     def rollback_to_good_commit(self) -> tuple[bool, str]:
         good_commit = self._read_good_commit()

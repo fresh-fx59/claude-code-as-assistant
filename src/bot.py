@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import html
 import inspect
 import json
 import logging
@@ -24,6 +25,7 @@ from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
 from .plugins.tools_plugin import ToolRegistry
+from .self_modify import SelfModificationManager
 from .tasks import TaskManager, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,7 @@ provider_manager = ProviderManager()
 memory_manager = MemoryManager(config.MEMORY_DIR)
 tool_registry = ToolRegistry(config.TOOLS_DIR)
 context_plugins = ContextPluginRegistry([tool_registry])
+self_mod_manager = SelfModificationManager(Path(__file__).resolve().parent.parent)
 task_manager: TaskManager | None = None  # Set in main()
 
 # Restore persisted provider selections from sessions
@@ -112,6 +115,13 @@ def _build_rollback_suggestion_markup(chat_id: int, user_id: int | None):
 
 def _truncate_label(text: str, max_len: int = 52) -> str:
     return text if len(text) <= max_len else text[: max_len - 3] + "..."
+
+
+def _truncate_output(text: str, max_len: int = 2000) -> str:
+    if len(text) <= max_len:
+        return text
+    remaining = len(text) - max_len
+    return f"{text[:max_len]}\n... ({remaining} chars omitted)"
 
 
 def _get_recent_commits(limit: int = 10) -> list[tuple[str, str, str]]:
@@ -282,6 +292,7 @@ async def cmd_start(message: Message) -> None:
         "/memory — Show what I remember",
         "/tools — Show available tools",
         "/rollback — Roll back to previous version (admin)",
+        "/selfmod_apply — Validate+promote sandbox plugin (admin)",
         "/bg <task> — Run task in background",
         "/bg_cancel <id> — Cancel background task",
         "/cancel — Cancel current request",
@@ -617,6 +628,53 @@ async def cb_rollback_cancel(callback: CallbackQuery) -> None:
     await callback.answer("Rollback cancelled")
     if callback.message:
         await callback.message.edit_text("Rollback cancelled.")
+
+
+@router.message(F.text.startswith("/selfmod_apply"))
+async def cmd_selfmod_apply(message: Message) -> None:
+    """Admin-only: validate sandbox candidate, promote, and hot-reload."""
+    if not _is_admin(message.from_user and message.from_user.id):
+        await message.answer("This command is admin-only.")
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 2:
+        await message.answer(
+            "Usage: /selfmod_apply <relative_plugin_path.py> [test_target]\n"
+            "Example: /selfmod_apply tools_plugin.py tests/test_context_plugins.py"
+        )
+        return
+
+    relative_path = parts[1].strip()
+    test_target = parts[2].strip() if len(parts) > 2 else "tests/test_context_plugins.py"
+
+    await message.answer(
+        f"Applying sandbox candidate <code>{relative_path}</code>\n"
+        f"Validation target: <code>{test_target}</code>",
+        parse_mode="HTML",
+    )
+
+    result = await asyncio.to_thread(
+        self_mod_manager.apply_candidate,
+        relative_path,
+        test_target,
+    )
+
+    validation_text = result.validation_output or "(no output)"
+    status = "✅ <b>Self-mod apply succeeded</b>" if result.ok else "❌ <b>Self-mod apply failed</b>"
+    lines = [
+        status,
+        f"<b>Result:</b> {result.message}",
+        "",
+        "<b>Validation output:</b>",
+        f"<pre>{html.escape(_truncate_output(validation_text))}</pre>",
+    ]
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+    if result.ok:
+        global tool_registry, context_plugins
+        tool_registry = ToolRegistry(config.TOOLS_DIR)
+        context_plugins = ContextPluginRegistry([tool_registry])
 
 
 @router.message(F.text.startswith("/bg "))
