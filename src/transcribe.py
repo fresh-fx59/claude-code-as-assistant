@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -11,14 +12,22 @@ logger = logging.getLogger(__name__)
 _REPO_DIR = Path(__file__).resolve().parent.parent
 _DEFAULT_BIN = _REPO_DIR / "whisper.cpp" / "build" / "bin" / "whisper-cli"
 _DEFAULT_MODEL = _REPO_DIR / "whisper.cpp" / "models" / "ggml-small.bin"
+_LOCAL_BIN = Path.home() / "local" / "bin"
 
 WHISPER_BIN: str = os.getenv("WHISPER_BIN", str(_DEFAULT_BIN))
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", str(_DEFAULT_MODEL))
 
+# Resolve ffmpeg: system PATH first, then ~/local/bin fallback
+FFMPEG_BIN: str = shutil.which("ffmpeg") or str(_LOCAL_BIN / "ffmpeg")
+
 
 def is_available() -> bool:
-    """Check if whisper.cpp binary and model are present."""
-    return os.path.isfile(WHISPER_BIN) and os.access(WHISPER_BIN, os.X_OK) and os.path.isfile(WHISPER_MODEL)
+    """Check if whisper.cpp binary, model, and ffmpeg are present."""
+    return (
+        os.path.isfile(WHISPER_BIN) and os.access(WHISPER_BIN, os.X_OK)
+        and os.path.isfile(WHISPER_MODEL)
+        and os.path.isfile(FFMPEG_BIN) and os.access(FFMPEG_BIN, os.X_OK)
+    )
 
 
 async def transcribe(audio_path: str) -> str:
@@ -31,7 +40,7 @@ async def transcribe(audio_path: str) -> str:
     try:
         # Convert to 16-bit 16 kHz mono WAV (whisper.cpp requirement)
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", audio_path,
+            FFMPEG_BIN, "-y", "-i", audio_path,
             "-ar", "16000", "-ac", "1", "-f", "wav", wav_path,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
