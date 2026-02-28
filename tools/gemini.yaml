@@ -5,6 +5,14 @@ triggers:
 - gemini
 - one-shot
 - q&a,
+- gemini cli
+- mcp
+- extension
+- extensions
+- cli
+- image generation
+- генерация изображений
+- сгенерируй через gemini
 instructions: '# Gemini CLI
 
 
@@ -19,6 +27,15 @@ instructions: '# Gemini CLI
   - `gemini --model <name> "Prompt..."`
 
   - `gemini --output-format json "Return JSON"`
+
+  Image generation via MCP (preferred for CLI-only workflow)
+
+  - Configure once:
+    `gemini mcp add --scope user mcp-image npx -y mcp-image`
+  - Run with MCP server enabled:
+    `gemini -p "<request>" --allowed-mcp-server-names mcp-image --output-format text`
+  - For Telegram media flows, when an image is generated return exactly:
+    `MEDIA: /absolute/path/to/image.png`
 
 
   Extensions

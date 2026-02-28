@@ -1,67 +1,79 @@
 name: nano-banana-pro
-description: Generate or edit images via Gemini 3 Pro Image (Nano Banana Pro).
+description: Generate or edit images via Gemini CLI + MCP image server (Nano Banana models).
 triggers:
 - nano-banana-pro
 - generate
 - edit
 - images
-instructions: '# Nano Banana Pro (Gemini 3 Pro Image)
+- image
+- imagen
+- create image
+- generate image
+- картинка
+- картинки
+- изображение
+- изображения
+- сгенерируй изображение
+- создай изображение
+- отредактируй изображение
+instructions: '# Nano Banana Pro (CLI-first via Gemini MCP)
 
 
-  Use the bundled script to generate or edit images.
+  Preferred path: use `gemini` CLI with MCP server `mcp-image` (no direct API coding).
 
 
-  Generate
+  Prerequisites
+
+
+  - `gemini` CLI installed
+
+  - MCP server configured once:
+
+  ```bash
+
+  gemini mcp add --scope user mcp-image npx -y mcp-image
+
+  ```
+
+  - `GEMINI_API_KEY` set in environment
+
+
+  Generate image
 
 
   ```bash
 
-  uv run {baseDir}/scripts/generate_image.py --prompt "your image description" --filename
-  "output.png" --resolution 1K
+  gemini -p "Use generate_image tool. Prompt: ''<your prompt>''. Save to /tmp/<timestamp>-image.png. Return only MEDIA line." --allowed-mcp-server-names mcp-image --output-format text
 
   ```
 
 
-  Edit (single image)
+  Edit image
 
 
   ```bash
 
-  uv run {baseDir}/scripts/generate_image.py --prompt "edit instructions" --filename
-  "output.png" -i "/path/in.png" --resolution 2K
+  gemini -p "Use generate_image tool to edit /abs/path/input.png with: ''<edit instructions>''. Save to /tmp/<timestamp>-edit.png. Return only MEDIA line." --allowed-mcp-server-names mcp-image --output-format text
 
   ```
 
 
-  Multi-image composition (up to 14 images)
+  Response format requirement
 
+
+  - Return only one line: `MEDIA: /absolute/path/to/file.png`
+
+  - Do not include extra explanatory text around `MEDIA:`.
+
+
+  Fallback path (legacy)
+
+
+  - If MCP is unavailable, use the bundled script:
 
   ```bash
 
-  uv run {baseDir}/scripts/generate_image.py --prompt "combine these into one scene"
-  --filename "output.png" -i img1.png -i img2.png -i img3.png
+  uv run {baseDir}/scripts/generate_image.py --prompt "..." --filename "/tmp/<timestamp>-image.png"
 
-  ```
-
-
-  API key
-
-
-  - `GEMINI_API_KEY` env var
-
-  - Or set `skills."nano-banana-pro".apiKey` / `skills."nano-banana-pro".env.GEMINI_API_KEY`
-  in `~/.openclaw/openclaw.json`
-
-
-  Notes
-
-
-  - Resolutions: `1K` (default), `2K`, `4K`.
-
-  - Use timestamps in filenames: `yyyy-mm-dd-hh-mm-ss-name.png`.
-
-  - The script prints a `MEDIA:` line for OpenClaw to auto-attach on supported chat
-  providers.
-
-  - Do not read the image back; report the saved path only.'
-setup: 'Ensure binary installed: uv'
+  ```'
+setup: 'Ensure binaries installed: gemini, node/npx; optional fallback: uv'
