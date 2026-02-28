@@ -118,6 +118,7 @@ All settings are in the `.env` file. Edit it anytime and restart the bot.
 |---------|----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | — | Your bot token from @BotFather |
 | `ALLOWED_USER_IDS` | Yes | — | Comma-separated Telegram user IDs |
+| `ALLOWED_CHAT_IDS` | No | — | Comma-separated allowed chat/channel IDs |
 | `DEFAULT_MODEL` | No | `sonnet` | Default Claude model |
 | `CLAUDE_WORKING_DIR` | No | — | Working directory for Claude |
 | `IDLE_TIMEOUT` | No | `120` | Seconds without output before timeout |
@@ -137,6 +138,7 @@ Tracked metrics include: message counts, response times, API costs, and active s
 **Bot doesn't respond to messages**
 - Check that your Telegram user ID is in `ALLOWED_USER_IDS` in `.env`
 - Find your ID by messaging @userinfobot on Telegram
+- For channels/groups, add their numeric chat IDs to `ALLOWED_CHAT_IDS` (e.g. `-100...`)
 
 **"Claude Code CLI is not installed"**
 - Run `npm install -g @anthropic-ai/claude-code`

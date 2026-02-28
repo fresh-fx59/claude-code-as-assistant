@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.16.21"
+VERSION: str = "0.16.22"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -25,10 +25,14 @@ _raw_ids = os.getenv("ALLOWED_USER_IDS", "")
 ALLOWED_USER_IDS: set[int] = {
     int(uid.strip()) for uid in _raw_ids.split(",") if uid.strip()
 }
-if not ALLOWED_USER_IDS:
+_raw_chat_ids = os.getenv("ALLOWED_CHAT_IDS", "")
+ALLOWED_CHAT_IDS: set[int] = {
+    int(chat_id.strip()) for chat_id in _raw_chat_ids.split(",") if chat_id.strip()
+}
+if not ALLOWED_USER_IDS and not ALLOWED_CHAT_IDS:
     print(
-        "WARNING: ALLOWED_USER_IDS is empty — the bot will ignore ALL messages.\n"
-        "  Add your Telegram user ID to .env (find it via @userinfobot on Telegram).\n"
+        "WARNING: ALLOWED_USER_IDS and ALLOWED_CHAT_IDS are empty — the bot will ignore ALL messages.\n"
+        "  Add Telegram user IDs and/or chat IDs to .env.\n"
     )
 
 # ── Model & optional settings ───────────────────────────────

@@ -40,6 +40,7 @@ class TestAuthorizationChecking:
         """User ID in ALLOWED_USER_IDS should be authorized."""
         from src import config as bot_config
         bot_config.ALLOWED_USER_IDS = {12345}
+        bot_config.ALLOWED_CHAT_IDS = set()
 
         assert _is_authorized(12345) is True
 
@@ -47,19 +48,32 @@ class TestAuthorizationChecking:
         """User ID not in ALLOWED_USER_IDS should be denied."""
         from src import config as bot_config
         bot_config.ALLOWED_USER_IDS = {12345}
+        bot_config.ALLOWED_CHAT_IDS = set()
 
         assert _is_authorized(99999) is False
 
     def test_none_user_id_denied(self):
         """None user_id should be unauthorized."""
+        from src import config as bot_config
+        bot_config.ALLOWED_USER_IDS = set()
+        bot_config.ALLOWED_CHAT_IDS = set()
         assert _is_authorized(None) is False
 
     def test_empty_allowed_set_denies_all(self):
         """Empty ALLOWED_USER_IDS should deny all users."""
         from src import config as bot_config
         bot_config.ALLOWED_USER_IDS = set()
+        bot_config.ALLOWED_CHAT_IDS = set()
 
         assert _is_authorized(12345) is False
+
+    def test_authorized_chat_id_allowed(self):
+        """Allowed chat ID should pass even without user ID."""
+        from src import config as bot_config
+        bot_config.ALLOWED_USER_IDS = set()
+        bot_config.ALLOWED_CHAT_IDS = {-1001234567890}
+
+        assert _is_authorized(None, -1001234567890) is True
 
 
 # ── Contract 2: /start command ────────────────────────────────────

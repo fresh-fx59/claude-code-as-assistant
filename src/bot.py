@@ -77,23 +77,41 @@ def _get_state(chat_id: int) -> _ChatState:
     return _chat_states[chat_id]
 
 
-def _is_authorized(user_id: int | None) -> bool:
-    raw_ids = os.getenv("ALLOWED_USER_IDS", "")
-    allowed = set(config.ALLOWED_USER_IDS)
-    if raw_ids:
-        parsed = {int(uid.strip()) for uid in raw_ids.split(",") if uid.strip()}
+def _is_authorized(user_id: int | None, chat_id: int | None = None) -> bool:
+    raw_user_ids = os.getenv("ALLOWED_USER_IDS", "")
+    allowed_users = set(config.ALLOWED_USER_IDS)
+    if raw_user_ids:
+        parsed = {int(uid.strip()) for uid in raw_user_ids.split(",") if uid.strip()}
         if parsed:
-            allowed |= parsed
-            config.ALLOWED_USER_IDS = allowed
-    if not allowed:
-        return False
-    return user_id in allowed
+            allowed_users |= parsed
+            config.ALLOWED_USER_IDS = allowed_users
+
+    raw_chat_ids = os.getenv("ALLOWED_CHAT_IDS", "")
+    allowed_chats = set(config.ALLOWED_CHAT_IDS)
+    if raw_chat_ids:
+        parsed = {int(cid.strip()) for cid in raw_chat_ids.split(",") if cid.strip()}
+        if parsed:
+            allowed_chats |= parsed
+            config.ALLOWED_CHAT_IDS = allowed_chats
+
+    if user_id is not None and user_id in allowed_users:
+        return True
+    if chat_id is not None and chat_id in allowed_chats:
+        return True
+    return False
 
 
 def _is_admin(user_id: int | None) -> bool:
     if user_id is None:
         return False
     return user_id in config.ALLOWED_USER_IDS
+
+
+def _actor_id(message: Message) -> int:
+    """Use user ID when available; fall back to chat ID for channels."""
+    if message.from_user and message.from_user.id:
+        return message.from_user.id
+    return message.chat.id
 
 
 def _record_error(chat_id: int) -> int:
@@ -319,7 +337,7 @@ def _codex_working_dir() -> str:
 
 @router.message(F.text == "/start")
 async def cmd_start(message: Message) -> None:
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
     # Get user timezone if set
@@ -373,7 +391,7 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(F.text == "/new")
 async def cmd_new(message: Message) -> None:
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     session = session_manager.get(message.chat.id)
     if session.claude_session_id and os.getenv("DISABLE_REFLECTION") != "1":
@@ -419,7 +437,7 @@ async def _reflect(chat_id: int, session: object) -> None:
 @router.message(F.text.startswith("/model"))
 async def cmd_model(message: Message) -> None:
     """Show model selection keyboard."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     session = session_manager.get(message.chat.id)
     provider = _current_provider(message.chat.id)
@@ -497,7 +515,7 @@ async def cb_model_switch(callback: CallbackQuery) -> None:
 @router.message(F.text == "/provider")
 async def cmd_provider(message: Message) -> None:
     """Show provider selection keyboard."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
     current = provider_manager.get_provider(message.chat.id)
@@ -549,7 +567,7 @@ async def cb_provider_switch(callback: CallbackQuery) -> None:
 
 @router.message(F.text == "/status")
 async def cmd_status(message: Message) -> None:
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     session = session_manager.get(message.chat.id)
     provider = provider_manager.get_provider(message.chat.id)
@@ -570,7 +588,7 @@ async def cmd_status(message: Message) -> None:
 @router.message(F.text == "/memory")
 async def cmd_memory(message: Message) -> None:
     """Show current memory state."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     content = memory_manager.format_for_display()
     for chunk in split_message(content):
@@ -583,7 +601,7 @@ async def cmd_memory(message: Message) -> None:
 @router.message(F.text == "/tools")
 async def cmd_tools(message: Message) -> None:
     """List available tools."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     content = tool_registry.format_for_display()
     try:
@@ -595,7 +613,7 @@ async def cmd_tools(message: Message) -> None:
 @router.message(F.text == "/cancel")
 async def cmd_cancel(message: Message) -> None:
     """Cancel the current request if one is running."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
     state = _get_state(message.chat.id)
@@ -797,7 +815,7 @@ async def cmd_selfmod_apply(message: Message) -> None:
 @router.message(F.text.startswith("/bg "))
 async def cmd_bg(message: Message) -> None:
     """Run a task in the background."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
     if not task_manager:
@@ -828,7 +846,7 @@ async def cmd_bg(message: Message) -> None:
 
     task_id = await task_manager.submit(
         chat_id=message.chat.id,
-        user_id=message.from_user.id,
+        user_id=_actor_id(message),
         prompt=full_prompt,
         model=session.model,
         session_id=session.claude_session_id,
@@ -852,7 +870,7 @@ async def cmd_bg(message: Message) -> None:
 @router.message(F.text == "/bg-list")
 async def cmd_bg_list(message: Message) -> None:
     """List active background tasks."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
     if not task_manager:
@@ -888,7 +906,7 @@ async def cmd_bg_list(message: Message) -> None:
 @router.message(F.text.startswith("/bg_cancel "))
 async def cmd_bg_cancel(message: Message) -> None:
     """Cancel a background task."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
     if not task_manager:
@@ -930,7 +948,7 @@ async def cmd_bg_cancel(message: Message) -> None:
 @router.message(F.text.startswith("/schedule_every"))
 async def cmd_schedule_every(message: Message) -> None:
     """Create recurring background task schedule."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     if not schedule_manager:
         await message.answer("Scheduler not available.")
@@ -973,7 +991,7 @@ async def cmd_schedule_every(message: Message) -> None:
 
     schedule_id = await schedule_manager.create_every(
         chat_id=message.chat.id,
-        user_id=message.from_user.id,
+        user_id=_actor_id(message),
         prompt=full_prompt,
         interval_minutes=interval_minutes,
         model=session.model,
@@ -991,7 +1009,7 @@ async def cmd_schedule_every(message: Message) -> None:
 @router.message(F.text == "/schedule_list")
 async def cmd_schedule_list(message: Message) -> None:
     """List recurring schedules for this chat."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     if not schedule_manager:
         await message.answer("Scheduler not available.")
@@ -1024,7 +1042,7 @@ async def cmd_schedule_list(message: Message) -> None:
 @router.message(F.text.startswith("/schedule_weekly"))
 async def cmd_schedule_weekly(message: Message) -> None:
     """Create weekly recurring background task schedule."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     if not schedule_manager:
         await message.answer("Scheduler not available.")
@@ -1069,7 +1087,7 @@ async def cmd_schedule_weekly(message: Message) -> None:
     try:
         schedule_id = await schedule_manager.create_weekly(
             chat_id=message.chat.id,
-            user_id=message.from_user.id,
+            user_id=_actor_id(message),
             prompt=full_prompt,
             weekly_day=weekday,
             daily_time=daily_time,
@@ -1094,7 +1112,7 @@ async def cmd_schedule_weekly(message: Message) -> None:
 @router.message(F.text.startswith("/schedule_daily"))
 async def cmd_schedule_daily(message: Message) -> None:
     """Create daily recurring background task schedule."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     if not schedule_manager:
         await message.answer("Scheduler not available.")
@@ -1135,7 +1153,7 @@ async def cmd_schedule_daily(message: Message) -> None:
     try:
         schedule_id = await schedule_manager.create_daily(
             chat_id=message.chat.id,
-            user_id=message.from_user.id,
+            user_id=_actor_id(message),
             prompt=full_prompt,
             daily_time=daily_time,
             timezone_name=timezone_name,
@@ -1158,7 +1176,7 @@ async def cmd_schedule_daily(message: Message) -> None:
 @router.message(F.text.startswith("/schedule_cancel "))
 async def cmd_schedule_cancel(message: Message) -> None:
     """Cancel recurring schedule by full or short ID."""
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     if not schedule_manager:
         await message.answer("Scheduler not available.")
@@ -1388,8 +1406,13 @@ async def handle_message(message: Message) -> None:
         )
 
 
+@router.channel_post(F.text)
+async def handle_channel_post(message: Message) -> None:
+    await handle_message(message)
+
+
 async def _handle_message_inner(message: Message) -> None:
-    if not _is_authorized(message.from_user and message.from_user.id):
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         metrics.MESSAGES_TOTAL.labels(status="unauthorized").inc()
         return
 
