@@ -92,6 +92,12 @@ Common optional variables:
 ALLOWED_CHAT_IDS=-1001234567890
 CLAUDE_WORKING_DIR=/home/claude-developer
 IDLE_TIMEOUT=120
+TELEGRAM_REQUEST_TIMEOUT_SECONDS=90
+TELEGRAM_POLLING_TIMEOUT_SECONDS=30
+TELEGRAM_BACKOFF_MIN_SECONDS=1.0
+TELEGRAM_BACKOFF_MAX_SECONDS=30.0
+TELEGRAM_BACKOFF_FACTOR=1.5
+TELEGRAM_BACKOFF_JITTER=0.1
 PROGRESS_DEBOUNCE_SECONDS=3.0
 METRICS_PORT=9101
 MEMORY_DIR=memory
@@ -176,6 +182,12 @@ All settings are read from `.env`.
 - `DEFAULT_MODEL` (optional): default model alias
 - `CLAUDE_WORKING_DIR` (optional): working directory for Claude CLI tasks
 - `IDLE_TIMEOUT` (optional, default `120`): seconds before idle timeout
+- `TELEGRAM_REQUEST_TIMEOUT_SECONDS` (optional, default `90`): HTTP timeout for each Telegram API request
+- `TELEGRAM_POLLING_TIMEOUT_SECONDS` (optional, default `30`): long-poll timeout for `getUpdates`
+- `TELEGRAM_BACKOFF_MIN_SECONDS` (optional, default `1.0`): minimum reconnect delay after polling/network errors
+- `TELEGRAM_BACKOFF_MAX_SECONDS` (optional, default `30.0`): maximum reconnect delay
+- `TELEGRAM_BACKOFF_FACTOR` (optional, default `1.5`): exponential reconnect multiplier
+- `TELEGRAM_BACKOFF_JITTER` (optional, default `0.1`): reconnect delay randomization
 - `PROGRESS_DEBOUNCE_SECONDS` (optional, default `3.0`): progress update pacing
 - `METRICS_PORT` (optional, default `9101`): Prometheus endpoint port (`0` disables)
 - `MEMORY_DIR` (optional, default `memory/`): persistent memory path

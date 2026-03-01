@@ -4,9 +4,23 @@ import subprocess
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.utils.backoff import BackoffConfig
 from aiogram.types import BotCommand
 
-from .config import BOT_TOKEN, METRICS_PORT, ALLOWED_USER_IDS, VERSION, MEMORY_DIR
+from .config import (
+    BOT_TOKEN,
+    METRICS_PORT,
+    ALLOWED_USER_IDS,
+    VERSION,
+    MEMORY_DIR,
+    TELEGRAM_REQUEST_TIMEOUT_SECONDS,
+    TELEGRAM_POLLING_TIMEOUT_SECONDS,
+    TELEGRAM_BACKOFF_MIN_SECONDS,
+    TELEGRAM_BACKOFF_MAX_SECONDS,
+    TELEGRAM_BACKOFF_FACTOR,
+    TELEGRAM_BACKOFF_JITTER,
+)
 from .bot import router, provider_manager, task_manager, schedule_manager
 from .metrics import start_metrics_server
 
@@ -76,7 +90,10 @@ async def main() -> None:
 
     start_metrics_server(METRICS_PORT)
 
-    bot = Bot(token=BOT_TOKEN)
+    bot = Bot(
+        token=BOT_TOKEN,
+        session=AiohttpSession(timeout=TELEGRAM_REQUEST_TIMEOUT_SECONDS),
+    )
     dp = Dispatcher()
     dp.include_router(router)
     dp.startup.register(send_ready_notification)
@@ -118,7 +135,16 @@ async def main() -> None:
 
     logging.info("Bot starting...")
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(
+            bot,
+            polling_timeout=TELEGRAM_POLLING_TIMEOUT_SECONDS,
+            backoff_config=BackoffConfig(
+                min_delay=TELEGRAM_BACKOFF_MIN_SECONDS,
+                max_delay=TELEGRAM_BACKOFF_MAX_SECONDS,
+                factor=TELEGRAM_BACKOFF_FACTOR,
+                jitter=TELEGRAM_BACKOFF_JITTER,
+            ),
+        )
     finally:
         if schedule_manager:
             await schedule_manager.stop()
