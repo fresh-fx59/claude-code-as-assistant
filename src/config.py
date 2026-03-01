@@ -6,7 +6,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.16.26"
+
+VERSION: str = "0.16.31"
+
+VERSION: str = "0.16.31"
+
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -44,6 +48,20 @@ CLAUDE_WORKING_DIR: str | None = (
 if CLAUDE_WORKING_DIR:
     os.makedirs(CLAUDE_WORKING_DIR, exist_ok=True)
 IDLE_TIMEOUT: int = int(os.getenv("IDLE_TIMEOUT", "120"))
+TELEGRAM_REQUEST_TIMEOUT_SECONDS: float = float(
+    os.getenv("TELEGRAM_REQUEST_TIMEOUT_SECONDS", "90")
+)
+TELEGRAM_POLLING_TIMEOUT_SECONDS: int = int(
+    os.getenv("TELEGRAM_POLLING_TIMEOUT_SECONDS", "30")
+)
+TELEGRAM_BACKOFF_MIN_SECONDS: float = float(
+    os.getenv("TELEGRAM_BACKOFF_MIN_SECONDS", "1.0")
+)
+TELEGRAM_BACKOFF_MAX_SECONDS: float = float(
+    os.getenv("TELEGRAM_BACKOFF_MAX_SECONDS", "30.0")
+)
+TELEGRAM_BACKOFF_FACTOR: float = float(os.getenv("TELEGRAM_BACKOFF_FACTOR", "1.5"))
+TELEGRAM_BACKOFF_JITTER: float = float(os.getenv("TELEGRAM_BACKOFF_JITTER", "0.1"))
 CODEX_TRANSIENT_MAX_RETRIES: int = int(os.getenv("CODEX_TRANSIENT_MAX_RETRIES", "2"))
 CODEX_TRANSIENT_RETRY_BACKOFF_SECONDS: float = float(
     os.getenv("CODEX_TRANSIENT_RETRY_BACKOFF_SECONDS", "2.0")
