@@ -2,6 +2,14 @@
 
 Reproducible setup for Alex's server. Follow this if migrating to a new server.
 
+## Canonical Install Path
+
+For a clean installation from zero, first follow the full bootstrap flow in
+`README.md` section **"Full Install From Scratch (Ubuntu 22.04/24.04)"**.
+
+This document is operational infrastructure reference for this specific host
+(paths, services, memory restore, and surrounding stack).
+
 ## Server Info
 
 - **IP**: 31.220.78.216
