@@ -1,14 +1,8 @@
 {
   "providers": [
     {
-      "name": "claude",
-      "description": "Anthropic Claude (default)",
-      "cli": "claude",
-      "env": {}
-    },
-    {
       "name": "codex",
-      "description": "OpenAI Codex CLI",
+      "description": "OpenAI Codex CLI (default)",
       "cli": "codex",
       "models": [
         "gpt-5.3-codex",
@@ -22,6 +16,12 @@
         "gpt-5.1-codex-mini",
         "gpt-5-codex-mini"
       ],
+      "env": {}
+    },
+    {
+      "name": "claude",
+      "description": "Anthropic Claude",
+      "cli": "claude",
       "env": {}
     },
     {
