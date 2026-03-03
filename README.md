@@ -31,154 +31,27 @@ You send messages in Telegram, the bot runs the selected agent, and returns repl
 - Key advantage: for many usage patterns this is cheaper, because work goes through your agent subscription plan instead of per-request API billing.
 - In practice, this lowers cost for frequent iterative coding sessions (many small edits/tests in one flow).
 
-## Full Install From Scratch (Ubuntu 22.04/24.04)
+## One-Line Install (Recommended)
 
-This section is the complete zero-to-working setup.
-
-### 1. Prepare server
+Run one command on a clean Ubuntu server:
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y git curl ca-certificates ffmpeg python3 python3-venv python3-pip
+bash <(curl -fsSL https://raw.githubusercontent.com/fresh-fx59/iron-lady-assistant/main/install.sh)
 ```
 
-Install Node.js 18+ (recommended: NodeSource 20.x):
+What it does:
+
+- installs system dependencies (`git`, `python3`, `ffmpeg`, `nodejs`, etc.)
+- installs `Claude Code CLI` and `Codex CLI`
+- clones/updates this repo into `~/iron-lady-assistant`
+- creates venv and installs Python dependencies
+- prompts for `TELEGRAM_BOT_TOKEN` and `ALLOWED_USER_IDS`
+- writes `.env`, runs smoke test, installs and starts `telegram-bot.service`
+
+Non-interactive example:
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-node -v
-npm -v
-```
-
-### 2. Install agent CLIs (Claude + Codex)
-
-```bash
-npm install -g @anthropic-ai/claude-code
-npm install -g @openai/codex
-claude
-codex
-```
-
-Finish login flow in terminal/browser and verify:
-
-```bash
-claude --version
-codex --version
-```
-
-### 3. Create Telegram bot and get token
-
-In Telegram open `@BotFather`:
-
-1. Send `/newbot`
-2. Set bot name and username
-3. Copy token (`123456:ABC...`)
-
-Optional (recommended):
-
-1. `/setprivacy` -> Disable (if you want bot to read all group messages)
-2. `/setcommands` -> add commands from this README
-
-### 4. Find your Telegram IDs
-
-- Personal user ID: message `@userinfobot`
-- Group/channel chat ID: add bot and inspect updates or use known `-100...` ID
-
-### 5. Clone repository
-
-```bash
-git clone https://github.com/YOUR_USERNAME/claude-code-as-assistant.git
-cd claude-code-as-assistant
-```
-
-### 6. Configure environment
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Minimum required variables:
-
-```env
-TELEGRAM_BOT_TOKEN=123456:ABCDEF...
-ALLOWED_USER_IDS=123456789
-DEFAULT_PROVIDER=claude
-DEFAULT_MODEL=sonnet
-```
-
-Common optional variables:
-
-```env
-ALLOWED_CHAT_IDS=-1001234567890
-CLAUDE_WORKING_DIR=/home/claude-developer
-IDLE_TIMEOUT=120
-TELEGRAM_REQUEST_TIMEOUT_SECONDS=90
-TELEGRAM_POLLING_TIMEOUT_SECONDS=30
-TELEGRAM_BACKOFF_MIN_SECONDS=1.0
-TELEGRAM_BACKOFF_MAX_SECONDS=30.0
-TELEGRAM_BACKOFF_FACTOR=1.5
-TELEGRAM_BACKOFF_JITTER=0.1
-PROGRESS_DEBOUNCE_SECONDS=3.0
-METRICS_PORT=9101
-MEMORY_DIR=memory
-TOOLS_DIR=tools
-```
-
-### 7. Install Python dependencies
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### 8. Run setup wizard (recommended)
-
-```bash
-bash setup.sh
-```
-
-Wizard can:
-
-- validate environment
-- guide Telegram setup
-- configure defaults
-- optionally install systemd service
-
-### 9. First run (manual)
-
-```bash
-./run.sh
-```
-
-Open Telegram -> send `/start` -> send a test text message.
-
-### 10. Enable auto-start with systemd
-
-```bash
-sudo cp telegram-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now telegram-bot.service
-```
-
-Check status/logs:
-
-```bash
-sudo systemctl status telegram-bot.service
-journalctl -u telegram-bot.service -f
-cat .deploy/deploy.log
-```
-
-## Quick Start (if server is already prepared)
-
-```bash
-git clone https://github.com/YOUR_USERNAME/claude-code-as-assistant.git
-cd claude-code-as-assistant
-bash setup.sh
-./run.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/fresh-fx59/iron-lady-assistant/main/install.sh) --non-interactive --bot-token "123456:ABCDEF" --allowed-user-ids "123456789"
 ```
 
 ## Bot Commands
@@ -224,7 +97,7 @@ All settings are read from `.env`.
 Update to latest:
 
 ```bash
-cd /path/to/claude-code-as-assistant
+cd /path/to/iron-lady-assistant
 git pull --ff-only
 source venv/bin/activate
 pip install -r requirements.txt
