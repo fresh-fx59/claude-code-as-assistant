@@ -1,10 +1,12 @@
-# Telegram Claude Bot
+# Telegram Coding Agent Bot
 
-Telegram bot that runs Claude Code as an assistant. You send messages in Telegram, the bot runs the coding agent, and returns replies/media back to chat.
+Telegram bot that runs coding agents in chat: `Claude Code CLI` and `Codex CLI`.
+You send messages in Telegram, the bot runs the selected agent, and returns replies/media back to chat.
 
 ## What This Repo Provides
 
 - Telegram bot integration with Claude Code
+- Telegram bot integration with Codex CLI
 - Per-chat sessions and context persistence
 - Provider/model switching via commands
 - Memory subsystem (profile + episodes)
@@ -13,6 +15,12 @@ Telegram bot that runs Claude Code as an assistant. You send messages in Telegra
 - Background self-learning journal + proactive failure alerts
 - Crash-loop protection with rollback to last known-good commit
 - Prometheus metrics endpoint
+
+## Why Codex CLI Here
+
+- You can run an agent workflow via `Codex CLI` directly, not only via API-style calls.
+- Key advantage: for many usage patterns this is cheaper, because work goes through your agent subscription plan instead of per-request API billing.
+- In practice, this lowers cost for frequent iterative coding sessions (many small edits/tests in one flow).
 
 ## Full Install From Scratch (Ubuntu 22.04/24.04)
 
@@ -34,17 +42,20 @@ node -v
 npm -v
 ```
 
-### 2. Install Claude Code CLI
+### 2. Install agent CLIs (Claude + Codex)
 
 ```bash
 npm install -g @anthropic-ai/claude-code
+npm install -g @openai/codex
 claude
+codex
 ```
 
 Finish login flow in terminal/browser and verify:
 
 ```bash
 claude --version
+codex --version
 ```
 
 ### 3. Create Telegram bot and get token
@@ -248,6 +259,13 @@ curl -fsS http://localhost:9101/metrics | head
 ```bash
 npm install -g @anthropic-ai/claude-code
 claude --version
+```
+
+### `Codex CLI is not installed`
+
+```bash
+npm install -g @openai/codex
+codex --version
 ```
 
 ### `TELEGRAM_BOT_TOKEN is not set`
