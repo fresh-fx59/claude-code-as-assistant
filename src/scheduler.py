@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class ScheduledTask:
     id: str
     chat_id: int
+    message_thread_id: int | None
     user_id: int
     prompt: str
     schedule_type: str
@@ -57,6 +58,7 @@ class ScheduleManager:
                 CREATE TABLE IF NOT EXISTS scheduled_tasks (
                     id TEXT PRIMARY KEY,
                     chat_id INTEGER NOT NULL,
+                    message_thread_id INTEGER,
                     user_id INTEGER NOT NULL,
                     prompt TEXT NOT NULL,
                     interval_minutes INTEGER NOT NULL,
@@ -75,6 +77,7 @@ class ScheduleManager:
             self._ensure_column(con, "daily_time", "TEXT")
             self._ensure_column(con, "timezone_name", "TEXT")
             self._ensure_column(con, "weekly_day", "INTEGER")
+            self._ensure_column(con, "message_thread_id", "INTEGER")
 
     @staticmethod
     def _ensure_column(con: sqlite3.Connection, name: str, definition: str) -> None:
@@ -103,6 +106,7 @@ class ScheduleManager:
         interval_minutes: int,
         model: str,
         session_id: str | None = None,
+        message_thread_id: int | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -111,6 +115,7 @@ class ScheduleManager:
             self._insert_schedule,
             task_id,
             chat_id,
+            message_thread_id,
             user_id,
             prompt,
             interval_minutes,
@@ -134,6 +139,7 @@ class ScheduleManager:
         timezone_name: str,
         model: str,
         session_id: str | None = None,
+        message_thread_id: int | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -142,6 +148,7 @@ class ScheduleManager:
             self._insert_schedule,
             task_id,
             chat_id,
+            message_thread_id,
             user_id,
             prompt,
             0,
@@ -166,6 +173,7 @@ class ScheduleManager:
         timezone_name: str,
         model: str,
         session_id: str | None = None,
+        message_thread_id: int | None = None,
     ) -> str:
         task_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
@@ -179,6 +187,7 @@ class ScheduleManager:
             self._insert_schedule,
             task_id,
             chat_id,
+            message_thread_id,
             user_id,
             prompt,
             0,
@@ -197,6 +206,7 @@ class ScheduleManager:
         self,
         task_id: str,
         chat_id: int,
+        message_thread_id: int | None,
         user_id: int,
         prompt: str,
         interval_minutes: int,
@@ -213,12 +223,13 @@ class ScheduleManager:
             con.execute(
                 """
                 INSERT INTO scheduled_tasks
-                (id, chat_id, user_id, prompt, interval_minutes, schedule_type, daily_time, timezone_name, weekly_day, model, session_id, next_run_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, chat_id, message_thread_id, user_id, prompt, interval_minutes, schedule_type, daily_time, timezone_name, weekly_day, model, session_id, next_run_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     chat_id,
+                    message_thread_id,
                     user_id,
                     prompt,
                     interval_minutes,
@@ -233,22 +244,38 @@ class ScheduleManager:
                 ),
             )
 
-    async def list_for_chat(self, chat_id: int) -> list[ScheduledTask]:
-        rows = await asyncio.to_thread(self._list_rows, chat_id)
+    async def list_for_chat(
+        self,
+        chat_id: int,
+        message_thread_id: int | None = None,
+    ) -> list[ScheduledTask]:
+        rows = await asyncio.to_thread(self._list_rows, chat_id, message_thread_id)
         return [self._row_to_scheduled_task(row) for row in rows]
 
-    def _list_rows(self, chat_id: int) -> list[sqlite3.Row]:
+    def _list_rows(self, chat_id: int, message_thread_id: int | None) -> list[sqlite3.Row]:
         with self._connect() as con:
-            cur = con.execute(
-                """
-                SELECT id, chat_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at
-                       , schedule_type, daily_time, timezone_name, weekly_day
-                FROM scheduled_tasks
-                WHERE chat_id = ?
-                ORDER BY next_run_at ASC
-                """,
-                (chat_id,),
-            )
+            if message_thread_id is None:
+                cur = con.execute(
+                    """
+                    SELECT id, chat_id, message_thread_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at
+                           , schedule_type, daily_time, timezone_name, weekly_day
+                    FROM scheduled_tasks
+                    WHERE chat_id = ? AND message_thread_id IS NULL
+                    ORDER BY next_run_at ASC
+                    """,
+                    (chat_id,),
+                )
+            else:
+                cur = con.execute(
+                    """
+                    SELECT id, chat_id, message_thread_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at
+                           , schedule_type, daily_time, timezone_name, weekly_day
+                    FROM scheduled_tasks
+                    WHERE chat_id = ? AND message_thread_id = ?
+                    ORDER BY next_run_at ASC
+                    """,
+                    (chat_id, message_thread_id),
+                )
             return list(cur.fetchall())
 
     async def cancel(self, task_id: str) -> bool:
@@ -272,6 +299,7 @@ class ScheduleManager:
             try:
                 await self._task_manager.submit(
                     chat_id=schedule.chat_id,
+                    message_thread_id=schedule.message_thread_id,
                     user_id=schedule.user_id,
                     prompt=schedule.prompt,
                     model=schedule.model,
@@ -287,7 +315,7 @@ class ScheduleManager:
         with self._connect() as con:
             cur = con.execute(
                 """
-                SELECT id, chat_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at
+                SELECT id, chat_id, message_thread_id, user_id, prompt, interval_minutes, model, session_id, next_run_at, created_at
                        , schedule_type, daily_time, timezone_name, weekly_day
                 FROM scheduled_tasks
                 WHERE next_run_at <= ?
@@ -310,6 +338,7 @@ class ScheduleManager:
         return ScheduledTask(
             id=row["id"],
             chat_id=row["chat_id"],
+            message_thread_id=row["message_thread_id"],
             user_id=row["user_id"],
             prompt=row["prompt"],
             schedule_type=row["schedule_type"] or "interval",

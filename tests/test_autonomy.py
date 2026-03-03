@@ -15,6 +15,7 @@ def _mk_task(*, status: TaskStatus, task_id: str, chat_id: int = 123, error: str
     return BackgroundTask(
         id=task_id,
         chat_id=chat_id,
+        message_thread_id=None,
         user_id=chat_id,
         prompt="investigate failures and propose minimal fix",
         model="sonnet",

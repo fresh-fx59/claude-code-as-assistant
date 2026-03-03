@@ -127,6 +127,7 @@ async def main() -> None:
         BotCommand(command="model", description="Switch model"),
         BotCommand(command="provider", description="Switch LLM provider"),
         BotCommand(command="status", description="Show current session info"),
+        BotCommand(command="threads", description="Show tracked forum threads"),
         BotCommand(command="memory", description="Show what I remember"),
         BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="rollback", description="Rollback to previous version (admin)"),

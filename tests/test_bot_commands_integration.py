@@ -275,7 +275,7 @@ class TestCancelCommand:
         from src.bot import session_manager
 
         # Set up state with running process
-        state = _get_state(123456789)
+        state = _get_state("123456789:main")
         state.lock = asyncio.Lock()
         await state.lock.acquire()
         mock_proc = AsyncMock()
@@ -301,7 +301,7 @@ class TestCancelCommand:
     async def test_cancel_when_locked_but_no_handle(self, mock_message):
         """Should handle case where locked but no proc handle."""
         mock_message.text = "/cancel"
-        state = _get_state(123456789)
+        state = _get_state("123456789:main")
         state.lock = asyncio.Lock()
         await state.lock.acquire()
         state.process_handle = None
@@ -464,7 +464,7 @@ class TestMessageHandling:
         mock_message.text = "hello"
 
         # Lock the chat
-        state = _get_state(123456789)
+        state = _get_state("123456789:main")
         await state.lock.acquire()
 
         try:
@@ -482,7 +482,7 @@ class TestChatStateManagement:
 
     def test_get_creates_new_state(self):
         """Getting state for new chat should create state."""
-        state = _get_state(9999)
+        state = _get_state("9999:main")
 
         assert isinstance(state, _ChatState)
         assert isinstance(state.lock, asyncio.Lock)
@@ -491,15 +491,15 @@ class TestChatStateManagement:
 
     def test_get_returns_same_state(self):
         """Getting state twice for same chat returns same object."""
-        state1 = _get_state(8888)
-        state2 = _get_state(8888)
+        state1 = _get_state("8888:main")
+        state2 = _get_state("8888:main")
 
         assert state1 is state2
 
     def test_different_chats_different_state(self):
         """Different chats have independent state."""
-        state1 = _get_state(7777)
-        state2 = _get_state(7778)
+        state1 = _get_state("7777:main")
+        state2 = _get_state("7778:main")
 
         assert state1 is not state2
 

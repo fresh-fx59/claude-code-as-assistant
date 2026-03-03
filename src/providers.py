@@ -141,10 +141,10 @@ class ProviderManager:
 
     def __init__(self, watch_config: bool = True) -> None:
         self._cfg = _load_config()
-        # chat_id → index in self._cfg.providers
-        self._chat_provider_idx: dict[int, int] = {}
-        # chat_id → timestamp when fallback was activated
-        self._fallback_since: dict[int, float] = {}
+        # scope_key → index in self._cfg.providers
+        self._chat_provider_idx: dict[int | str, int] = {}
+        # scope_key → timestamp when fallback was activated
+        self._fallback_since: dict[int | str, float] = {}
         self._watcher: _ConfigFileWatcher | None = None
 
         if watch_config and _CONFIG_PATH.exists():
@@ -173,7 +173,7 @@ class ProviderManager:
     def providers(self) -> list[Provider]:
         return self._cfg.providers
 
-    def get_provider(self, chat_id: int) -> Provider:
+    def get_provider(self, chat_id: int | str) -> Provider:
         """Return the current provider for a chat (NO auto-recovery to prevent unexpected switches)."""
         idx = self._chat_provider_idx.get(chat_id, 0)
 
@@ -182,7 +182,7 @@ class ProviderManager:
 
         return self._cfg.providers[idx]
 
-    def advance(self, chat_id: int) -> Provider | None:
+    def advance(self, chat_id: int | str) -> Provider | None:
         """Move to the next provider in the chain.
 
         Returns the new provider, or ``None`` if we've exhausted all fallbacks.
@@ -191,22 +191,22 @@ class ProviderManager:
         next_idx = current_idx + 1
 
         if next_idx >= len(self._cfg.providers):
-            logger.warning("Chat %d: all providers exhausted", chat_id)
+            logger.warning("Chat %s: all providers exhausted", chat_id)
             return None
 
         self._chat_provider_idx[chat_id] = next_idx
         self._fallback_since[chat_id] = time.monotonic()
         provider = self._cfg.providers[next_idx]
-        logger.info("Chat %d: switched to provider '%s'", chat_id, provider.name)
+        logger.info("Chat %s: switched to provider '%s'", chat_id, provider.name)
         return provider
 
-    def reset(self, chat_id: int) -> Provider:
+    def reset(self, chat_id: int | str) -> Provider:
         """Reset to primary provider."""
         self._chat_provider_idx.pop(chat_id, None)
         self._fallback_since.pop(chat_id, None)
         return self._cfg.providers[0]
 
-    def set_provider(self, chat_id: int, name: str) -> Provider | None:
+    def set_provider(self, chat_id: int | str, name: str) -> Provider | None:
         """Manually select a provider by name."""
         for i, p in enumerate(self._cfg.providers):
             if p.name.lower() == name.lower():
@@ -215,7 +215,7 @@ class ProviderManager:
                     self._fallback_since[chat_id] = time.monotonic()
                 else:
                     self._fallback_since.pop(chat_id, None)
-                logger.info("Chat %d: manually set provider to '%s'", chat_id, p.name)
+                logger.info("Chat %s: manually set provider to '%s'", chat_id, p.name)
                 return p
         return None
 

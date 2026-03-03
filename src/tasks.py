@@ -25,6 +25,7 @@ class TaskStatus(str, Enum):
 class BackgroundTask:
     id: str
     chat_id: int
+    message_thread_id: int | None
     user_id: int
     prompt: str
     model: str
@@ -95,12 +96,14 @@ class TaskManager:
         prompt: str,
         model: str,
         session_id: str | None = None,
+        message_thread_id: int | None = None,
         process_handle: dict | None = None,
     ) -> str:
         """Submit a task for background execution. Returns task ID."""
         task = BackgroundTask(
             id=str(uuid.uuid4()),
             chat_id=chat_id,
+            message_thread_id=message_thread_id,
             user_id=user_id,
             prompt=prompt,
             model=model,
@@ -156,11 +159,15 @@ class TaskManager:
 
         return False
 
-    def list_user_tasks(self, chat_id: int) -> list[BackgroundTask]:
+    def list_user_tasks(self, chat_id: int, message_thread_id: int | None = None) -> list[BackgroundTask]:
         """List all tasks for a chat."""
         return [
             t for t in self.tasks.values()
-            if t.chat_id == chat_id and t.status in (TaskStatus.QUEUED, TaskStatus.RUNNING)
+            if (
+                t.chat_id == chat_id
+                and t.message_thread_id == message_thread_id
+                and t.status in (TaskStatus.QUEUED, TaskStatus.RUNNING)
+            )
         ]
 
     async def _process_queue(self) -> None:
@@ -302,7 +309,12 @@ class TaskManager:
                 lines.append(f"...")
                 lines.append(f"(Response truncated, {len(task.response) - 3000} more characters)")
 
-            await self.bot.send_message(chat_id=task.chat_id, text="\n".join(lines), parse_mode="HTML")
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+            )
 
         except Exception as e:
             logger.warning("Failed to notify completion for task %s: %s", task.id, e)
@@ -319,7 +331,12 @@ class TaskManager:
                 f"<b>Error:</b>",
                 f"{task.error or 'Unknown error'}",
             ]
-            await self.bot.send_message(chat_id=task.chat_id, text="\n".join(lines), parse_mode="HTML")
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+            )
 
         except Exception as e:
             logger.warning("Failed to notify failure for task %s: %s", task.id, e)
@@ -332,7 +349,12 @@ class TaskManager:
                 f"",
                 f"<b>Task ID:</b> <code>{task.id[:8]}</code>",
             ]
-            await self.bot.send_message(chat_id=task.chat_id, text="\n".join(lines), parse_mode="HTML")
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+            )
 
         except Exception as e:
             logger.warning("Failed to notify cancellation for task %s: %s", task.id, e)

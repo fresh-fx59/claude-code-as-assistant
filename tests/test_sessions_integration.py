@@ -62,8 +62,8 @@ class TestSessionFilePersistence:
         assert sessions_file.exists()
 
         data = json.loads(sessions_file.read_text())
-        assert "12345" in data
-        assert data["12345"]["claude_session_id"] == "sess-abc123"
+        assert "12345:main" in data
+        assert data["12345:main"]["claude_session_id"] == "sess-abc123"
 
     def test_set_model_saves_to_file(self, tmppath):
         """Setting a model should persist to disk."""
@@ -73,7 +73,7 @@ class TestSessionFilePersistence:
 
         sessions_file = tmppath / "sessions.json"
         data = json.loads(sessions_file.read_text())
-        assert data["12345"]["model"] == "opus"
+        assert data["12345:main"]["model"] == "opus"
 
     def test_new_conversation_clears_session_id(self, tmppath):
         """New conversation should set session_id to None."""
@@ -86,14 +86,14 @@ class TestSessionFilePersistence:
         assert session.claude_session_id is None
         # Verify it saved to file
         data = json.loads((tmppath / "sessions.json").read_text())
-        assert data["12345"]["claude_session_id"] is None
+        assert data["12345:main"]["claude_session_id"] is None
 
     def test_loads_existing_sessions_from_file(self, tmppath, clean_sessions_file):
         """Should load existing sessions from sessions.json on startup."""
         # Pre-create sessions.json
         clean_sessions_file.write_text(json.dumps({
-            "11111": {"claude_session_id": "sess-111", "model": "opus"},
-            "22222": {"claude_session_id": None, "model": "haiku"},
+            "11111:main": {"claude_session_id": "sess-111", "model": "opus"},
+            "22222:main": {"claude_session_id": None, "model": "haiku"},
         }))
 
         manager = SessionManager()
@@ -157,10 +157,10 @@ class TestMultipleSessionFields:
 
         data = json.loads((tmppath / "sessions.json").read_text())
 
-        assert data["11111"]["claude_session_id"] == "sess-111"
-        assert data["11111"]["model"] == "opus"
-        assert data["22222"]["claude_session_id"] == "sess-222"
-        assert data["22222"]["model"] == "haiku"
+        assert data["11111:main"]["claude_session_id"] == "sess-111"
+        assert data["11111:main"]["model"] == "opus"
+        assert data["22222:main"]["claude_session_id"] == "sess-222"
+        assert data["22222:main"]["model"] == "haiku"
 
     def test_new_conversation_doesnt_affect_other_sessions(self, tmppath):
         """Starting new conversation for one chat shouldn't affect others."""
@@ -175,3 +175,21 @@ class TestMultipleSessionFields:
 
         assert session1.claude_session_id is None
         assert session2.claude_session_id == "sess-222"
+
+    def test_thread_scoped_sessions_are_isolated(self, tmppath):
+        manager = SessionManager()
+        manager.update_session_id(12345, "sess-thread-1", message_thread_id=1)
+        manager.update_session_id(12345, "sess-thread-2", message_thread_id=2)
+
+        s1 = manager.get(12345, 1)
+        s2 = manager.get(12345, 2)
+        assert s1.claude_session_id == "sess-thread-1"
+        assert s2.claude_session_id == "sess-thread-2"
+
+    def test_thread_tracking_persists_topic_label(self, tmppath):
+        manager = SessionManager()
+        manager.touch_thread(12345, 99, topic_label="Task A")
+
+        data = json.loads((tmppath / "sessions.json").read_text())
+        assert data["12345:99"]["topic_label"] == "Task A"
+        assert data["12345:99"]["message_thread_id"] == 99
