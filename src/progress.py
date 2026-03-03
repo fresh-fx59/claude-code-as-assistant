@@ -33,6 +33,7 @@ class ProgressReporter:
     def __init__(self, message: Message, debounce_seconds: float | None = None):
         self._message = message
         self._chat_id = message.chat.id
+        self._message_thread_id = getattr(message, "message_thread_id", None)
         self._bot = message.bot
         self._debounce_seconds = (
             config.PROGRESS_DEBOUNCE_SECONDS if debounce_seconds is None else debounce_seconds
@@ -138,6 +139,7 @@ class ProgressReporter:
                 try:
                     msg = await self._bot.send_message(
                         chat_id=self._chat_id,
+                        message_thread_id=self._message_thread_id,
                         text=text,
                         parse_mode="HTML",
                     )

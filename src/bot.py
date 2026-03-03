@@ -21,7 +21,7 @@ from aiogram.exceptions import TelegramAPIError
 
 from . import bridge, config, metrics, transcribe
 from .core.context_plugins import ContextPluginRegistry
-from .sessions import SessionManager
+from .sessions import SessionManager, make_scope_key
 from .formatter import markdown_to_html, split_message, strip_html
 from .memory import MemoryManager
 from .progress import ProgressReporter
@@ -48,9 +48,9 @@ task_manager: TaskManager | None = None  # Set in main()
 schedule_manager: ScheduleManager | None = None  # Set in main()
 
 # Restore persisted provider selections from sessions
-for _chat_id, _session in session_manager.sessions.items():
+for _scope_id, _session in session_manager.sessions.items():
     if _session.provider:
-        provider_manager.set_provider(_chat_id, _session.provider)
+        provider_manager.set_provider(_scope_id, _session.provider)
 
 CLAUDE_MODELS = {"sonnet", "opus", "haiku"}
 VALID_MODELS = CLAUDE_MODELS
@@ -58,15 +58,15 @@ VALID_MODELS = CLAUDE_MODELS
 
 @dataclass
 class _ChatState:
-    """State for each active chat."""
+    """State for each active conversation scope (chat + optional thread)."""
     lock: asyncio.Lock
     process_handle: dict | None  # Will contain {"proc": proc} when running
     cancel_requested: bool
 
 
-# Per-chat state dict
-_chat_states: dict[int, _ChatState] = {}
-_error_counts: dict[int, int] = {}
+# Per-conversation state dict
+_chat_states: dict[str, _ChatState] = {}
+_error_counts: dict[str, int] = {}
 _CODEX_TRANSIENT_ERROR_PATTERNS = (
     re.compile(r"stream disconnected before completion", re.IGNORECASE),
     re.compile(r"transport error:\s*timeout", re.IGNORECASE),
@@ -111,11 +111,23 @@ _NUMBER_WORDS = {
 }
 
 
-def _get_state(chat_id: int) -> _ChatState:
-    """Get or create state for a chat."""
-    if chat_id not in _chat_states:
-        _chat_states[chat_id] = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
-    return _chat_states[chat_id]
+def _thread_id(message: Message) -> int | None:
+    return getattr(message, "message_thread_id", None)
+
+
+def _scope_key(chat_id: int, message_thread_id: int | None = None) -> str:
+    return make_scope_key(chat_id, message_thread_id)
+
+
+def _scope_key_from_message(message: Message) -> str:
+    return _scope_key(message.chat.id, _thread_id(message))
+
+
+def _get_state(scope_key: str) -> _ChatState:
+    """Get or create state for a conversation scope."""
+    if scope_key not in _chat_states:
+        _chat_states[scope_key] = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
+    return _chat_states[scope_key]
 
 
 def _is_authorized(user_id: int | None, chat_id: int | None = None) -> bool:
@@ -155,26 +167,53 @@ def _actor_id(message: Message) -> int:
     return message.chat.id
 
 
-def _record_error(chat_id: int) -> int:
-    count = _error_counts.get(chat_id, 0) + 1
-    _error_counts[chat_id] = count
+def _topic_label_from_message(message: Message, override_text: str | None = None) -> str | None:
+    created = getattr(message, "forum_topic_created", None)
+    if created and getattr(created, "name", None):
+        return str(created.name).strip()
+
+    edited = getattr(message, "forum_topic_edited", None)
+    if edited and getattr(edited, "name", None):
+        return str(edited.name).strip()
+
+    raw = (override_text or message.text or "").strip()
+    if not raw or raw.startswith("/"):
+        return None
+    return raw.splitlines()[0][:120]
+
+
+def _touch_thread_context(message: Message, override_text: str | None = None) -> None:
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    if thread_id is None:
+        return
+    session_manager.touch_thread(
+        chat_id=chat_id,
+        message_thread_id=thread_id,
+        topic_label=_topic_label_from_message(message, override_text=override_text),
+    )
+
+
+def _record_error(scope_key: str) -> int:
+    count = _error_counts.get(scope_key, 0) + 1
+    _error_counts[scope_key] = count
     return count
 
 
-def _clear_errors(chat_id: int) -> None:
-    _error_counts.pop(chat_id, None)
+def _clear_errors(scope_key: str) -> None:
+    _error_counts.pop(scope_key, None)
 
 
-def _should_suggest_rollback(chat_id: int) -> bool:
-    return _error_counts.get(chat_id, 0) >= 3
+def _should_suggest_rollback(scope_key: str) -> bool:
+    return _error_counts.get(scope_key, 0) >= 3
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _build_rollback_suggestion_markup(chat_id: int, user_id: int | None):
-    if not _is_admin(user_id) or not _should_suggest_rollback(chat_id):
+def _build_rollback_suggestion_markup(scope_key: str, user_id: int | None):
+    if not _is_admin(user_id) or not _should_suggest_rollback(scope_key):
         return None
     kb = InlineKeyboardBuilder()
     kb.button(text="Show rollback options", callback_data="rollback_auto")
@@ -345,15 +384,15 @@ def _get_recent_commits(limit: int = 10) -> list[tuple[str, str, str]]:
     return commits
 
 
-async def _show_rollback_options(chat_id: int, bot) -> None:
+async def _show_rollback_options(chat_id: int, bot, message_thread_id: int | None = None) -> None:
     try:
         commits = await asyncio.to_thread(_get_recent_commits, 10)
     except Exception as e:
-        await bot.send_message(chat_id, f"Failed to load commit history: {e}")
+        await bot.send_message(chat_id, f"Failed to load commit history: {e}", message_thread_id=message_thread_id)
         return
 
     if not commits:
-        await bot.send_message(chat_id, "No commits found for rollback.")
+        await bot.send_message(chat_id, "No commits found for rollback.", message_thread_id=message_thread_id)
         return
 
     kb = InlineKeyboardBuilder()
@@ -368,11 +407,12 @@ async def _show_rollback_options(chat_id: int, bot) -> None:
     await bot.send_message(
         chat_id,
         "Select a commit to rollback to:",
+        message_thread_id=message_thread_id,
         reply_markup=kb.as_markup(),
     )
 
 
-async def _restart_service(chat_id: int, bot) -> None:
+async def _restart_service(chat_id: int, bot, message_thread_id: int | None = None) -> None:
     await asyncio.sleep(1)
     proc = await asyncio.create_subprocess_exec(
         "sudo",
@@ -385,7 +425,11 @@ async def _restart_service(chat_id: int, bot) -> None:
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         err = (stderr or b"").decode().strip() or f"exit code {proc.returncode}"
-        await bot.send_message(chat_id, f"Rollback completed, but restart failed: {err[:500]}")
+        await bot.send_message(
+            chat_id,
+            f"Rollback completed, but restart failed: {err[:500]}",
+            message_thread_id=message_thread_id,
+        )
 
 
 def _reset_to_commit(target_hash: str) -> tuple[bool, str]:
@@ -418,8 +462,8 @@ def _find_provider_cli(cli_name: str) -> str | None:
     return shutil.which(cli_name)
 
 
-def _current_provider(chat_id: int):
-    return provider_manager.get_provider(chat_id)
+def _current_provider(scope_key: str):
+    return provider_manager.get_provider(scope_key)
 
 
 def _current_model_label(session: object, provider) -> str:
@@ -501,6 +545,7 @@ async def cmd_start(message: Message) -> None:
         "/model — Switch model",
         "/provider — Switch LLM provider",
         "/status — Show current session info",
+        "/threads — Show tracked forum topics/threads",
         "/memory — Show what I remember",
         "/tools — Show available tools",
         "/rollback — Roll back to previous version (admin)",
@@ -524,20 +569,14 @@ async def cmd_new(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     chat_id = message.chat.id
-    provider = provider_manager.get_provider(chat_id)
-    session = session_manager.get(chat_id)
-    provider_cli = provider.cli if _find_provider_cli(provider.cli) else "claude"
-    resume_arg = provider.resume_arg if provider_cli == "codex" else None
-    session_id = session.codex_session_id if provider_cli == "codex" else session.claude_session_id
-    task_model = (
-        (_codex_model_arg(session, provider) or "default")
-        if provider_cli == "codex"
-        else session.model
-    )
+    thread_id = _thread_id(message)
+    scope_key = _scope_key(chat_id, thread_id)
+    session = session_manager.get(chat_id, thread_id)
     if session.claude_session_id and os.getenv("DISABLE_REFLECTION") != "1":
-        asyncio.create_task(_reflect(message.chat.id, session))
-    session_manager.new_conversation(message.chat.id)
-    session_manager.new_codex_conversation(message.chat.id)
+        asyncio.create_task(_reflect(chat_id, session))
+    session_manager.new_conversation(chat_id, thread_id)
+    session_manager.new_codex_conversation(chat_id, thread_id)
+    _clear_errors(scope_key)
     await message.answer("Conversation cleared. Send a message to start fresh.")
 
 
@@ -580,13 +619,10 @@ async def cmd_model(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
     chat_id = message.chat.id
-    provider = provider_manager.get_provider(chat_id)
-    session = session_manager.get(chat_id)
-    provider_cli = provider.cli if _find_provider_cli(provider.cli) else "claude"
-    resume_arg = provider.resume_arg if provider_cli == "codex" else None
-    session_id = session.codex_session_id if provider_cli == "codex" else session.claude_session_id
-    task_model = _codex_task_model(session, provider) if provider_cli == "codex" else session.model
-    provider = _current_provider(message.chat.id)
+    thread_id = _thread_id(message)
+    scope_key = _scope_key(chat_id, thread_id)
+    session = session_manager.get(chat_id, thread_id)
+    provider = _current_provider(scope_key)
     current = _current_model_label(session, provider)
 
     raw_text = message.text or ""
@@ -600,11 +636,11 @@ async def cmd_model(message: Message) -> None:
 
         if provider.cli == "codex":
             chosen = None if requested == "default" else requested
-            session_manager.set_codex_model(message.chat.id, chosen)
+            session_manager.set_codex_model(chat_id, chosen, thread_id)
         else:
-            session_manager.set_model(message.chat.id, requested)
+            session_manager.set_model(chat_id, requested, thread_id)
 
-        current = _current_model_label(session_manager.get(message.chat.id), provider)
+        current = _current_model_label(session_manager.get(chat_id, thread_id), provider)
         await message.answer(f"Switched to {current}")
         return
 
@@ -628,10 +664,12 @@ async def cb_model_switch(callback: CallbackQuery) -> None:
         return
 
     chat_id = callback.message.chat.id
+    thread_id = _thread_id(callback.message)
+    scope_key = _scope_key(chat_id, thread_id)
     model = callback.data.split(":", 1)[1]
-    logger.info("Chat %d: model selection 'model:%s'", chat_id, model)
+    logger.info("Chat %s: model selection 'model:%s'", scope_key, model)
 
-    provider = _current_provider(chat_id)
+    provider = _current_provider(scope_key)
     options = _model_options(provider)
     if model not in options:
         await callback.answer("Invalid model", show_alert=True)
@@ -639,12 +677,12 @@ async def cb_model_switch(callback: CallbackQuery) -> None:
 
     if provider.cli == "codex":
         chosen = None if model == "default" else model
-        session_manager.set_codex_model(chat_id, chosen)
+        session_manager.set_codex_model(chat_id, chosen, thread_id)
     else:
-        session_manager.set_model(chat_id, model)
+        session_manager.set_model(chat_id, model, thread_id)
 
     # Update keyboard state
-    current = _current_model_label(session_manager.get(chat_id), provider)
+    current = _current_model_label(session_manager.get(chat_id, thread_id), provider)
     lines = [f"<b>Current model:</b> {current}\n"]
     lines.append("<b>Select a model:</b>")
 
@@ -664,7 +702,8 @@ async def cmd_provider(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
-    current = provider_manager.get_provider(message.chat.id)
+    scope_key = _scope_key_from_message(message)
+    current = provider_manager.get_provider(scope_key)
 
     lines = [f"<b>Current provider:</b> {current.name}\n<i>{current.description}</i>\n"]
     lines.append("<b>Select a provider:</b>")
@@ -686,16 +725,18 @@ async def cb_provider_switch(callback: CallbackQuery) -> None:
         return
 
     chat_id = callback.message.chat.id
+    thread_id = _thread_id(callback.message)
+    scope_key = _scope_key(chat_id, thread_id)
     name = callback.data.split(":", 1)[1]
-    logger.info("Chat %d: provider selection 'provider:%s'", chat_id, name)
+    logger.info("Chat %s: provider selection 'provider:%s'", scope_key, name)
 
-    provider = provider_manager.set_provider(chat_id, name)
+    provider = provider_manager.set_provider(scope_key, name)
     if not provider:
         await callback.answer("Provider not found", show_alert=True)
         return
 
     # Persist provider to session
-    session_manager.set_provider(chat_id, provider.name)
+    session_manager.set_provider(chat_id, provider.name, thread_id)
 
     # Update keyboard state
     lines = [f"<b>Current provider:</b> {provider.name}\n<i>{provider.description}</i>\n"]
@@ -715,8 +756,11 @@ async def cb_provider_switch(callback: CallbackQuery) -> None:
 async def cmd_status(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    session = session_manager.get(message.chat.id)
-    provider = provider_manager.get_provider(message.chat.id)
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    scope_key = _scope_key(chat_id, thread_id)
+    session = session_manager.get(chat_id, thread_id)
+    provider = provider_manager.get_provider(scope_key)
     if provider.cli == "codex":
         sid = session.codex_session_id or "none (new conversation)"
     else:
@@ -724,6 +768,7 @@ async def cmd_status(message: Message) -> None:
     current_model = _current_model_label(session, provider)
     await message.answer(
         f"<b>Version:</b> {config.VERSION}\n"
+        f"<b>Thread:</b> <code>{thread_id if thread_id is not None else 'main'}</code>\n"
         f"<b>Session:</b> <code>{sid}</code>\n"
         f"<b>Model:</b> {current_model}\n"
         f"<b>Provider:</b> {provider.name} — {provider.description}",
@@ -744,6 +789,29 @@ async def cmd_memory(message: Message) -> None:
             await message.answer(strip_html(chunk))
 
 
+@router.message(F.text == "/threads")
+async def cmd_threads(message: Message) -> None:
+    """List tracked topic/thread scopes for this chat."""
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
+        return
+    rows = session_manager.list_tracked_threads(message.chat.id)
+    if not rows:
+        await message.answer("No tracked threads yet for this chat.")
+        return
+
+    lines = ["<b>Tracked threads</b>", ""]
+    for row in rows:
+        thread = row.get("message_thread_id")
+        topic = row.get("topic_label") or "(untitled)"
+        last_seen = row.get("last_activity_at") or "n/a"
+        lines.append(
+            f"• <code>{thread if thread is not None else 'main'}</code> — {html.escape(str(topic))}"
+        )
+        lines.append(f"  last: {html.escape(str(last_seen))}")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(F.text == "/tools")
 async def cmd_tools(message: Message) -> None:
     """List available tools."""
@@ -762,7 +830,10 @@ async def cmd_cancel(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
-    state = _get_state(message.chat.id)
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    scope_key = _scope_key(chat_id, thread_id)
+    state = _get_state(scope_key)
 
     if not state.lock.locked() or not state.process_handle or not state.process_handle.get("proc"):
         await message.answer("Nothing to cancel.")
@@ -774,8 +845,8 @@ async def cmd_cancel(message: Message) -> None:
     if inspect.isawaitable(kill_result):
         await kill_result
     state.cancel_requested = True
-    session = session_manager.get(message.chat.id)
-    provider = _current_provider(message.chat.id)
+    session = session_manager.get(chat_id, thread_id)
+    provider = _current_provider(scope_key)
     metrics.CLAUDE_REQUESTS_TOTAL.labels(
         model=_current_model_label(session, provider),
         status="cancelled",
@@ -787,7 +858,7 @@ async def cmd_rollback(message: Message) -> None:
     if not _is_admin(message.from_user and message.from_user.id):
         await message.answer("This command is admin-only.")
         return
-    await _show_rollback_options(message.chat.id, message.bot)
+    await _show_rollback_options(message.chat.id, message.bot, _thread_id(message))
 
 
 @router.callback_query(F.data == "rollback_auto")
@@ -799,7 +870,11 @@ async def cb_rollback_auto(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     await callback.answer()
-    await _show_rollback_options(callback.message.chat.id, callback.bot)
+    await _show_rollback_options(
+        callback.message.chat.id,
+        callback.bot,
+        _thread_id(callback.message),
+    )
 
 
 @router.callback_query(F.data.startswith("rollback:"))
@@ -849,12 +924,14 @@ async def cb_rollback_confirm(callback: CallbackQuery) -> None:
         await callback.message.answer(f"Rollback failed: {details}")
         return
 
-    _clear_errors(callback.message.chat.id)
+    _clear_errors(_scope_key_from_message(callback.message))
     await callback.message.answer(
         f"Rollback complete: <code>{short_hash}</code>\nRestarting <code>telegram-bot.service</code>...",
         parse_mode="HTML",
     )
-    asyncio.create_task(_restart_service(callback.message.chat.id, callback.bot))
+    asyncio.create_task(
+        _restart_service(callback.message.chat.id, callback.bot, _thread_id(callback.message))
+    )
 
 
 @router.callback_query(F.data == "rollback_cancel")
@@ -978,7 +1055,9 @@ async def cmd_bg(message: Message) -> None:
         await message.answer("Please provide a task to run in background.\n\nExample: /bg write a python script to backup my database")
         return
 
-    session = session_manager.get(message.chat.id)
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    session = session_manager.get(chat_id, thread_id)
 
     # Build memory and tool-augmented prompt
     memory_context = memory_manager.build_context(prompt)
@@ -996,6 +1075,7 @@ async def cmd_bg(message: Message) -> None:
 
     task_id = await task_manager.submit(
         chat_id=chat_id,
+        message_thread_id=thread_id,
         user_id=_actor_id(message),
         prompt=full_prompt,
         model=task_model,
@@ -1029,7 +1109,7 @@ async def cmd_bg_list(message: Message) -> None:
         await message.answer("Background tasks not available.")
         return
 
-    tasks = task_manager.list_user_tasks(message.chat.id)
+    tasks = task_manager.list_user_tasks(message.chat.id, _thread_id(message))
 
     if not tasks:
         await message.answer("No active background tasks.")
@@ -1082,7 +1162,7 @@ async def cmd_bg_cancel(message: Message) -> None:
         return
 
     task = await task_manager.get_status(full_task_id)
-    if not task or task.chat_id != message.chat.id:
+    if not task or task.chat_id != message.chat.id or task.message_thread_id != _thread_id(message):
         await message.answer("Task not found.")
         return
 
@@ -1129,20 +1209,14 @@ async def cmd_schedule_every(message: Message) -> None:
         await message.answer("Task text cannot be empty.")
         return
 
-    session = session_manager.get(message.chat.id)
-    memory_context = _as_text(memory_manager.build_context(task_text))
-    tool_context = _as_text(context_plugins.build_context(task_text))
-    memory_instructions = _as_text(memory_manager.build_instructions())
-    prompt_parts = []
-    if memory_context:
-        prompt_parts.append(memory_context)
-    if tool_context:
-        prompt_parts.append(tool_context)
-    prompt_parts.append(task_text + memory_instructions)
-    full_prompt = "\n\n".join(prompt_parts)
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    session = session_manager.get(chat_id, thread_id)
+    full_prompt = _build_augmented_prompt(task_text)
 
     schedule_id = await schedule_manager.create_every(
-        chat_id=message.chat.id,
+        chat_id=chat_id,
+        message_thread_id=thread_id,
         user_id=_actor_id(message),
         prompt=full_prompt,
         interval_minutes=interval_minutes,
@@ -1167,7 +1241,7 @@ async def cmd_schedule_list(message: Message) -> None:
         await message.answer("Scheduler not available.")
         return
 
-    schedules = await schedule_manager.list_for_chat(message.chat.id)
+    schedules = await schedule_manager.list_for_chat(message.chat.id, _thread_id(message))
     if not schedules:
         await message.answer("No recurring schedules.")
         return
@@ -1224,21 +1298,15 @@ async def cmd_schedule_weekly(message: Message) -> None:
         return
 
     timezone_name = _default_timezone_name()
-    session = session_manager.get(message.chat.id)
-    memory_context = _as_text(memory_manager.build_context(task_text))
-    tool_context = _as_text(context_plugins.build_context(task_text))
-    memory_instructions = _as_text(memory_manager.build_instructions())
-    prompt_parts = []
-    if memory_context:
-        prompt_parts.append(memory_context)
-    if tool_context:
-        prompt_parts.append(tool_context)
-    prompt_parts.append(task_text + memory_instructions)
-    full_prompt = "\n\n".join(prompt_parts)
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    session = session_manager.get(chat_id, thread_id)
+    full_prompt = _build_augmented_prompt(task_text)
 
     try:
         schedule_id = await schedule_manager.create_weekly(
-            chat_id=message.chat.id,
+            chat_id=chat_id,
+            message_thread_id=thread_id,
             user_id=_actor_id(message),
             prompt=full_prompt,
             weekly_day=weekday,
@@ -1290,21 +1358,15 @@ async def cmd_schedule_daily(message: Message) -> None:
 
     timezone_name = _default_timezone_name()
 
-    session = session_manager.get(message.chat.id)
-    memory_context = _as_text(memory_manager.build_context(task_text))
-    tool_context = _as_text(context_plugins.build_context(task_text))
-    memory_instructions = _as_text(memory_manager.build_instructions())
-    prompt_parts = []
-    if memory_context:
-        prompt_parts.append(memory_context)
-    if tool_context:
-        prompt_parts.append(tool_context)
-    prompt_parts.append(task_text + memory_instructions)
-    full_prompt = "\n\n".join(prompt_parts)
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    session = session_manager.get(chat_id, thread_id)
+    full_prompt = _build_augmented_prompt(task_text)
 
     try:
         schedule_id = await schedule_manager.create_daily(
-            chat_id=message.chat.id,
+            chat_id=chat_id,
+            message_thread_id=thread_id,
             user_id=_actor_id(message),
             prompt=full_prompt,
             daily_time=daily_time,
@@ -1339,7 +1401,7 @@ async def cmd_schedule_cancel(message: Message) -> None:
         await message.answer("Usage: /schedule_cancel <schedule_id>")
         return
 
-    schedules = await schedule_manager.list_for_chat(message.chat.id)
+    schedules = await schedule_manager.list_for_chat(message.chat.id, _thread_id(message))
     target = next((s for s in schedules if s.id.startswith(short_id)), None)
     if not target:
         await message.answer("Schedule not found.")
@@ -1580,7 +1642,7 @@ async def handle_voice(message: Message) -> None:
     except Exception:
         logger.exception("Unhandled exception in handle_voice")
         metrics.MESSAGES_TOTAL.labels(status="error").inc()
-        _record_error(message.chat.id)
+        _record_error(_scope_key_from_message(message))
         await message.answer("An internal error occurred while processing your voice message.")
 
 
@@ -1591,9 +1653,10 @@ async def handle_message(message: Message) -> None:
     except Exception:
         logger.exception("Unhandled exception in handle_message")
         metrics.MESSAGES_TOTAL.labels(status="error").inc()
-        _record_error(message.chat.id)
+        scope_key = _scope_key_from_message(message)
+        _record_error(scope_key)
         reply_markup = _build_rollback_suggestion_markup(
-            message.chat.id,
+            scope_key,
             message.from_user and message.from_user.id,
         )
         await message.answer(
@@ -1607,12 +1670,30 @@ async def handle_channel_post(message: Message) -> None:
     await handle_message(message)
 
 
+@router.message(F.forum_topic_created)
+async def handle_forum_topic_created(message: Message) -> None:
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
+        return
+    _touch_thread_context(message)
+
+
+@router.message(F.forum_topic_edited)
+async def handle_forum_topic_edited(message: Message) -> None:
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
+        return
+    _touch_thread_context(message)
+
+
 async def _handle_message_inner(message: Message, override_text: str | None = None) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         metrics.MESSAGES_TOTAL.labels(status="unauthorized").inc()
         return
 
-    state = _get_state(message.chat.id)
+    _touch_thread_context(message, override_text=override_text)
+    chat_id = message.chat.id
+    thread_id = _thread_id(message)
+    scope_key = _scope_key(chat_id, thread_id)
+    state = _get_state(scope_key)
 
     if state.lock.locked():
         metrics.MESSAGES_TOTAL.labels(status="busy").inc()
@@ -1623,17 +1704,17 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         # Reset cancellation state
         state.cancel_requested = False
 
-        session = session_manager.get(message.chat.id)
+        session = session_manager.get(chat_id, thread_id)
         progress = ProgressReporter(message)
         typing_task = asyncio.create_task(_keep_typing(message))
 
         final_response: bridge.ClaudeResponse | None = None
 
         try:
-            provider = provider_manager.get_provider(message.chat.id)
+            provider = provider_manager.get_provider(scope_key)
             if provider.cli != "claude" and _find_provider_cli(provider.cli) is None:
-                fallback = provider_manager.reset(message.chat.id)
-                session_manager.set_provider(message.chat.id, fallback.name)
+                fallback = provider_manager.reset(scope_key)
+                session_manager.set_provider(chat_id, fallback.name, thread_id)
                 await message.answer(
                     f"Provider <b>{provider.name}</b> requires missing CLI "
                     f"<code>{provider.cli}</code>. Switched to <b>{fallback.name}</b>.",
@@ -1642,8 +1723,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 provider = fallback
             env = provider_manager.subprocess_env(provider)
             logger.info(
-                "Chat %d: using provider '%s' (cli=%s) with env=%s",
-                message.chat.id,
+                "Chat %s: using provider '%s' (cli=%s) with env=%s",
+                scope_key,
                 provider.name,
                 provider.cli,
                 {k: v for k, v in env.items() if k.startswith("ANTHROPIC_")},
@@ -1681,7 +1762,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 )
             )
             if should_fallback:
-                next_provider = provider_manager.advance(message.chat.id)
+                next_provider = provider_manager.advance(scope_key)
                 if next_provider:
                     reason = (
                         "Rate limited"
@@ -1694,8 +1775,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                         parse_mode="HTML",
                     )
                     logger.info(
-                        "Chat %d: fallback from '%s' to '%s' (error=%r)",
-                        message.chat.id, provider.name, next_provider.name, final_response.text,
+                        "Chat %s: fallback from '%s' to '%s' (error=%r)",
+                        scope_key, provider.name, next_provider.name, final_response.text,
                     )
                     provider = next_provider
                     env = provider_manager.subprocess_env(next_provider)
@@ -1772,7 +1853,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         # ── Send response ─────────────────────────────────────
         if state.cancel_requested:
             await progress.finish()
-            _clear_errors(message.chat.id)
+            _clear_errors(scope_key)
         elif final_response:
             if final_response.is_error:
                 error_text = final_response.text or "(No response)"
@@ -1782,9 +1863,9 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                     provider.name,
                     error_text[:500],
                 )
-                _record_error(message.chat.id)
+                _record_error(scope_key)
                 reply_markup = _build_rollback_suggestion_markup(
-                    message.chat.id,
+                    scope_key,
                     message.from_user and message.from_user.id,
                 )
                 await message.answer(error_text, reply_markup=reply_markup)
@@ -1839,11 +1920,11 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                             await message.answer(plain_chunk)
 
                 await progress.finish()
-                _clear_errors(message.chat.id)
+                _clear_errors(scope_key)
         else:
-            _record_error(message.chat.id)
+            _record_error(scope_key)
             reply_markup = _build_rollback_suggestion_markup(
-                message.chat.id,
+                scope_key,
                 message.from_user and message.from_user.id,
             )
             await message.answer(
@@ -1859,14 +1940,14 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             and final_response.session_id
             and final_response.session_id != session.claude_session_id
         ):
-            session_manager.update_session_id(message.chat.id, final_response.session_id)
+            session_manager.update_session_id(chat_id, final_response.session_id, thread_id)
         if (
             final_response
             and provider.cli == "codex"
             and final_response.session_id
             and final_response.session_id != session.codex_session_id
         ):
-            session_manager.update_codex_session_id(message.chat.id, final_response.session_id)
+            session_manager.update_codex_session_id(chat_id, final_response.session_id, thread_id)
 
         # Track metrics
         if final_response:
@@ -1885,19 +1966,19 @@ async def on_router_error(event: ErrorEvent) -> bool:
     callback = getattr(update, "callback_query", None)
 
     if message:
-        chat_id = message.chat.id
+        scope_key = _scope_key_from_message(message)
         user_id = message.from_user and message.from_user.id
-        _record_error(chat_id)
-        reply_markup = _build_rollback_suggestion_markup(chat_id, user_id)
+        _record_error(scope_key)
+        reply_markup = _build_rollback_suggestion_markup(scope_key, user_id)
         await message.answer(
             "An internal error occurred while processing your request.",
             reply_markup=reply_markup,
         )
     elif callback and callback.message:
-        chat_id = callback.message.chat.id
+        scope_key = _scope_key_from_message(callback.message)
         user_id = callback.from_user and callback.from_user.id
-        _record_error(chat_id)
-        reply_markup = _build_rollback_suggestion_markup(chat_id, user_id)
+        _record_error(scope_key)
+        reply_markup = _build_rollback_suggestion_markup(scope_key, user_id)
         try:
             await callback.answer("An internal error occurred.", show_alert=True)
         except Exception:
@@ -1912,10 +1993,18 @@ async def on_router_error(event: ErrorEvent) -> bool:
 
 async def _keep_typing(message: Message) -> None:
     """Send typing indicator every 5 seconds."""
+    thread_id = _thread_id(message)
     try:
         while True:
             try:
-                await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+                if thread_id is not None:
+                    await message.bot.send_chat_action(
+                        chat_id=message.chat.id,
+                        message_thread_id=thread_id,
+                        action=ChatAction.TYPING,
+                    )
+                else:
+                    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
             except TelegramAPIError as e:
                 logger.debug("Typing indicator failed (transient): %s", e)
             await asyncio.sleep(5)

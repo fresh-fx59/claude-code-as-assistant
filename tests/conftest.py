@@ -79,6 +79,7 @@ def mock_message(mock_bot):
     msg.text = "hello"
     msg.chat = AsyncMock()
     msg.chat.id = 123456789
+    msg.message_thread_id = None
     msg.bot = mock_bot
     msg.from_user = AsyncMock()
     msg.from_user.id = 123456789
