@@ -1,86 +1,71 @@
 name: model-usage
-description: Use CodexBar CLI local cost usage to summarize per-model usage for Codex
-  or Claude, including the cu
+description: Use CodexBar CLI local cost logs to summarize per-model usage for Codex or Claude.
 triggers:
-- model-usage
-- codexbar
-- local
-- cost
-instructions: '# Model usage
-
+  - model-usage
+  - codexbar
+  - local
+  - cost
+instructions: |
+  # Model usage
 
   ## Overview
 
+  Summarize per-model cost from CodexBar local logs for `codex` or `claude`.
+  Supports:
+  - `current` model (from the most recent daily row)
+  - `all` models (aggregate across all rows)
 
-  Get per-model usage cost from CodexBar''s local cost logs. Supports "current model"
-  (most recent daily entry) or "all models" summaries for Codex or Claude.
+  ## Linux notes
 
+  - Confirm CLI is available: `command -v codexbar`
+  - If missing from PATH on Linux, check npm global bin and add it:
 
-  TODO: add Linux CLI support guidance once CodexBar CLI install path is documented
-  for Linux.
+  ```bash
+  npm prefix -g
+  export PATH="$(npm prefix -g)/bin:$PATH"
+  command -v codexbar
+  ```
 
+  ## Resolve tool base dir
+
+  Run from the repository root:
+
+  ```bash
+  BASE_DIR="$PWD/tools/model-usage"
+  ```
 
   ## Quick start
 
-
-  1. Fetch cost JSON via CodexBar CLI or pass a JSON file.
-
-  2. Use the bundled script to summarize by model.
-
-
   ```bash
-
-  python {baseDir}/scripts/model_usage.py --provider codex --mode current
-
-  python {baseDir}/scripts/model_usage.py --provider codex --mode all
-
-  python {baseDir}/scripts/model_usage.py --provider claude --mode all --format json
-  --pretty
-
+  python3 "$BASE_DIR/scripts/model_usage.py" --provider codex --mode current
+  python3 "$BASE_DIR/scripts/model_usage.py" --provider codex --mode all
+  python3 "$BASE_DIR/scripts/model_usage.py" --provider claude --mode all --format json --pretty
   ```
-
 
   ## Current model logic
 
-
-  - Uses the most recent daily row with `modelBreakdowns`.
-
-  - Picks the model with the highest cost in that row.
-
-  - Falls back to the last entry in `modelsUsed` when breakdowns are missing.
-
-  - Override with `--model <name>` when you need a specific model.
-
+  - Uses the most recent row with `modelBreakdowns`
+  - Picks the model with highest cost in that row
+  - Falls back to last entry in `modelsUsed` when breakdowns are missing
+  - Override with `--model <name>` when needed
 
   ## Inputs
 
-
-  - Default: runs `codexbar cost --format json --provider <codex|claude>`.
-
-  - File or stdin:
-
+  - Default: runs `codexbar cost --format json --provider <codex|claude>`
+  - File or stdin is also supported:
 
   ```bash
-
   codexbar cost --provider codex --format json > /tmp/cost.json
-
-  python {baseDir}/scripts/model_usage.py --input /tmp/cost.json --mode all
-
-  cat /tmp/cost.json | python {baseDir}/scripts/model_usage.py --input - --mode current
-
+  python3 "$BASE_DIR/scripts/model_usage.py" --input /tmp/cost.json --mode all
+  cat /tmp/cost.json | python3 "$BASE_DIR/scripts/model_usage.py" --input - --mode current
   ```
-
 
   ## Output
 
+  - Text (default) or JSON (`--format json --pretty`)
+  - Values are cost-only per model; token split per model is not always present in CodexBar output
 
-  - Text (default) or JSON (`--format json --pretty`).
+  ## Reference
 
-  - Values are cost-only per model; tokens are not split by model in CodexBar output.
-
-
-  ## References
-
-
-  - Read `references/codexbar-cli.md` for CLI flags and cost JSON fields.'
-setup: 'Ensure binary installed: codexbar'
+  - `tools/model-usage/references/codexbar-cli.md`
+setup: Ensure binary installed: codexbar
