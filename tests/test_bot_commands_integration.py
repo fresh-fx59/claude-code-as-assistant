@@ -5,6 +5,7 @@ and message handling. These are observable user-facing behaviors.
 """
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -28,6 +29,7 @@ from src.bot import (
     _is_authorized,
     _is_transient_codex_error,
     _run_codex_with_retries,
+    _reset_to_commit,
     VALID_MODELS,
 )
 
@@ -443,6 +445,49 @@ class TestScheduleCommands:
             sched_mock.list_for_chat = AsyncMock(return_value=[])
             await cmd_schedule_cancel(mock_message)
         assert "not found" in mock_message.answer.call_args[0][0].lower()
+
+
+class TestRollbackResetSafety:
+    def test_reset_to_commit_refuses_dirty_tree(self, tmppath: Path):
+        repo = tmppath / "repo"
+        repo.mkdir()
+
+        with (
+            patch("src.bot._repo_root", return_value=repo),
+            patch("src.bot.subprocess.run") as run_mock,
+        ):
+            run_mock.side_effect = [
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # verify
+                type("Result", (), {"returncode": 0, "stdout": " M src/bot.py\n", "stderr": ""})(),  # status
+            ]
+
+            ok, details = _reset_to_commit("abc123")
+
+        assert ok is False
+        assert "uncommitted changes" in details.lower()
+        assert run_mock.call_count == 2
+
+    def test_reset_to_commit_creates_recovery_branch_before_reset(self, tmppath: Path):
+        repo = tmppath / "repo"
+        repo.mkdir()
+
+        with (
+            patch("src.bot._repo_root", return_value=repo),
+            patch("src.bot.subprocess.run") as run_mock,
+        ):
+            run_mock.side_effect = [
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # verify
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # status
+                type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # branch
+                type("Result", (), {"returncode": 0, "stdout": "HEAD is now at abc123 test\n", "stderr": ""})(),  # reset
+            ]
+
+            ok, details = _reset_to_commit("abc123")
+
+        assert ok is True
+        assert "HEAD is now at abc123 test" in details
+        assert run_mock.call_args_list[2].args[0][:4] == ["git", "-C", str(repo), "branch"]
+        assert run_mock.call_args_list[3].args[0] == ["git", "-C", str(repo), "reset", "--hard", "abc123"]
 
 
 # ── Contract 7: Message handling ─────────────────────────────────

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -128,6 +129,22 @@ class SelfModificationManager:
         if not good_commit:
             return False, "No .deploy/good_commit found"
 
+        if self._has_uncommitted_changes():
+            return False, "Working tree has uncommitted changes; refusing hard reset rollback"
+
+        branch_name = self._create_recovery_branch_name()
+        branch_proc = subprocess.run(
+            ["git", "branch", branch_name, "HEAD"],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if branch_proc.returncode != 0:
+            err = (branch_proc.stderr or branch_proc.stdout or "git branch failed").strip()
+            return False, f"Failed to create recovery branch '{branch_name}': {err}"
+
         proc = subprocess.run(
             ["git", "reset", "--hard", good_commit],
             cwd=self.repo_root,
@@ -139,7 +156,7 @@ class SelfModificationManager:
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "git reset failed").strip()
             return False, err
-        return True, good_commit
+        return True, f"{good_commit} (recovery branch: {branch_name})"
 
     def _read_good_commit(self) -> str | None:
         good_commit_file = self.repo_root / ".deploy" / "good_commit"
@@ -159,6 +176,24 @@ class SelfModificationManager:
             if candidate.exists():
                 return candidate
         return Path(sys.executable)
+
+    def _has_uncommitted_changes(self) -> bool:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return True
+        return bool((proc.stdout or "").strip())
+
+    @staticmethod
+    def _create_recovery_branch_name() -> str:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        return f"rollback-safety/{stamp}"
 
     @staticmethod
     def _normalize_relative_path(relative_path: str) -> Path:

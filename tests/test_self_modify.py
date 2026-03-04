@@ -58,15 +58,44 @@ def test_rollback_uses_good_commit(tmp_path: Path) -> None:
     manager = SelfModificationManager(repo)
 
     with patch("src.self_modify.subprocess.run") as run_mock:
-        run_mock.return_value.returncode = 0
-        run_mock.return_value.stdout = ""
-        run_mock.return_value.stderr = ""
+        run_mock.side_effect = [
+            type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # status
+            type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # branch
+            type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),  # reset
+        ]
 
         ok, details = manager.rollback_to_good_commit()
 
     assert ok is True
-    assert details == "abc123"
-    assert run_mock.call_args.args[0] == ["git", "reset", "--hard", "abc123"]
+    assert details.startswith("abc123 (recovery branch: rollback-safety/")
+    assert run_mock.call_args_list[0].args[0] == ["git", "status", "--porcelain"]
+    assert run_mock.call_args_list[1].args[0][:2] == ["git", "branch"]
+    assert run_mock.call_args_list[2].args[0] == ["git", "reset", "--hard", "abc123"]
+
+
+def test_rollback_refuses_with_dirty_worktree(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    (repo / ".deploy").mkdir(parents=True)
+    (repo / ".deploy" / "good_commit").write_text("abc123\n", encoding="utf-8")
+    manager = SelfModificationManager(repo)
+
+    with patch("src.self_modify.subprocess.run") as run_mock:
+        run_mock.return_value.returncode = 0
+        run_mock.return_value.stdout = " M src/plugins/tools_plugin.py\n"
+        run_mock.return_value.stderr = ""
+
+        ok, details = manager.rollback_to_good_commit()
+
+    assert ok is False
+    assert "uncommitted changes" in details
+    run_mock.assert_called_once_with(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
 
 
 def test_reload_plugin_rejects_non_python(tmp_path: Path) -> None:

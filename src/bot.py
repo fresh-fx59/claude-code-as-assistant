@@ -397,8 +397,10 @@ async def _restart_service(chat_id: int, bot, message_thread_id: int | None = No
 
 
 def _reset_to_commit(target_hash: str) -> tuple[bool, str]:
+    repo_root = _repo_root()
+
     verify = subprocess.run(
-        ["git", "-C", str(_repo_root()), "rev-parse", "--verify", f"{target_hash}^{{commit}}"],
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", f"{target_hash}^{{commit}}"],
         capture_output=True,
         text=True,
         timeout=10,
@@ -406,8 +408,30 @@ def _reset_to_commit(target_hash: str) -> tuple[bool, str]:
     if verify.returncode != 0:
         return False, verify.stderr.strip() or "Commit not found"
 
+    status = subprocess.run(
+        ["git", "-C", str(repo_root), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if status.returncode != 0:
+        return False, status.stderr.strip() or "git status failed"
+    if status.stdout.strip():
+        return False, "Working tree has uncommitted changes; refusing rollback"
+
+    stamp = datetime.now(tz.utc).strftime("%Y%m%d%H%M%S")
+    recovery_branch = f"rollback-safety/{stamp}"
+    branch = subprocess.run(
+        ["git", "-C", str(repo_root), "branch", recovery_branch, "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if branch.returncode != 0:
+        return False, branch.stderr.strip() or "Failed to create rollback recovery branch"
+
     reset = subprocess.run(
-        ["git", "-C", str(_repo_root()), "reset", "--hard", target_hash],
+        ["git", "-C", str(repo_root), "reset", "--hard", target_hash],
         capture_output=True,
         text=True,
         timeout=20,
@@ -415,10 +439,10 @@ def _reset_to_commit(target_hash: str) -> tuple[bool, str]:
     if reset.returncode != 0:
         return False, reset.stderr.strip() or "git reset --hard failed"
 
-    deploy_dir = _repo_root() / ".deploy"
+    deploy_dir = repo_root / ".deploy"
     deploy_dir.mkdir(exist_ok=True)
     (deploy_dir / "start_times").write_text("")
-    return True, (reset.stdout.strip() or f"Rolled back to {target_hash}")
+    return True, (reset.stdout.strip() or f"Rolled back to {target_hash} (recovery branch: {recovery_branch})")
 
 
 def _find_provider_cli(cli_name: str) -> str | None:
