@@ -49,7 +49,7 @@ context_plugins = ContextPluginRegistry([tool_registry])
 self_mod_manager = SelfModificationManager(Path(__file__).resolve().parent.parent)
 task_manager: TaskManager | None = None  # Set in main()
 schedule_manager: ScheduleManager | None = None  # Set in main()
-_step_plan_restart_callback: Callable[[str], Awaitable[None]] | None = None
+_step_plan_restart_callback: Callable[[str], Awaitable[bool]] | None = None
 health_invariants = HealthInvariants()
 
 # Restore persisted provider selections from sessions
@@ -318,11 +318,91 @@ def _build_midflight_followup_prompt(items: list[str]) -> str:
 
 
 def set_step_plan_restart_callback(
-    callback: Callable[[str], Awaitable[None]] | None,
+    callback: Callable[[str], Awaitable[bool]] | None,
 ) -> None:
     """Inject restart callback from main runtime."""
     global _step_plan_restart_callback
     _step_plan_restart_callback = callback
+
+
+def _active_scope_reasons(
+    *,
+    exclude_scope_key: str | None = None,
+) -> dict[str, set[str]]:
+    """Collect active-work signals for all scopes for restart guards."""
+    reasons: dict[str, set[str]] = {}
+
+    for scope_key, state in _chat_states.items():
+        if exclude_scope_key and scope_key == exclude_scope_key:
+            continue
+        row_reasons = reasons.setdefault(scope_key, set())
+        if state.lock.locked():
+            row_reasons.add("runtime_locked")
+        if state.pending_inputs:
+            row_reasons.add("runtime_pending_inputs")
+
+    if config.SCOPE_SNAPSHOT_ENABLED:
+        for scope_key, row in _load_scope_snapshots().items():
+            if exclude_scope_key and scope_key == exclude_scope_key:
+                continue
+            row_reasons = reasons.setdefault(scope_key, set())
+            if bool(row.get("processing")):
+                row_reasons.add("snapshot_processing")
+            if str(row.get("active_prompt") or "").strip():
+                row_reasons.add("snapshot_active_prompt")
+            if str(row.get("resume_task_id") or "").strip():
+                row_reasons.add("snapshot_resume_task")
+            if list(row.get("pending_inputs") or []):
+                row_reasons.add("snapshot_pending_inputs")
+            if list(row.get("inflight_pending_inputs") or []):
+                row_reasons.add("snapshot_inflight_inputs")
+
+    if task_manager:
+        for task in task_manager.tasks.values():
+            if task.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
+                continue
+            scope_key = _scope_key(task.chat_id, task.message_thread_id)
+            if exclude_scope_key and scope_key == exclude_scope_key:
+                continue
+            row_reasons = reasons.setdefault(scope_key, set())
+            row_reasons.add(f"bg_{task.status.value}")
+
+    return {scope_key: row for scope_key, row in reasons.items() if row}
+
+
+def get_active_work_summary(
+    *,
+    exclude_scope_key: str | None = None,
+) -> list[str]:
+    reasons = _active_scope_reasons(exclude_scope_key=exclude_scope_key)
+    summary: list[str] = []
+    for scope_key in sorted(reasons):
+        reason_text = ",".join(sorted(reasons[scope_key]))
+        summary.append(f"{scope_key} ({reason_text})")
+    return summary
+
+
+async def should_restart_step_plan_now() -> tuple[bool, list[str]]:
+    """Return whether step-plan restart is safe now, with blocking scope list."""
+    state = _load_step_plan_state()
+    chat_id = int(state.get("chat_id") or 0)
+    message_thread_id = state.get("message_thread_id")
+    exclude_scope_key = _scope_key(chat_id, message_thread_id) if chat_id else None
+    blockers = get_active_work_summary(exclude_scope_key=exclude_scope_key)
+
+    if blockers and task_manager and chat_id:
+        bullets = "\n".join(f"• <code>{html.escape(item)}</code>" for item in blockers[:12])
+        await task_manager.bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            text=(
+                "⏸️ <b>Restart deferred</b>\n"
+                "Other thread work is still active, so I will continue without restart now.\n"
+                f"{bullets}"
+            ),
+            parse_mode="HTML",
+        )
+    return (not blockers, blockers)
 
 
 def _step_plan_default_state() -> dict:
@@ -498,11 +578,12 @@ class StepPlanObserver:
         await self._notify(
             int(state.get("chat_id") or task.chat_id),
             state.get("message_thread_id"),
-            "✅ Step completed. Restarting bot to continue with the next step...",
+            "✅ Step completed. Checking if restart is safe before continuing...",
         )
         if state.get("restart_between_steps", True) and _step_plan_restart_callback:
-            await _step_plan_restart_callback("step_plan_next_step")
-            return
+            restarted = await _step_plan_restart_callback("step_plan_next_step")
+            if restarted:
+                return
 
         try:
             next_task_id = await _submit_current_step_plan_task(state)
@@ -612,6 +693,7 @@ async def resume_scope_snapshots_after_restart() -> None:
         completed_hashes = set(row.get("completed_pending_hashes") or [])
 
         restored: list[str] = []
+        notice_lines: list[str] = []
         if inflight_inputs and inflight_hash and inflight_hash not in completed_hashes:
             restored.extend(inflight_inputs)
         restored.extend(pending_inputs)
@@ -621,6 +703,9 @@ async def resume_scope_snapshots_after_restart() -> None:
             state.pending_inputs.extend(restored)
             _update_scope_snapshot(scope_key, state=state, processing=False)
             restored_lines.append(f"{scope_key}: restored {len(restored)} pending item(s)")
+            notice_lines.append(
+                f"Recovered {len(restored)} queued input item(s) after restart."
+            )
 
         if bool(row.get("processing")) and str(row.get("active_prompt") or "").strip():
             if str(row.get("resume_task_id") or "").strip():
@@ -659,6 +744,24 @@ async def resume_scope_snapshots_after_restart() -> None:
                 resume_task_id=resume_task_id,
             )
             resumed_lines.append(f"{scope_key}: resumed interrupted run as task {resume_task_id[:8]}")
+            notice_lines.append(
+                f"Resuming interrupted request as task <code>{html.escape(resume_task_id[:8])}</code>."
+            )
+
+        chat_id = int(row.get("chat_id") or 0)
+        if notice_lines and chat_id:
+            try:
+                await task_manager.bot.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=row.get("message_thread_id"),
+                    text=(
+                        "🔁 <b>Restart recovery</b>\n"
+                        + "\n".join(f"• {line}" for line in notice_lines)
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                logger.exception("Failed to send restart recovery notice for %s", scope_key)
 
     if restored_lines or resumed_lines:
         admin_id = min(config.ALLOWED_USER_IDS) if config.ALLOWED_USER_IDS else None
@@ -989,6 +1092,21 @@ async def _show_rollback_options(chat_id: int, bot, message_thread_id: int | Non
 
 
 async def _restart_service(chat_id: int, bot, message_thread_id: int | None = None) -> None:
+    blockers = get_active_work_summary(exclude_scope_key=_scope_key(chat_id, message_thread_id))
+    if blockers:
+        bullets = "\n".join(f"• <code>{html.escape(item)}</code>" for item in blockers[:12])
+        await bot.send_message(
+            chat_id,
+            (
+                "⏸️ Restart cancelled: there is active work in other threads.\n"
+                "Finish or cancel those runs first.\n"
+                f"{bullets}"
+            ),
+            message_thread_id=message_thread_id,
+            parse_mode="HTML",
+        )
+        return
+
     await asyncio.sleep(1)
     proc = await asyncio.create_subprocess_exec(
         "sudo",

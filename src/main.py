@@ -37,6 +37,7 @@ from .bot import (
     resume_step_plan_after_restart,
     resume_scope_snapshots_after_restart,
     set_step_plan_restart_callback,
+    should_restart_step_plan_now,
 )
 from .metrics import start_metrics_server
 from .autonomy import AutonomyEngine, LearningJournal
@@ -99,11 +100,21 @@ async def send_ready_notification(bot: Bot) -> None:
         logging.warning("Could not send ready notification: %s", e)
 
 
-async def restart_process_for_step_plan(reason: str) -> None:
+async def restart_process_for_step_plan(reason: str) -> bool:
     """Trigger process restart so step plan can continue across clean boots."""
+    should_restart, blockers = await should_restart_step_plan_now()
+    if not should_restart:
+        logging.warning(
+            "Step plan restart deferred (%s); active work in other scopes: %s",
+            reason,
+            blockers,
+        )
+        return False
+
     logging.warning("Step plan requested restart: %s", reason)
     await asyncio.sleep(1.0)
     os.kill(os.getpid(), signal.SIGTERM)
+    return True
 
 
 async def main() -> None:

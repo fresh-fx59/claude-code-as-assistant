@@ -45,6 +45,8 @@ from src.bot import (
     _run_codex_with_retries,
     _reset_to_commit,
     _build_augmented_prompt,
+    get_active_work_summary,
+    should_restart_step_plan_now,
     VALID_MODELS,
 )
 
@@ -772,7 +774,7 @@ class TestScopeSnapshotRecovery:
 
         state = _get_state("123456789:main")
         assert state.pending_inputs == ["remember this"]
-        manager.bot.send_message.assert_awaited_once()
+        assert manager.bot.send_message.await_count >= 1
 
     async def test_resume_interrupted_run_after_restart(self, monkeypatch):
         manager = AsyncMock()
@@ -813,6 +815,85 @@ class TestScopeSnapshotRecovery:
         assert call["model"] == "gpt-5-codex"
         assert call["session_id"] == "sess-codex-1"
         assert call["live_feedback"] is True
+
+    async def test_restart_recovery_notifies_original_thread(self, monkeypatch):
+        manager = AsyncMock()
+        manager.bot = AsyncMock()
+        manager.bot.send_message = AsyncMock()
+        manager.submit = AsyncMock(return_value="task-resume-1234")
+        monkeypatch.setattr("src.bot.task_manager", manager)
+        monkeypatch.setattr("src.bot.config.ALLOWED_USER_IDS", {123456789})
+        monkeypatch.setattr("src.bot.config.SCOPE_SNAPSHOT_ENABLED", True)
+        monkeypatch.setattr("src.bot.config.SCOPE_SNAPSHOT_MAX_AGE_MINUTES", 180)
+
+        _save_scope_snapshots(
+            {
+                "123456789:777": {
+                    "scope_key": "123456789:777",
+                    "chat_id": 123456789,
+                    "message_thread_id": 777,
+                    "pending_inputs": ["extra detail"],
+                    "inflight_pending_inputs": [],
+                    "inflight_pending_hash": "",
+                    "completed_pending_hashes": [],
+                    "processing": True,
+                    "active_prompt": "continue this work",
+                    "active_provider_cli": "claude",
+                    "active_model": "sonnet",
+                    "active_resume_arg": "",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            }
+        )
+
+        await resume_scope_snapshots_after_restart()
+
+        calls = manager.bot.send_message.await_args_list
+        assert any(call.kwargs.get("message_thread_id") == 777 for call in calls)
+        assert any("Restart recovery" in str(call.kwargs.get("text", "")) for call in calls)
+
+    async def test_restart_guard_detects_other_thread_work(self, monkeypatch):
+        _save_step_plan_state(
+            {
+                "active": True,
+                "chat_id": 123456789,
+                "message_thread_id": None,
+            }
+        )
+        other = _get_state("123456789:888")
+        await other.lock.acquire()
+        manager = type("Manager", (), {"tasks": {}, "bot": AsyncMock()})()
+        manager.bot.send_message = AsyncMock()
+        monkeypatch.setattr("src.bot.task_manager", manager)
+        monkeypatch.setattr("src.bot.config.SCOPE_SNAPSHOT_ENABLED", False)
+        try:
+            allowed, blockers = await should_restart_step_plan_now()
+        finally:
+            other.lock.release()
+
+        assert allowed is False
+        assert any("123456789:888" in item for item in blockers)
+        manager.bot.send_message.assert_awaited_once()
+
+    async def test_active_work_summary_excludes_current_scope(self, monkeypatch):
+        monkeypatch.setattr("src.bot.config.SCOPE_SNAPSHOT_ENABLED", True)
+        _save_scope_snapshots(
+            {
+                "123456789:main": {
+                    "scope_key": "123456789:main",
+                    "pending_inputs": ["keep"],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "123456789:99": {
+                    "scope_key": "123456789:99",
+                    "pending_inputs": ["other"],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+        )
+        summary = get_active_work_summary(exclude_scope_key="123456789:main")
+        assert any(item.startswith("123456789:99") for item in summary)
+        assert all(not item.startswith("123456789:main") for item in summary)
 
     async def test_duplicate_followup_hash_prevents_replay(self):
         _save_scope_snapshots(

@@ -31,3 +31,15 @@ async def test_send_ready_notification_separate_message(monkeypatch) -> None:
         chat_id=12345,
         text="💬 Ready to accept messages.",
     )
+
+
+@pytest.mark.asyncio
+async def test_restart_process_for_step_plan_deferred_when_blocked(monkeypatch) -> None:
+    monkeypatch.setattr(main, "should_restart_step_plan_now", AsyncMock(return_value=(False, ["123:7"])))
+    kill_mock = AsyncMock()
+    monkeypatch.setattr(main.os, "kill", kill_mock)
+
+    restarted = await main.restart_process_for_step_plan("step_plan_next_step")
+
+    assert restarted is False
+    kill_mock.assert_not_called()
