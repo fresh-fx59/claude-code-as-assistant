@@ -59,3 +59,28 @@ def test_tools_module_is_compatibility_shim(tmp_path: Path) -> None:
 
     assert type(shim_registry) is type(plugin_registry)
 
+
+def test_tools_plugin_explicit_use_tool_directive(tmp_path: Path) -> None:
+    (tmp_path / "web.yaml").write_text(
+        "\n".join(
+            [
+                "name: web_search",
+                "description: Search web",
+                "triggers: [search]",
+                "instructions: |",
+                "  Use web search.",
+            ]
+        )
+    )
+    registry = PluginToolRegistry(tmp_path)
+    context = registry.build_context("Please decide.\nUSE_TOOL: web_search")
+
+    assert '<tool name="web_search">' in context
+    assert "If a tool is needed, respond with exactly: USE_TOOL: <tool_name>." in context
+
+
+def test_extract_requested_tools_deduplicates_and_normalizes() -> None:
+    requested = PluginToolRegistry.extract_requested_tools(
+        "USE_TOOL: Web_Search\nnoise\nUSE_TOOL: web_search\nUSE_TOOL: github_pr"
+    )
+    assert requested == ["web_search", "github_pr"]
