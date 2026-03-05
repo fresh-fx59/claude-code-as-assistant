@@ -77,6 +77,7 @@ _AUDIO_AS_VOICE_TAG_RE = re.compile(r"\[\[\s*audio_as_voice\s*\]\]", re.IGNORECA
 _MEDIA_LINE_RE = re.compile(r"^\s*(?:[^\w\s]+\s*)?MEDIA:\s*(.+?)\s*$", re.IGNORECASE)
 _VOICE_COMPATIBLE_EXTENSIONS = {".ogg", ".opus", ".mp3", ".m4a"}
 _AUDIO_EXTENSIONS = _VOICE_COMPATIBLE_EXTENSIONS | {".wav", ".aac", ".flac"}
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
 def _thread_id(message: Message) -> int | None:
@@ -243,6 +244,10 @@ def _is_voice_compatible_media(media_ref: str) -> bool:
 
 def _is_audio_media(media_ref: str) -> bool:
     return _media_extension(media_ref) in _AUDIO_EXTENSIONS
+
+
+def _is_image_media(media_ref: str) -> bool:
+    return _media_extension(media_ref) in _IMAGE_EXTENSIONS
 
 
 def _resolve_media_input(media_ref: str):
@@ -1820,6 +1825,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                             await message.answer_voice(media_input)
                         elif _is_audio_media(media_ref):
                             await message.answer_audio(media_input)
+                        elif _is_image_media(media_ref):
+                            await message.answer_photo(media_input)
                         else:
                             await message.answer_document(media_input)
                     except Exception:
