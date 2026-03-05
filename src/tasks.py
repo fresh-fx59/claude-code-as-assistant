@@ -34,6 +34,8 @@ class BackgroundTask:
     created_at: datetime
     provider_cli: str = "claude"
     resume_arg: str | None = None
+    live_feedback: bool = False
+    feedback_title: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     response: str | None = None
@@ -101,6 +103,8 @@ class TaskManager:
         message_thread_id: int | None = None,
         provider_cli: str = "claude",
         resume_arg: str | None = None,
+        live_feedback: bool = False,
+        feedback_title: str | None = None,
         process_handle: dict | None = None,
     ) -> str:
         """Submit a task for background execution. Returns task ID."""
@@ -114,6 +118,8 @@ class TaskManager:
             session_id=session_id,
             provider_cli=provider_cli,
             resume_arg=resume_arg,
+            live_feedback=live_feedback,
+            feedback_title=feedback_title,
             status=TaskStatus.QUEUED,
             created_at=datetime.now(),
         )
@@ -208,9 +214,13 @@ class TaskManager:
 
     async def _execute_task(self, task: BackgroundTask) -> None:
         """Execute a single background task."""
+        typing_task: asyncio.Task | None = None
         try:
             start_time = datetime.now()
             response = None
+            if task.live_feedback:
+                await self._notify_started(task)
+                typing_task = asyncio.create_task(self._typing_loop(task))
 
             if task.provider_cli == "codex":
                 stream = bridge.stream_codex_message(
@@ -289,10 +299,37 @@ class TaskManager:
             await self._notify_failure(task)
 
         finally:
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
             self._running_tasks.discard(task.id)
             metrics.BG_TASKS_RUNNING.set(len(self._running_tasks))
             metrics.BG_TASKS_ACTIVE.set(len(self.tasks))
             await self._notify_observers(task)
+
+    async def _typing_loop(self, task: BackgroundTask) -> None:
+        while True:
+            await self.bot.send_chat_action(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                action="typing",
+            )
+            await asyncio.sleep(5)
+
+    async def _notify_started(self, task: BackgroundTask) -> None:
+        try:
+            title = task.feedback_title or "🔄 <b>Working...</b>"
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text=title,
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Failed to notify task start for %s: %s", task.id, exc)
 
     async def _notify_observers(self, task: BackgroundTask) -> None:
         for observer in self._observers:

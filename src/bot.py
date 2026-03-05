@@ -646,6 +646,8 @@ async def resume_scope_snapshots_after_restart() -> None:
                 message_thread_id=message_thread_id,
                 provider_cli=active_provider_cli,
                 resume_arg=active_resume_arg or None,
+                live_feedback=True,
+                feedback_title="🔄 <b>Resuming interrupted request after restart...</b>",
             )
             _update_scope_snapshot(
                 scope_key,

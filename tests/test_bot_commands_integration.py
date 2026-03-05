@@ -812,6 +812,7 @@ class TestScopeSnapshotRecovery:
         assert call["provider_cli"] == "codex"
         assert call["model"] == "gpt-5-codex"
         assert call["session_id"] == "sess-codex-1"
+        assert call["live_feedback"] is True
 
     async def test_duplicate_followup_hash_prevents_replay(self):
         _save_scope_snapshots(
