@@ -545,7 +545,7 @@ class TestMessageHandling:
         mock_message.answer.assert_not_called()
 
     async def test_when_busy_shows_wait_message(self, mock_message):
-        """Should show waiting message if already processing."""
+        """Should queue additional context if already processing."""
         mock_message.text = "hello"
 
         # Lock the chat
@@ -556,7 +556,8 @@ class TestMessageHandling:
             await handle_message(mock_message)
 
             mock_message.answer.assert_called_once()
-            assert "wait" in mock_message.answer.call_args[0][0].lower()
+            assert "extra context" in mock_message.answer.call_args[0][0].lower()
+            assert state.pending_inputs == ["hello"]
         finally:
             state.lock.release()
 
@@ -573,6 +574,7 @@ class TestChatStateManagement:
         assert isinstance(state.lock, asyncio.Lock)
         assert state.process_handle is None
         assert state.cancel_requested is False
+        assert state.pending_inputs == []
 
     def test_get_returns_same_state(self):
         """Getting state twice for same chat returns same object."""

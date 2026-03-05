@@ -1,5 +1,5 @@
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import html
 import inspect
 import json
@@ -60,6 +60,7 @@ class _ChatState:
     lock: asyncio.Lock
     process_handle: dict | None  # Will contain {"proc": proc} when running
     cancel_requested: bool
+    pending_inputs: list[str] = field(default_factory=list)
 
 
 # Per-conversation state dict
@@ -97,6 +98,33 @@ def _get_state(scope_key: str) -> _ChatState:
     if scope_key not in _chat_states:
         _chat_states[scope_key] = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
     return _chat_states[scope_key]
+
+
+def _queue_pending_input(state: _ChatState, text: str) -> int:
+    """Queue additional user context while current request is running."""
+    state.pending_inputs.append(text)
+    return len(state.pending_inputs)
+
+
+def _drain_pending_inputs(state: _ChatState) -> list[str]:
+    """Atomically consume queued mid-flight inputs."""
+    if not state.pending_inputs:
+        return []
+    pending = list(state.pending_inputs)
+    state.pending_inputs.clear()
+    return pending
+
+
+def _build_midflight_followup_prompt(items: list[str]) -> str:
+    """Build a single follow-up prompt from queued user additions."""
+    if not items:
+        return ""
+    lines = "\n".join(f"- {item}" for item in items)
+    return (
+        "Additional user information arrived while the previous response was being generated.\n"
+        "Use it as updated context and continue from the latest conversation state.\n\n"
+        f"{lines}"
+    )
 
 
 def _is_authorized(user_id: int | None, chat_id: int | None = None) -> bool:
@@ -1692,7 +1720,15 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
 
     if state.lock.locked():
         metrics.MESSAGES_TOTAL.labels(status="busy").inc()
-        await message.answer("Still processing your previous message, please wait...")
+        queued_text = (override_text or message.text or "").strip()
+        if queued_text:
+            queued_count = _queue_pending_input(state, queued_text)
+            await message.answer(
+                f"Working on your previous request. "
+                f"Added this as extra context ({queued_count} queued) and will process it next."
+            )
+        else:
+            await message.answer("Still processing your previous message, please wait...")
         return
 
     async with state.lock:
@@ -1954,6 +1990,16 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             if state.cancel_requested:
                 status = "cancelled"
             metrics.MESSAGES_TOTAL.labels(status=status).inc()
+
+    if state.cancel_requested:
+        _drain_pending_inputs(state)
+        return
+
+    queued_inputs = _drain_pending_inputs(state)
+    if queued_inputs:
+        followup_prompt = _build_midflight_followup_prompt(queued_inputs)
+        if followup_prompt:
+            await _handle_message_inner(message, override_text=followup_prompt)
 
 
 @router.errors()
