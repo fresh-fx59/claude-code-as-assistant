@@ -204,6 +204,12 @@ def _as_text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _inject_tool_request(prompt_text: str, tool_name: str) -> str:
+    """Force a tool to be activated by adding an explicit directive."""
+    base = prompt_text.rstrip()
+    return f"{base}\n\nUSE_TOOL: {tool_name}\n"
+
+
 def _build_augmented_prompt(raw_prompt: str) -> str:
     """Compose prompt with memory, identity, tools, and memory instructions."""
     memory_context = _as_text(memory_manager.build_context(raw_prompt))
@@ -1767,6 +1773,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                         "Chat %s: fallback from '%s' to '%s' (error=%r)",
                         scope_key, provider.name, next_provider.name, final_response.text,
                     )
+                    provider = next_provider
                     env = provider_manager.subprocess_env(next_provider)
                     if next_provider.cli == "codex":
                         codex_model = _codex_model_arg(session, next_provider)
@@ -1786,6 +1793,51 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                             message, state, session, progress, env,
                             override_text=override_text,
                         )
+
+            requested_tools = ToolRegistry.extract_requested_tools(
+                final_response.text if final_response else ""
+            )
+            if (
+                requested_tools
+                and final_response
+                and not final_response.is_error
+                and not state.cancel_requested
+            ):
+                selected_tool = requested_tools[0]
+                logger.info(
+                    "Chat %s: second-pass tool activation requested: %s",
+                    scope_key,
+                    selected_tool,
+                )
+                await progress.report_tool("tool_selector", selected_tool)
+                forced_prompt = _inject_tool_request(
+                    override_text or message.text or "",
+                    selected_tool,
+                )
+                if provider.cli == "codex":
+                    codex_model = _codex_model_arg(session, provider)
+                    retry_response = await _run_codex_with_retries(
+                        message,
+                        state,
+                        session,
+                        progress,
+                        codex_model,
+                        session.codex_session_id,
+                        provider.resume_arg,
+                        env,
+                        override_text=forced_prompt,
+                    )
+                else:
+                    retry_response = await _run_claude(
+                        message,
+                        state,
+                        session,
+                        progress,
+                        env,
+                        override_text=forced_prompt,
+                    )
+                if retry_response:
+                    final_response = retry_response
         finally:
             typing_task.cancel()
             try:

@@ -19,12 +19,14 @@ Tools are YAML files in {TOOLS_DIR}/*.yaml with this structure:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 logger = logging.getLogger(__name__)
+_USE_TOOL_PATTERN = re.compile(r"^\s*USE_TOOL:\s*([A-Za-z0-9_.-]+)\s*$", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass
@@ -118,15 +120,24 @@ class ToolRegistry:
             return None
 
     def match_tools(self, user_message: str) -> list[ToolDefinition]:
-        """Match tools by trigger phrase occurrence."""
+        """Match tools by explicit directives and trigger phrase occurrence."""
         msg_lower = user_message.lower()
         matched: list[ToolDefinition] = []
+        seen_names: set[str] = set()
+
+        for name in self.extract_requested_tools(user_message):
+            full = self._load_full(name)
+            if full and full.manifest.name not in seen_names:
+                matched.append(full)
+                seen_names.add(full.manifest.name)
+
         for manifest in self._manifests:
             for trigger in manifest.triggers:
                 if trigger.lower() in msg_lower:
                     full = self._load_full(manifest.name)
-                    if full:
+                    if full and full.manifest.name not in seen_names:
                         matched.append(full)
+                        seen_names.add(full.manifest.name)
                     break
         return matched
 
@@ -136,6 +147,9 @@ class ToolRegistry:
             return ""
 
         available_lines = [f"- {m.name}: {m.description}" for m in self._manifests]
+        available_lines.append(
+            'If a tool is needed, respond with exactly: USE_TOOL: <tool_name>.'
+        )
         available_section = "<available>\n" + "\n".join(available_lines) + "\n</available>"
 
         matched = self.match_tools(user_message)
@@ -149,6 +163,22 @@ class ToolRegistry:
             active_lines.append("</tool>")
         active_section = "<active>\n" + "\n".join(active_lines) + "\n</active>"
         return f"<tools>\n{available_section}\n\n{active_section}\n</tools>"
+
+    @staticmethod
+    def extract_requested_tools(text: str) -> list[str]:
+        """Parse explicit USE_TOOL directives from message text."""
+        requested: list[str] = []
+        seen: set[str] = set()
+        for match in _USE_TOOL_PATTERN.finditer(text or ""):
+            name = match.group(1).strip()
+            if not name:
+                continue
+            normalized = name.lower()
+            if normalized in seen:
+                continue
+            requested.append(normalized)
+            seen.add(normalized)
+        return requested
 
     def format_for_display(self) -> str:
         """Return HTML-formatted list of available tools for /tools command."""
