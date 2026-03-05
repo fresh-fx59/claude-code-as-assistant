@@ -129,6 +129,8 @@ async def main() -> None:
         BotCommand(command="status", description="Show current session info"),
         BotCommand(command="threads", description="Show tracked forum threads"),
         BotCommand(command="memory", description="Show what I remember"),
+        BotCommand(command="memory_forget", description="Remove semantic memory fact by key"),
+        BotCommand(command="memory_consolidate", description="Consolidate semantic memory facts"),
         BotCommand(command="tools", description="Show available tools"),
         BotCommand(command="rollback", description="Rollback to previous version (admin)"),
         BotCommand(command="selfmod_stage", description="Stage sandbox plugin candidate (admin)"),

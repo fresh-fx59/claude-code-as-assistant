@@ -62,6 +62,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/fresh-fx59/iron-lady-assista
 - `/provider` - switch provider (inline keyboard)
 - `/status` - show session/model/provider status
 - `/memory` - inspect remembered profile/episodes
+- `/memory_forget <key>` - remove semantic memory fact(s) by key
+- `/memory_consolidate` - de-duplicate memory facts and prune low-confidence noise
 - `/tools` - show available tools
 - `/cancel` - cancel current in-flight request
 - `/rollback` - rollback to previous good version (admin)

@@ -14,6 +14,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -125,6 +126,20 @@ class MemoryManager:
         self._dir.mkdir(parents=True, exist_ok=True)
         if not self._db_path.exists():
             self._init_db()
+
+    def _load_profile(self) -> dict[str, Any]:
+        try:
+            data = yaml.safe_load(self._profile_path.read_text()) or {}
+        except Exception:
+            logger.debug("Could not read user_profile.yaml")
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_profile(self, data: dict[str, Any]) -> None:
+        self._profile_path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=False),
+            encoding="utf-8",
+        )
 
     # ── Context building ─────────────────────────────────────
 
@@ -311,3 +326,96 @@ class MemoryManager:
         finally:
             con.close()
         logger.info("All memory cleared")
+
+    def forget_fact(self, key: str) -> bool:
+        """Remove all facts matching a semantic key. Returns True if any removed."""
+        normalized = (key or "").strip().lower()
+        if not normalized:
+            return False
+
+        data = self._load_profile()
+        facts = data.get("facts") or []
+        if not isinstance(facts, list):
+            return False
+
+        kept: list[dict[str, Any]] = []
+        removed = 0
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            fact_key = str(fact.get("key", "")).strip().lower()
+            if fact_key == normalized:
+                removed += 1
+                continue
+            kept.append(fact)
+
+        if removed == 0:
+            return False
+
+        data["facts"] = kept
+        self._write_profile(data)
+        logger.info("Removed %d facts for key '%s'", removed, normalized)
+        return True
+
+    def consolidate_facts(self, min_confidence: float = 0.4) -> dict[str, int]:
+        """De-duplicate facts by key and drop very-low-confidence entries."""
+        data = self._load_profile()
+        facts = data.get("facts") or []
+        if not isinstance(facts, list):
+            return {"before": 0, "after": 0, "removed": 0}
+
+        before = len(facts)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        dropped_low_conf = 0
+
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            key = str(fact.get("key", "")).strip()
+            if not key:
+                continue
+            confidence = float(fact.get("confidence", 1.0))
+            if confidence < min_confidence:
+                dropped_low_conf += 1
+                continue
+            grouped.setdefault(key.lower(), []).append(fact)
+
+        merged: list[dict[str, Any]] = []
+        for variants in grouped.values():
+            variants_sorted = sorted(
+                variants,
+                key=lambda item: (
+                    float(item.get("confidence", 1.0)),
+                    str(item.get("updated", "")),
+                ),
+                reverse=True,
+            )
+            winner = dict(variants_sorted[0])
+            for extra in variants_sorted[1:]:
+                # Preserve strongest confidence/source while keeping canonical winner.
+                winner["confidence"] = max(
+                    float(winner.get("confidence", 1.0)),
+                    float(extra.get("confidence", 1.0)),
+                )
+                if winner.get("source") != "explicit" and extra.get("source") == "explicit":
+                    winner["source"] = "explicit"
+                winner["updated"] = max(
+                    str(winner.get("updated", "")),
+                    str(extra.get("updated", "")),
+                )
+            merged.append(winner)
+
+        merged.sort(key=lambda item: str(item.get("key", "")).lower())
+        data["facts"] = merged
+        self._write_profile(data)
+
+        after = len(merged)
+        removed = before - after
+        logger.info(
+            "Consolidated facts: before=%d after=%d removed=%d dropped_low_conf=%d",
+            before,
+            after,
+            removed,
+            dropped_low_conf,
+        )
+        return {"before": before, "after": after, "removed": removed}

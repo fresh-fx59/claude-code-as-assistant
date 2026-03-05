@@ -15,6 +15,8 @@ from src.bot import (
     cmd_new,
     cmd_model,
     cmd_status,
+    cmd_memory_forget,
+    cmd_memory_consolidate,
     cmd_cancel,
     cmd_selfmod_stage,
     cmd_selfmod_apply,
@@ -265,6 +267,44 @@ class TestStatusCommand:
 
         mock_message.answer.assert_not_called()
 
+
+@pytest.mark.asyncio
+class TestMemoryCommands:
+    async def test_memory_forget_usage(self, mock_message):
+        mock_message.text = "/memory_forget"
+        await cmd_memory_forget(mock_message)
+        assert "usage" in mock_message.answer.call_args[0][0].lower()
+
+    async def test_memory_forget_no_match(self, mock_message):
+        mock_message.text = "/memory_forget role"
+        with patch("src.bot.memory_manager.forget_fact", return_value=False) as forget_mock:
+            await cmd_memory_forget(mock_message)
+        forget_mock.assert_called_once_with("role")
+        assert "no facts found" in mock_message.answer.call_args[0][0].lower()
+
+    async def test_memory_forget_success(self, mock_message):
+        mock_message.text = "/memory_forget role"
+        with patch("src.bot.memory_manager.forget_fact", return_value=True) as forget_mock:
+            await cmd_memory_forget(mock_message)
+        forget_mock.assert_called_once_with("role")
+        assert "removed facts" in mock_message.answer.call_args[0][0].lower()
+
+    async def test_memory_consolidate_reports_stats(self, mock_message):
+        mock_message.text = "/memory_consolidate"
+        with patch(
+            "src.bot.memory_manager.consolidate_facts",
+            return_value={"before": 10, "after": 8, "removed": 2},
+        ) as consolidate_mock:
+            await cmd_memory_consolidate(mock_message)
+        consolidate_mock.assert_called_once()
+        msg = mock_message.answer.call_args[0][0].lower()
+        assert "before" in msg and "after" in msg and "removed" in msg
+
+    async def test_memory_commands_unauthorized_no_response(self, mock_message):
+        mock_message.from_user.id = 99999
+        mock_message.text = "/memory_forget role"
+        await cmd_memory_forget(mock_message)
+        mock_message.answer.assert_not_called()
 
 # ── Contract 6: /cancel command ───────────────────────────────────
 @pytest.mark.asyncio

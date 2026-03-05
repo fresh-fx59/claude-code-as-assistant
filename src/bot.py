@@ -519,6 +519,8 @@ async def cmd_start(message: Message) -> None:
         "/status — Show current session info",
         "/threads — Show tracked forum topics/threads",
         "/memory — Show what I remember",
+        "/memory_forget <key> — Remove semantic fact by key",
+        "/memory_consolidate — De-duplicate and clean memory facts",
         "/tools — Show available tools",
         "/rollback — Roll back to previous version (admin)",
         "/selfmod_stage — Stage sandbox plugin (admin)",
@@ -778,6 +780,40 @@ async def cmd_memory(message: Message) -> None:
             await message.answer(chunk, parse_mode="HTML")
         except Exception:
             await message.answer(strip_html(chunk))
+
+
+@router.message(F.text.startswith("/memory_forget"))
+async def cmd_memory_forget(message: Message) -> None:
+    """Remove semantic memory facts by key."""
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
+        return
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: /memory_forget <fact_key>")
+        return
+
+    key = parts[1].strip()
+    removed = memory_manager.forget_fact(key)
+    if not removed:
+        await message.answer(f"No facts found for key: <code>{html.escape(key)}</code>", parse_mode="HTML")
+        return
+    await message.answer(f"Removed facts for key: <code>{html.escape(key)}</code>", parse_mode="HTML")
+
+
+@router.message(F.text == "/memory_consolidate")
+async def cmd_memory_consolidate(message: Message) -> None:
+    """Merge duplicate facts and prune low-confidence noise."""
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
+        return
+    stats = memory_manager.consolidate_facts()
+    await message.answer(
+        "Memory consolidation complete.\n"
+        f"Before: <b>{stats['before']}</b>\n"
+        f"After: <b>{stats['after']}</b>\n"
+        f"Removed: <b>{stats['removed']}</b>",
+        parse_mode="HTML",
+    )
 
 
 @router.message(F.text == "/threads")
