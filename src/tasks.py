@@ -32,6 +32,8 @@ class BackgroundTask:
     session_id: str | None
     status: TaskStatus
     created_at: datetime
+    provider_cli: str = "claude"
+    resume_arg: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     response: str | None = None
@@ -97,6 +99,8 @@ class TaskManager:
         model: str,
         session_id: str | None = None,
         message_thread_id: int | None = None,
+        provider_cli: str = "claude",
+        resume_arg: str | None = None,
         process_handle: dict | None = None,
     ) -> str:
         """Submit a task for background execution. Returns task ID."""
@@ -108,6 +112,8 @@ class TaskManager:
             prompt=prompt,
             model=model,
             session_id=session_id,
+            provider_cli=provider_cli,
+            resume_arg=resume_arg,
             status=TaskStatus.QUEUED,
             created_at=datetime.now(),
         )
@@ -206,16 +212,24 @@ class TaskManager:
             start_time = datetime.now()
             response = None
 
-            # Stream the Claude response with timeout
-            async for event in asyncio.wait_for(
-                bridge.stream_message(
+            if task.provider_cli == "codex":
+                stream = bridge.stream_codex_message(
+                    prompt=task.prompt,
+                    session_id=task.session_id,
+                    model=task.model,
+                    resume_arg=task.resume_arg,
+                    working_dir=config.CLAUDE_WORKING_DIR,
+                )
+            else:
+                stream = bridge.stream_message(
                     prompt=task.prompt,
                     session_id=task.session_id,
                     model=task.model,
                     working_dir=config.CLAUDE_WORKING_DIR,
-                ),
-                timeout=self._TASK_TIMEOUT,
-            ):
+                )
+
+            # Stream the provider response with timeout
+            async for event in asyncio.wait_for(stream, timeout=self._TASK_TIMEOUT):
                 if event.event_type == bridge.StreamEventType.RESULT:
                     response = event.response
                     break

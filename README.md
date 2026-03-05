@@ -8,6 +8,7 @@ You send messages in Telegram, the bot runs the selected agent, and returns repl
 - Executes real coding tasks from Telegram: code edits, refactors, debugging, and test runs
 - Supports multiple agent providers (`Claude Code CLI` and `Codex CLI`) with in-chat provider/model switching
 - Preserves per-chat context and memory (profile + recent episodes) for long-running workflows
+- Restores interrupted in-flight work after restart by snapshotting scope state and auto-resuming tasks
 - Handles media end-to-end: voice transcription, images/files passthrough, and formatted replies
 - Offers operational safety: allowlists, cancellation, rollback command, crash-loop protection, and metrics
 - Enables cost-aware operation via Codex CLI subscription-based agent usage instead of API-only metering

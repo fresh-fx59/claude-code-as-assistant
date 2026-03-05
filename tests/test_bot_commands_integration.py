@@ -746,6 +746,7 @@ class TestScopeSnapshotRecovery:
         manager = AsyncMock()
         manager.bot = AsyncMock()
         manager.bot.send_message = AsyncMock()
+        manager.submit = AsyncMock(return_value="task-resume-1234")
         monkeypatch.setattr("src.bot.task_manager", manager)
         monkeypatch.setattr("src.bot.config.ALLOWED_USER_IDS", {123456789})
         monkeypatch.setattr("src.bot.config.SCOPE_SNAPSHOT_ENABLED", True)
@@ -772,6 +773,45 @@ class TestScopeSnapshotRecovery:
         state = _get_state("123456789:main")
         assert state.pending_inputs == ["remember this"]
         manager.bot.send_message.assert_awaited_once()
+
+    async def test_resume_interrupted_run_after_restart(self, monkeypatch):
+        manager = AsyncMock()
+        manager.bot = AsyncMock()
+        manager.bot.send_message = AsyncMock()
+        manager.submit = AsyncMock(return_value="task-resume-1234")
+        monkeypatch.setattr("src.bot.task_manager", manager)
+        monkeypatch.setattr("src.bot.config.ALLOWED_USER_IDS", {123456789})
+        monkeypatch.setattr("src.bot.config.SCOPE_SNAPSHOT_ENABLED", True)
+        monkeypatch.setattr("src.bot.config.SCOPE_SNAPSHOT_MAX_AGE_MINUTES", 180)
+
+        _save_scope_snapshots(
+            {
+                "123456789:main": {
+                    "scope_key": "123456789:main",
+                    "chat_id": 123456789,
+                    "message_thread_id": None,
+                    "pending_inputs": [],
+                    "inflight_pending_inputs": [],
+                    "inflight_pending_hash": "",
+                    "completed_pending_hashes": [],
+                    "processing": True,
+                    "active_prompt": "continue this work",
+                    "active_provider_cli": "codex",
+                    "active_model": "gpt-5-codex",
+                    "active_resume_arg": "auto",
+                    "codex_session_id": "sess-codex-1",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            }
+        )
+
+        await resume_scope_snapshots_after_restart()
+
+        manager.submit.assert_awaited_once()
+        call = manager.submit.await_args.kwargs
+        assert call["provider_cli"] == "codex"
+        assert call["model"] == "gpt-5-codex"
+        assert call["session_id"] == "sess-codex-1"
 
     async def test_duplicate_followup_hash_prevents_replay(self):
         _save_scope_snapshots(

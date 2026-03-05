@@ -149,6 +149,11 @@ def _snapshot_default_record(scope_key: str) -> dict:
         "completed_pending_hashes": [],
         "processing": False,
         "provider": "",
+        "active_prompt": "",
+        "active_provider_cli": "",
+        "active_model": "",
+        "active_resume_arg": "",
+        "resume_task_id": "",
         "claude_session_id": "",
         "codex_session_id": "",
         "updated_at": datetime.now(tz.utc).isoformat(),
@@ -191,6 +196,11 @@ def _update_scope_snapshot(
     state: _ChatState | None = None,
     session: object | None = None,
     processing: bool | None = None,
+    active_prompt: str | None = None,
+    active_provider_cli: str | None = None,
+    active_model: str | None = None,
+    active_resume_arg: str | None = None,
+    resume_task_id: str | None = None,
 ) -> None:
     if not config.SCOPE_SNAPSHOT_ENABLED:
         return
@@ -204,6 +214,16 @@ def _update_scope_snapshot(
         row["codex_session_id"] = str(getattr(session, "codex_session_id", "") or "")
     if processing is not None:
         row["processing"] = bool(processing)
+    if active_prompt is not None:
+        row["active_prompt"] = active_prompt
+    if active_provider_cli is not None:
+        row["active_provider_cli"] = active_provider_cli
+    if active_model is not None:
+        row["active_model"] = active_model
+    if active_resume_arg is not None:
+        row["active_resume_arg"] = active_resume_arg
+    if resume_task_id is not None:
+        row["resume_task_id"] = resume_task_id
     row["updated_at"] = datetime.now(tz.utc).isoformat()
     snapshots[scope_key] = row
     _save_scope_snapshots(snapshots)
@@ -270,7 +290,17 @@ async def _cancel_active_scope_run(
         if inspect.isawaitable(kill_result):
             await kill_result
     if scope_key:
-        _update_scope_snapshot(scope_key, state=state, session=session, processing=False)
+        _update_scope_snapshot(
+            scope_key,
+            state=state,
+            session=session,
+            processing=False,
+            active_prompt="",
+            active_provider_cli="",
+            active_model="",
+            active_resume_arg="",
+            resume_task_id="",
+        )
     return True
 
 
@@ -561,6 +591,7 @@ async def resume_scope_snapshots_after_restart() -> None:
     now = datetime.now(tz.utc)
     max_age = timedelta(minutes=max(1, config.SCOPE_SNAPSHOT_MAX_AGE_MINUTES))
     restored_lines: list[str] = []
+    resumed_lines: list[str] = []
 
     for scope_key, row in snapshots.items():
         updated_raw = str(row.get("updated_at") or "")
@@ -584,20 +615,60 @@ async def resume_scope_snapshots_after_restart() -> None:
             restored.extend(inflight_inputs)
         restored.extend(pending_inputs)
         if not restored:
-            continue
+            pass
+        else:
+            state.pending_inputs.extend(restored)
+            _update_scope_snapshot(scope_key, state=state, processing=False)
+            restored_lines.append(f"{scope_key}: restored {len(restored)} pending item(s)")
 
-        state.pending_inputs.extend(restored)
-        _update_scope_snapshot(scope_key, state=state, processing=False)
-        restored_lines.append(f"{scope_key}: restored {len(restored)} pending item(s)")
+        if bool(row.get("processing")) and str(row.get("active_prompt") or "").strip():
+            if str(row.get("resume_task_id") or "").strip():
+                continue
+            chat_id = int(row.get("chat_id") or 0)
+            message_thread_id = row.get("message_thread_id")
+            active_prompt = str(row.get("active_prompt") or "")
+            active_provider_cli = str(row.get("active_provider_cli") or "claude")
+            active_model = str(row.get("active_model") or "sonnet")
+            active_resume_arg = str(row.get("active_resume_arg") or "")
+            session_id = (
+                str(row.get("codex_session_id") or "")
+                if active_provider_cli == "codex"
+                else str(row.get("claude_session_id") or "")
+            ) or None
+            prompt = _build_augmented_prompt(active_prompt)
+            resume_task_id = await task_manager.submit(
+                chat_id=chat_id,
+                user_id=chat_id,
+                prompt=prompt,
+                model=active_model,
+                session_id=session_id,
+                message_thread_id=message_thread_id,
+                provider_cli=active_provider_cli,
+                resume_arg=active_resume_arg or None,
+            )
+            _update_scope_snapshot(
+                scope_key,
+                processing=False,
+                active_prompt="",
+                active_provider_cli="",
+                active_model="",
+                active_resume_arg="",
+                resume_task_id=resume_task_id,
+            )
+            resumed_lines.append(f"{scope_key}: resumed interrupted run as task {resume_task_id[:8]}")
 
-    if restored_lines:
+    if restored_lines or resumed_lines:
         admin_id = min(config.ALLOWED_USER_IDS) if config.ALLOWED_USER_IDS else None
         if admin_id:
+            bullets = [
+                *(f"• <code>{html.escape(line)}</code>" for line in restored_lines[:20]),
+                *(f"• <code>{html.escape(line)}</code>" for line in resumed_lines[:20]),
+            ]
             await task_manager.bot.send_message(
                 chat_id=admin_id,
                 text=(
                     "🔁 <b>Scope snapshot restore</b>\n"
-                    + "\n".join(f"• <code>{html.escape(line)}</code>" for line in restored_lines[:20])
+                    + "\n".join(bullets)
                 ),
                 parse_mode="HTML",
             )
@@ -1087,7 +1158,17 @@ async def cmd_new(message: Message) -> None:
     session_manager.new_codex_conversation(chat_id, thread_id)
     state.pending_inputs.clear()
     fresh_session = session_manager.get(chat_id, thread_id)
-    _update_scope_snapshot(scope_key, state=state, session=fresh_session, processing=False)
+    _update_scope_snapshot(
+        scope_key,
+        state=state,
+        session=fresh_session,
+        processing=False,
+        active_prompt="",
+        active_provider_cli="",
+        active_model="",
+        active_resume_arg="",
+        resume_task_id="",
+    )
     _clear_errors(scope_key)
     if cancelled:
         await message.answer("Conversation cleared immediately. Active request was cancelled.")
@@ -2426,9 +2507,20 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         # Reset cancellation state
         state.cancel_requested = False
         run_generation = state.reset_generation
+        raw_prompt = override_text or message.text or ""
 
         session = session_manager.get(chat_id, thread_id)
-        _update_scope_snapshot(scope_key, state=state, session=session, processing=True)
+        _update_scope_snapshot(
+            scope_key,
+            state=state,
+            session=session,
+            processing=True,
+            active_prompt=raw_prompt,
+            active_provider_cli=session.provider or "",
+            active_model=session.model,
+            active_resume_arg="",
+            resume_task_id="",
+        )
         progress = ProgressReporter(message)
         typing_task = asyncio.create_task(_keep_typing(message))
         await progress.show_working()
@@ -2446,6 +2538,17 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                     parse_mode="HTML",
                 )
                 provider = fallback
+            _update_scope_snapshot(
+                scope_key,
+                state=state,
+                session=session,
+                processing=True,
+                active_prompt=raw_prompt,
+                active_provider_cli=provider.cli,
+                active_model=_current_model_label(session, provider),
+                active_resume_arg=provider.resume_arg or "",
+                resume_task_id="",
+            )
             env = provider_manager.subprocess_env(provider)
             logger.info(
                 "Chat %s: using provider '%s' (cli=%s) with env=%s",
@@ -2697,15 +2800,43 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             if state.cancel_requested:
                 status = "cancelled"
             metrics.MESSAGES_TOTAL.labels(status=status).inc()
-        _update_scope_snapshot(scope_key, state=state, session=session, processing=False)
+        _update_scope_snapshot(
+            scope_key,
+            state=state,
+            session=session,
+            processing=False,
+            active_prompt="",
+            active_provider_cli="",
+            active_model="",
+            active_resume_arg="",
+            resume_task_id="",
+        )
 
     if state.cancel_requested:
         _drain_pending_inputs(state)
-        _update_scope_snapshot(scope_key, state=state, processing=False)
+        _update_scope_snapshot(
+            scope_key,
+            state=state,
+            processing=False,
+            active_prompt="",
+            active_provider_cli="",
+            active_model="",
+            active_resume_arg="",
+            resume_task_id="",
+        )
         return
 
     queued_inputs = _drain_pending_inputs(state)
-    _update_scope_snapshot(scope_key, state=state, processing=False)
+    _update_scope_snapshot(
+        scope_key,
+        state=state,
+        processing=False,
+        active_prompt="",
+        active_provider_cli="",
+        active_model="",
+        active_resume_arg="",
+        resume_task_id="",
+    )
     if queued_inputs:
         pending_hash = _mark_followup_inflight(scope_key, queued_inputs)
         if _is_followup_already_completed(scope_key, pending_hash):
