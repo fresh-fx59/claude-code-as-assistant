@@ -94,6 +94,11 @@ class TaskManager:
     _MAX_CONCURRENT: Final[int] = 3  # Max background tasks running at once
     _TASK_TIMEOUT: Final[int] = 600  # 10 minutes max per task
     _TOOL_TIMEOUT_POLICY: Final[ToolTimeoutPolicy] = ToolTimeoutPolicy()
+    _TRANSIENT_ERROR_RETRIES: Final[int] = 1
+    _TRANSIENT_CODEX_ERRORS: Final[tuple[str, ...]] = (
+        "codex process exited without producing a result",
+        "codex process was interrupted by service restart",
+    )
 
     def __init__(self, bot: Bot, observers: Sequence[TaskObserver] | None = None):
         self.bot = bot
@@ -292,6 +297,15 @@ class TaskManager:
         name = cls._normalize_tool_name(tool_name)
         return category in {"local_shell", "browser"} or name in {"task", "python", "sql"}
 
+    @classmethod
+    def _is_retryable_provider_error(cls, provider_cli: str, error_text: str | None) -> bool:
+        if provider_cli != "codex":
+            return False
+        text = (error_text or "").strip().lower()
+        if not text:
+            return False
+        return any(marker in text for marker in cls._TRANSIENT_CODEX_ERRORS)
+
     async def _terminate_process(self, process_handle: dict | None) -> None:
         if not process_handle:
             return
@@ -413,10 +427,30 @@ class TaskManager:
                 typing_task = asyncio.create_task(self._typing_loop(task))
             tool_timeout: ToolTimeoutRecord | None = None
             retries_left = self._TOOL_TIMEOUT_POLICY.retryable_timeout_retries
+            transient_error_retries_left = self._TRANSIENT_ERROR_RETRIES
 
             while True:
                 response, tool_timeout = await self._run_provider_attempt(task)
                 if not tool_timeout:
+                    if (
+                        response
+                        and response.is_error
+                        and transient_error_retries_left > 0
+                        and self._is_retryable_provider_error(task.provider_cli, response.text)
+                    ):
+                        transient_error_retries_left -= 1
+                        logger.warning(
+                            "Retrying transient provider error for task %s (provider=%s, retries_left=%d): %s",
+                            task.id,
+                            task.provider_cli,
+                            transient_error_retries_left,
+                            (response.text or "")[:200],
+                        )
+                        # Service-restart interruptions can invalidate provider-side resume state.
+                        if "interrupted by service restart" in (response.text or "").lower():
+                            task.session_id = None
+                        await asyncio.sleep(0.3)
+                        continue
                     break
 
                 logger.warning(
