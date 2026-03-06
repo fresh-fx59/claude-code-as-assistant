@@ -480,7 +480,17 @@ async def cmd_start(message: Message) -> None:
 async def cmd_new(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    session = session_manager.get(message.chat.id)
+    chat_id = message.chat.id
+    provider = provider_manager.get_provider(chat_id)
+    session = session_manager.get(chat_id)
+    provider_cli = provider.cli if _find_provider_cli(provider.cli) else "claude"
+    resume_arg = provider.resume_arg if provider_cli == "codex" else None
+    session_id = session.codex_session_id if provider_cli == "codex" else session.claude_session_id
+    task_model = (
+        (_codex_model_arg(session, provider) or "default")
+        if provider_cli == "codex"
+        else session.model
+    )
     if session.claude_session_id and os.getenv("DISABLE_REFLECTION") != "1":
         asyncio.create_task(_reflect(message.chat.id, session))
     session_manager.new_conversation(message.chat.id)
@@ -932,18 +942,20 @@ async def cmd_bg(message: Message) -> None:
     full_prompt = "\n\n".join(prompt_parts)
 
     task_id = await task_manager.submit(
-        chat_id=message.chat.id,
+        chat_id=chat_id,
         user_id=_actor_id(message),
         prompt=full_prompt,
-        model=session.model,
-        session_id=session.claude_session_id,
+        model=task_model,
+        session_id=session_id,
+        provider_cli=provider_cli,
+        resume_arg=resume_arg,
     )
 
     lines = [
         f"✅ <b>Task queued</b>",
         f"",
         f"<b>Task ID:</b> <code>{task_id}</code>",
-        f"<b>Model:</b> {session.model}",
+        f"<b>Model:</b> {task_model}",
         f"",
         f"I'll notify you when it completes. You can continue chatting.",
         f"",
