@@ -700,7 +700,11 @@ class TestStepPlanCommands:
         manager = AsyncMock()
         manager.submit = AsyncMock(return_value="task-123")
         monkeypatch.setattr("src.bot.task_manager", manager)
-        fake_provider = type("Provider", (), {"cli": "codex", "resume_arg": "resume"})()
+        fake_provider = type(
+            "Provider",
+            (),
+            {"cli": "codex", "resume_arg": "resume", "model": "gpt-5-codex", "models": ["gpt-5-codex", "default"]},
+        )()
         monkeypatch.setattr("src.bot.provider_manager.get_provider", lambda _scope: fake_provider)
         from src.bot import session_manager
         session_manager.update_codex_session_id(123456789, "codex-sess")
@@ -712,6 +716,7 @@ class TestStepPlanCommands:
         assert submit_kwargs["provider_cli"] == "codex"
         assert submit_kwargs["resume_arg"] == "resume"
         assert submit_kwargs["session_id"] == "codex-sess"
+        assert submit_kwargs["model"] == "gpt-5-codex"
         assert submit_kwargs["live_feedback"] is True
         assert "Step plan 1/2 running" in submit_kwargs["feedback_title"]
         state = _load_step_plan_state()

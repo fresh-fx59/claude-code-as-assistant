@@ -612,13 +612,18 @@ async def _submit_current_step_plan_task(state: dict) -> str:
     session_id = (
         session.codex_session_id if provider_cli == "codex" else session.claude_session_id
     )
+    task_model = (
+        (_codex_model_arg(session, provider) or "default")
+        if provider_cli == "codex"
+        else session.model
+    )
 
     task_id = await task_manager.submit(
         chat_id=chat_id,
         message_thread_id=message_thread_id,
         user_id=user_id,
         prompt=full_prompt,
-        model=session.model,
+        model=task_model,
         session_id=session_id,
         provider_cli=provider_cli,
         resume_arg=resume_arg,
@@ -2463,6 +2468,11 @@ async def cmd_bg(message: Message) -> None:
     session_id = (
         session.codex_session_id if provider_cli == "codex" else session.claude_session_id
     )
+    task_model = (
+        (_codex_model_arg(session, provider) or "default")
+        if provider_cli == "codex"
+        else session.model
+    )
 
     full_prompt = _build_augmented_prompt(prompt)
 
@@ -2471,7 +2481,7 @@ async def cmd_bg(message: Message) -> None:
         message_thread_id=thread_id,
         user_id=_actor_id(message),
         prompt=full_prompt,
-        model=session.model,
+        model=task_model,
         session_id=session_id,
         provider_cli=provider_cli,
         resume_arg=resume_arg,
@@ -2481,7 +2491,7 @@ async def cmd_bg(message: Message) -> None:
         f"✅ <b>Task queued</b>",
         f"",
         f"<b>Task ID:</b> <code>{task_id}</code>",
-        f"<b>Model:</b> {session.model}",
+        f"<b>Model:</b> {task_model}",
         f"",
         f"I'll notify you when it completes. You can continue chatting.",
         f"",
@@ -3264,16 +3274,22 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         run_generation = state.reset_generation
         raw_prompt = override_text or message.text or ""
 
+        provider = provider_manager.get_provider(scope_key)
         session = session_manager.get(chat_id, thread_id)
+        snapshot_model = (
+            (_codex_model_arg(session, provider) or "default")
+            if provider.cli == "codex"
+            else session.model
+        )
         _update_scope_snapshot(
             scope_key,
             state=state,
             session=session,
             processing=True,
             active_prompt=raw_prompt,
-            active_provider_cli=session.provider or "",
-            active_model=session.model,
-            active_resume_arg="",
+            active_provider_cli=provider.cli,
+            active_model=snapshot_model,
+            active_resume_arg=provider.resume_arg or "",
             resume_task_id="",
         )
         progress = ProgressReporter(message)
@@ -3284,7 +3300,6 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         response_empty = False
 
         try:
-            provider = provider_manager.get_provider(scope_key)
             if provider.cli != "claude" and _find_provider_cli(provider.cli) is None:
                 fallback = provider_manager.reset(scope_key)
                 session_manager.set_provider(chat_id, fallback.name, thread_id)
