@@ -3969,21 +3969,35 @@ async def _maybe_add_local_tts_media(
 
 async def _send_media_refs(message: Message, media_refs: list[str], audio_as_voice: bool) -> None:
     for media_ref in media_refs:
-        media_input = _resolve_media_input(media_ref)
         try:
             if _is_voice_compatible_media(media_ref):
-                await message.answer_voice(media_input)
+                await message.answer_voice(_resolve_media_input(media_ref))
             elif audio_as_voice and _is_audio_media(media_ref):
-                await message.answer_voice(media_input)
+                await message.answer_voice(_resolve_media_input(media_ref))
             elif _is_audio_media(media_ref):
-                await message.answer_audio(media_input)
+                await message.answer_audio(_resolve_media_input(media_ref))
             elif _is_image_media(media_ref):
-                await message.answer_photo(media_input)
+                await message.answer_photo(_resolve_media_input(media_ref))
             else:
-                await message.answer_document(media_input)
+                await message.answer_document(_resolve_media_input(media_ref))
         except Exception:
-            logger.exception(
-                "Chat %d: failed to send media '%s'",
-                message.chat.id,
-                media_ref,
-            )
+            logger.exception("Chat %d: failed to send media '%s'", message.chat.id, media_ref)
+            if _is_voice_compatible_media(media_ref) or _is_audio_media(media_ref):
+                # Prefer voice bubble, but fall back gracefully so media is still delivered.
+                try:
+                    await message.answer_audio(_resolve_media_input(media_ref))
+                    continue
+                except Exception:
+                    logger.exception(
+                        "Chat %d: fallback answer_audio failed for media '%s'",
+                        message.chat.id,
+                        media_ref,
+                    )
+                try:
+                    await message.answer_document(_resolve_media_input(media_ref))
+                except Exception:
+                    logger.exception(
+                        "Chat %d: fallback answer_document failed for media '%s'",
+                        message.chat.id,
+                        media_ref,
+                    )

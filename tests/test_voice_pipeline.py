@@ -57,6 +57,18 @@ async def test_send_media_refs_regular_attachment_for_non_media():
 
 
 @pytest.mark.asyncio
+async def test_send_media_refs_falls_back_to_audio_when_voice_fails():
+    message = AsyncMock()
+    message.chat.id = 123
+    message.answer_voice.side_effect = RuntimeError("voice failed")
+
+    await _send_media_refs(message, ["https://example.com/reply.ogg"], audio_as_voice=False)
+
+    message.answer_voice.assert_called_once()
+    message.answer_audio.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_maybe_add_local_tts_media_for_voice_request():
     with (
         patch("src.bot.tts.is_available", return_value=True),
