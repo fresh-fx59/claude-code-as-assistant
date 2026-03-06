@@ -150,3 +150,48 @@ def test_apply_candidate_rolls_back_on_reload_failure(tmp_path: Path) -> None:
     assert "Reload failed" in result.message
     assert "rollback to abc123" in result.message
     promote_mock.assert_called_once_with("tools_plugin.py")
+
+
+def test_classify_risk_high_for_command_execution_markers(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    manager = SelfModificationManager(repo)
+    manager.stage_plugin("tools/plugin.py", "import os\nos.system('echo x')\n")
+
+    risk = manager.classify_risk("tools/plugin.py", "tests/test_context_plugins.py")
+
+    assert risk == "high"
+
+
+def test_apply_candidate_blocked_by_review_gate_without_override(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    manager = SelfModificationManager(repo)
+    manager.stage_plugin("tools/plugin.py", "import os\nos.system('echo x')\n")
+
+    result = manager.apply_candidate("tools/plugin.py")
+
+    assert result.ok is False
+    assert "Review gate blocked" in result.message
+    assert "risk=high" in result.review_summary
+    assert result.review_artifact
+
+
+def test_apply_candidate_override_allows_blocked_review(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    manager = SelfModificationManager(repo)
+    manager.stage_plugin("tools/plugin.py", "import os\nos.system('echo x')\n")
+
+    with (
+        patch.object(manager, "validate") as validate_mock,
+        patch.object(manager, "promote_plugin") as promote_mock,
+        patch.object(manager, "reload_plugin_module") as reload_mock,
+    ):
+        validate_mock.return_value.ok = True
+        validate_mock.return_value.output = "tests passed"
+        reload_mock.return_value = (True, "src.plugins.tools.plugin")
+
+        result = manager.apply_candidate("tools/plugin.py", override_review=True)
+
+    assert result.ok is True
+    assert "override=True" in result.review_summary
+    assert result.review_artifact
+    promote_mock.assert_called_once_with("tools/plugin.py")

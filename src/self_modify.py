@@ -7,11 +7,15 @@ stage candidate code -> validate -> promote -> rollback helper.
 from __future__ import annotations
 
 import importlib
+import json
+import os
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 
@@ -26,6 +30,56 @@ class ApplyResult:
     ok: bool
     message: str
     validation_output: str = ""
+    review_artifact: str = ""
+    review_summary: str = ""
+
+
+class ReviewDecision(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    CONCERNS = "CONCERNS"
+
+
+@dataclass(frozen=True)
+class ReviewVote:
+    reviewer: str
+    decision: ReviewDecision
+    summary: str
+    severe: bool = False
+
+
+@dataclass(frozen=True)
+class ReviewArtifact:
+    timestamp: str
+    relative_plugin_path: str
+    test_target: str
+    risk: str
+    required: bool
+    override_used: bool
+    approved: bool
+    blocked_reason: str
+    votes: tuple[ReviewVote, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "timestamp": self.timestamp,
+            "relative_plugin_path": self.relative_plugin_path,
+            "test_target": self.test_target,
+            "risk": self.risk,
+            "required": self.required,
+            "override_used": self.override_used,
+            "approved": self.approved,
+            "blocked_reason": self.blocked_reason,
+            "votes": [
+                {
+                    "reviewer": vote.reviewer,
+                    "decision": vote.decision.value,
+                    "summary": vote.summary,
+                    "severe": vote.severe,
+                }
+                for vote in self.votes
+            ],
+        }
 
 
 class SelfModificationManager:
@@ -36,6 +90,185 @@ class SelfModificationManager:
         self.sandbox_dir = sandbox_dir or (repo_root / "sandbox")
         self.sandbox_plugins_dir = self.sandbox_dir / "plugins"
         self.plugins_dir = self.repo_root / "src" / "plugins"
+        self._review_artifacts_dir = self.repo_root / ".deploy" / "review_artifacts"
+        self._review_gate_enabled = self._env_bool("SELF_MOD_REVIEW_GATE_ENABLED", True)
+        self._review_required_min_risk = (os.getenv("SELF_MOD_REVIEW_MIN_RISK", "medium") or "medium").strip().lower()
+
+    @staticmethod
+    def _env_bool(name: str, default: bool) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _risk_rank(risk: str) -> int:
+        return {"low": 1, "medium": 2, "high": 3}.get(risk, 1)
+
+    def classify_risk(self, relative_plugin_path: str, test_target: str) -> str:
+        rel_path = self._normalize_relative_path(relative_plugin_path)
+        source = ""
+        candidate_file = self.sandbox_plugins_dir / rel_path
+        if candidate_file.exists():
+            source = candidate_file.read_text(encoding="utf-8")
+
+        suspicious_patterns = (
+            r"\bsubprocess\.",
+            r"\bos\.system\(",
+            r"\beval\(",
+            r"\bexec\(",
+            r"git\s+reset\s+--hard",
+            r"rm\s+-rf",
+            r"TELEGRAM_BOT_TOKEN",
+            r"OPENAI_API_KEY",
+            r"ANTHROPIC_API_KEY",
+        )
+        if any(re.search(pattern, source, re.IGNORECASE) for pattern in suspicious_patterns):
+            return "high"
+        if rel_path.suffix != ".py":
+            return "high"
+        if "bot" in rel_path.parts or "main" in rel_path.parts:
+            return "high"
+        if test_target.strip() != "tests/test_context_plugins.py":
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _normalize_decision(decision: str) -> ReviewDecision:
+        normalized = (decision or "").strip().upper()
+        if normalized == ReviewDecision.PASS.value:
+            return ReviewDecision.PASS
+        if normalized == ReviewDecision.FAIL.value:
+            return ReviewDecision.FAIL
+        return ReviewDecision.CONCERNS
+
+    def _review_vote(
+        self,
+        reviewer: str,
+        relative_plugin_path: str,
+        source: str,
+        risk: str,
+    ) -> ReviewVote:
+        lowered = source.lower()
+        if reviewer == "security":
+            if any(token in lowered for token in ("os.system(", "subprocess.", "eval(", "exec(", "rm -rf")):
+                return ReviewVote(
+                    reviewer=reviewer,
+                    decision=ReviewDecision.FAIL,
+                    summary="Potential command execution / destructive primitive detected.",
+                    severe=True,
+                )
+            if any(token in lowered for token in ("token", "api_key", "secret")):
+                return ReviewVote(
+                    reviewer=reviewer,
+                    decision=ReviewDecision.CONCERNS,
+                    summary="Potential credential handling markers present; verify no secret exposure.",
+                )
+            return ReviewVote(reviewer=reviewer, decision=ReviewDecision.PASS, summary="No severe security markers.")
+        if reviewer == "reliability":
+            if "rollback_to_good_commit" in source or "reset --hard" in lowered:
+                return ReviewVote(
+                    reviewer=reviewer,
+                    decision=ReviewDecision.CONCERNS,
+                    summary="Rollback-sensitive operations present; validate guardrails carefully.",
+                )
+            if risk == "high":
+                return ReviewVote(
+                    reviewer=reviewer,
+                    decision=ReviewDecision.CONCERNS,
+                    summary="High-risk change requires extra validation evidence.",
+                )
+            return ReviewVote(reviewer=reviewer, decision=ReviewDecision.PASS, summary="Operational risk acceptable.")
+        if reviewer == "correctness":
+            if not source.strip():
+                return ReviewVote(
+                    reviewer=reviewer,
+                    decision=ReviewDecision.FAIL,
+                    summary="Candidate source is empty.",
+                )
+            if "TODO" in source:
+                return ReviewVote(
+                    reviewer=reviewer,
+                    decision=ReviewDecision.CONCERNS,
+                    summary="TODO marker found; implementation may be incomplete.",
+                )
+            return ReviewVote(reviewer=reviewer, decision=ReviewDecision.PASS, summary="Basic correctness checks passed.")
+        return ReviewVote(reviewer=reviewer, decision=ReviewDecision.CONCERNS, summary="Unknown reviewer policy.")
+
+    def _run_review_gate(
+        self,
+        *,
+        relative_plugin_path: str,
+        test_target: str,
+        risk: str,
+        override_review: bool,
+    ) -> tuple[bool, ReviewArtifact, Path]:
+        rel_path = self._normalize_relative_path(relative_plugin_path)
+        source = ""
+        candidate_file = self.sandbox_plugins_dir / rel_path
+        if candidate_file.exists():
+            source = candidate_file.read_text(encoding="utf-8")
+
+        required = self._review_gate_enabled and self._risk_rank(risk) >= self._risk_rank(self._review_required_min_risk)
+        reviewers = ("correctness", "security", "reliability") if required else ("correctness",)
+        votes = tuple(
+            self._review_vote(
+                reviewer=reviewer,
+                relative_plugin_path=relative_plugin_path,
+                source=source,
+                risk=risk,
+            )
+            for reviewer in reviewers
+        )
+        normalized_votes = tuple(
+            ReviewVote(
+                reviewer=vote.reviewer,
+                decision=self._normalize_decision(vote.decision.value),
+                summary=vote.summary,
+                severe=vote.severe,
+            )
+            for vote in votes
+        )
+        pass_count = sum(1 for vote in normalized_votes if vote.decision == ReviewDecision.PASS)
+        fail_count = sum(1 for vote in normalized_votes if vote.decision == ReviewDecision.FAIL)
+        severe_count = sum(1 for vote in normalized_votes if vote.severe)
+        approved = True
+        blocked_reason = ""
+        if required:
+            if severe_count > 0:
+                approved = False
+                blocked_reason = "severe_concern"
+            elif fail_count > 0:
+                approved = False
+                blocked_reason = "review_failed"
+            elif pass_count < 2:
+                approved = False
+                blocked_reason = "consensus_not_reached"
+        if override_review and not approved:
+            blocked_reason = ""
+            approved = True
+
+        artifact = ReviewArtifact(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            relative_plugin_path=relative_plugin_path,
+            test_target=test_target,
+            risk=risk,
+            required=required,
+            override_used=override_review,
+            approved=approved,
+            blocked_reason=blocked_reason,
+            votes=normalized_votes,
+        )
+        artifact_path = self._write_review_artifact(artifact)
+        return approved, artifact, artifact_path
+
+    def _write_review_artifact(self, artifact: ReviewArtifact) -> Path:
+        self._review_artifacts_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", artifact.relative_plugin_path).strip("-") or "candidate"
+        target = self._review_artifacts_dir / f"{stamp}-{safe_name}.json"
+        target.write_text(json.dumps(artifact.to_dict(), ensure_ascii=True, indent=2), encoding="utf-8")
+        return target
 
     def stage_plugin(self, relative_plugin_path: str, content: str) -> Path:
         rel_path = self._normalize_relative_path(relative_plugin_path)
@@ -90,13 +323,35 @@ class SelfModificationManager:
         relative_plugin_path: str,
         test_target: str = "tests/test_context_plugins.py",
         timeout: int = 180,
+        override_review: bool = False,
     ) -> ApplyResult:
+        risk = self.classify_risk(relative_plugin_path, test_target)
+        approved, artifact, artifact_path = self._run_review_gate(
+            relative_plugin_path=relative_plugin_path,
+            test_target=test_target,
+            risk=risk,
+            override_review=override_review,
+        )
+        review_summary = (
+            f"risk={artifact.risk}; required={artifact.required}; approved={artifact.approved}; "
+            f"override={artifact.override_used}; blocked_reason={artifact.blocked_reason or '-'}"
+        )
+        if not approved:
+            return ApplyResult(
+                ok=False,
+                message="Review gate blocked change before validation/promote",
+                review_artifact=str(artifact_path),
+                review_summary=review_summary,
+            )
+
         validation = self.validate(test_target=test_target, timeout=timeout)
         if not validation.ok:
             return ApplyResult(
                 ok=False,
                 message="Validation failed",
                 validation_output=validation.output,
+                review_artifact=str(artifact_path),
+                review_summary=review_summary,
             )
 
         try:
@@ -106,6 +361,8 @@ class SelfModificationManager:
                 ok=False,
                 message=f"Promotion failed: {exc}",
                 validation_output=validation.output,
+                review_artifact=str(artifact_path),
+                review_summary=review_summary,
             )
 
         reloaded, reload_msg = self.reload_plugin_module(relative_plugin_path)
@@ -114,6 +371,8 @@ class SelfModificationManager:
                 ok=True,
                 message=f"Applied and hot-reloaded {reload_msg}",
                 validation_output=validation.output,
+                review_artifact=str(artifact_path),
+                review_summary=review_summary,
             )
 
         rb_ok, rb_details = self.rollback_to_good_commit()
@@ -122,6 +381,8 @@ class SelfModificationManager:
             ok=False,
             message=f"Reload failed ({reload_msg}); {rollback_text}",
             validation_output=validation.output,
+            review_artifact=str(artifact_path),
+            review_summary=review_summary,
         )
 
     def rollback_to_good_commit(self) -> tuple[bool, str]:

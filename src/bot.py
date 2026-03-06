@@ -2398,20 +2398,27 @@ async def cmd_selfmod_apply(message: Message) -> None:
         await message.answer("This command is admin-only.")
         return
 
-    parts = (message.text or "").split(maxsplit=2)
-    if len(parts) < 2:
+    tokens = shlex.split((message.text or "").strip())
+    if len(tokens) < 2:
         await message.answer(
-            "Usage: /selfmod_apply <relative_plugin_path.py> [test_target]\n"
+            "Usage: /selfmod_apply <relative_plugin_path.py> [test_target] [--review-override]\n"
             "Example: /selfmod_apply tools_plugin.py tests/test_context_plugins.py"
         )
         return
 
-    relative_path = parts[1].strip()
-    test_target = parts[2].strip() if len(parts) > 2 else "tests/test_context_plugins.py"
+    override_review = "--review-override" in tokens
+    positional = [token for token in tokens[1:] if token != "--review-override"]
+    if not positional:
+        await message.answer("Missing <relative_plugin_path.py>.")
+        return
+
+    relative_path = positional[0].strip()
+    test_target = positional[1].strip() if len(positional) > 1 else "tests/test_context_plugins.py"
 
     await message.answer(
         f"Applying sandbox candidate <code>{relative_path}</code>\n"
-        f"Validation target: <code>{test_target}</code>",
+        f"Validation target: <code>{test_target}</code>\n"
+        f"Review override: <code>{'on' if override_review else 'off'}</code>",
         parse_mode="HTML",
     )
 
@@ -2419,6 +2426,8 @@ async def cmd_selfmod_apply(message: Message) -> None:
         self_mod_manager.apply_candidate,
         relative_path,
         test_target,
+        180,
+        override_review,
     )
 
     validation_text = result.validation_output or "(no output)"
@@ -2426,6 +2435,8 @@ async def cmd_selfmod_apply(message: Message) -> None:
     lines = [
         status,
         f"<b>Result:</b> {result.message}",
+        f"<b>Review:</b> {html.escape(result.review_summary or '(no review summary)')}",
+        f"<b>Review artifact:</b> <code>{html.escape(result.review_artifact or '-')}</code>",
         "",
         "<b>Validation output:</b>",
         f"<pre>{html.escape(_truncate_output(validation_text))}</pre>",

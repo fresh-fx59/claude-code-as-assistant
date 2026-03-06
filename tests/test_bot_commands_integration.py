@@ -417,6 +417,8 @@ class TestSelfModApplyCommand:
     """/selfmod_apply should run admin-only sandbox apply workflow."""
 
     async def test_selfmod_apply_requires_admin(self, mock_message):
+        from src import config as bot_config
+        bot_config.ALLOWED_USER_IDS = {123456789}
         mock_message.text = "/selfmod_apply tools_plugin.py"
         mock_message.from_user.id = 99999
 
@@ -426,6 +428,8 @@ class TestSelfModApplyCommand:
         assert "admin-only" in mock_message.answer.call_args[0][0]
 
     async def test_selfmod_apply_runs_workflow(self, mock_message):
+        from src import config as bot_config
+        bot_config.ALLOWED_USER_IDS = {123456789}
         mock_message.text = "/selfmod_apply tools_plugin.py tests/test_context_plugins.py"
         with (
             patch("src.bot.self_mod_manager.apply_candidate") as apply_mock,
@@ -444,6 +448,28 @@ class TestSelfModApplyCommand:
         apply_mock.assert_called_once()
         registry_mock.assert_called_once()
         context_registry_mock.assert_called_once()
+
+    async def test_selfmod_apply_supports_review_override_flag(self, mock_message):
+        from src import config as bot_config
+        bot_config.ALLOWED_USER_IDS = {123456789}
+        mock_message.text = "/selfmod_apply tools_plugin.py tests/test_context_plugins.py --review-override"
+        with (
+            patch("src.bot.self_mod_manager.apply_candidate") as apply_mock,
+            patch("src.bot.ToolRegistry"),
+            patch("src.bot.ContextPluginRegistry"),
+        ):
+            apply_mock.return_value.ok = True
+            apply_mock.return_value.message = "Applied and hot-reloaded src.plugins.tools_plugin"
+            apply_mock.return_value.validation_output = "ok"
+            apply_mock.return_value.review_summary = "risk=high; required=True; approved=True; override=True"
+            apply_mock.return_value.review_artifact = "/tmp/artifact.json"
+
+            await cmd_selfmod_apply(mock_message)
+
+        args = apply_mock.call_args.args
+        assert args[0] == "tools_plugin.py"
+        assert args[1] == "tests/test_context_plugins.py"
+        assert args[3] is True
 
 
 @pytest.mark.asyncio
