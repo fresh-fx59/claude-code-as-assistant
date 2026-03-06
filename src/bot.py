@@ -442,8 +442,9 @@ def _active_scope_reasons(
             if list(row.get("inflight_pending_inputs") or []):
                 row_reasons.add("snapshot_inflight_inputs")
 
-    if task_manager:
-        for task in task_manager.tasks.values():
+    tm = _task_manager()
+    if tm:
+        for task in tm.tasks.values():
             if task.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
                 continue
             scope_key = _scope_key(task.chat_id, task.message_thread_id)
@@ -475,9 +476,10 @@ async def should_restart_step_plan_now() -> tuple[bool, list[str]]:
     exclude_scope_key = _scope_key(chat_id, message_thread_id) if chat_id else None
     blockers = get_active_work_summary(exclude_scope_key=exclude_scope_key)
 
-    if blockers and task_manager and chat_id:
+    tm = _task_manager()
+    if blockers and tm and chat_id:
         bullets = "\n".join(f"• <code>{html.escape(item)}</code>" for item in blockers[:12])
-        await task_manager.bot.send_message(
+        await tm.bot.send_message(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             text=(
@@ -1300,7 +1302,7 @@ def _touch_thread_context(message: Message, override_text: str | None = None) ->
     thread_id = _thread_id(message)
     if thread_id is None:
         return
-    session_manager.touch_thread(
+    _session_manager().touch_thread(
         chat_id=chat_id,
         message_thread_id=thread_id,
         topic_label=_topic_label_from_message(message, override_text=override_text),
@@ -1352,13 +1354,13 @@ async def _handle_cost_guardrail_anomalies(
             metrics.COST_GUARDRAIL_EVENTS.labels(anomaly=anomaly, action=action, source=source).inc()
 
     if "model_downgrade_haiku" in actions:
-        session_manager.set_model(chat_id, "haiku", message_thread_id)
+        _session_manager().set_model(chat_id, "haiku", message_thread_id)
     if "provider_reset" in actions:
-        provider = provider_manager.reset(scope_key)
-        session_manager.set_provider(chat_id, provider.name, message_thread_id)
+        provider = _provider_manager().reset(scope_key)
+        _session_manager().set_provider(chat_id, provider.name, message_thread_id)
     if "session_reset" in actions:
-        session_manager.new_conversation(chat_id, message_thread_id)
-        session_manager.new_codex_conversation(chat_id, message_thread_id)
+        _session_manager().new_conversation(chat_id, message_thread_id)
+        _session_manager().new_codex_conversation(chat_id, message_thread_id)
 
     logger.warning(
         "cost_guardrail_event source=%s scope=%s anomalies=%s actions=%s",
@@ -1368,12 +1370,13 @@ async def _handle_cost_guardrail_anomalies(
         ",".join(actions) if actions else "none",
     )
 
-    if task_manager:
+    tm = _task_manager()
+    if tm:
         details = (
             f"Anomalies: <code>{html.escape(', '.join(anomalies))}</code>\n"
             f"Actions: <code>{html.escape(', '.join(actions) if actions else 'none')}</code>"
         )
-        await task_manager.bot.send_message(
+        await tm.bot.send_message(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             text=f"⚠️ <b>Cost guardrail triggered</b>\n{details}",
@@ -1832,7 +1835,7 @@ def _find_provider_cli(cli_name: str) -> str | None:
 
 
 def _current_provider(scope_key: str):
-    return provider_manager.get_provider(scope_key)
+    return _provider_manager().get_provider(scope_key)
 
 
 def _current_model_label(session: object, provider) -> str:
@@ -1931,14 +1934,14 @@ async def cmd_new(message: Message) -> None:
     scope_key = _scope_key(chat_id, thread_id)
     state = _get_state(scope_key)
     state.reset_generation += 1
-    session = session_manager.get(chat_id, thread_id)
+    session = _session_manager().get(chat_id, thread_id)
     cancelled = await _cancel_active_scope_run(state, scope_key=scope_key, session=session)
     if session.claude_session_id and os.getenv("DISABLE_REFLECTION") != "1":
         asyncio.create_task(_reflect(chat_id, session))
-    session_manager.new_conversation(chat_id, thread_id)
-    session_manager.new_codex_conversation(chat_id, thread_id)
+    _session_manager().new_conversation(chat_id, thread_id)
+    _session_manager().new_codex_conversation(chat_id, thread_id)
     state.pending_inputs.clear()
-    fresh_session = session_manager.get(chat_id, thread_id)
+    fresh_session = _session_manager().get(chat_id, thread_id)
     _update_scope_snapshot(
         scope_key,
         state=state,
@@ -1977,7 +1980,7 @@ async def _reflect(chat_id: int, session: object) -> None:
                 if text.startswith("```"):
                     text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
                 data = json.loads(text)
-                memory_manager.add_episode(
+                _memory_manager().add_episode(
                     chat_id=chat_id,
                     summary=data.get("summary", ""),
                     topics=data.get("topics"),
@@ -1998,7 +2001,7 @@ async def cmd_model(message: Message) -> None:
     chat_id = message.chat.id
     thread_id = _thread_id(message)
     scope_key = _scope_key(chat_id, thread_id)
-    session = session_manager.get(chat_id, thread_id)
+    session = _session_manager().get(chat_id, thread_id)
     provider = _current_provider(scope_key)
     current = _current_model_label(session, provider)
 
@@ -2013,11 +2016,11 @@ async def cmd_model(message: Message) -> None:
 
         if provider.cli == "codex":
             chosen = None if requested == "default" else requested
-            session_manager.set_codex_model(chat_id, chosen, thread_id)
+            _session_manager().set_codex_model(chat_id, chosen, thread_id)
         else:
-            session_manager.set_model(chat_id, requested, thread_id)
+            _session_manager().set_model(chat_id, requested, thread_id)
 
-        current = _current_model_label(session_manager.get(chat_id, thread_id), provider)
+        current = _current_model_label(_session_manager().get(chat_id, thread_id), provider)
         await message.answer(f"Switched to {current}")
         return
 
@@ -2056,12 +2059,12 @@ async def cb_model_switch(callback: CallbackQuery) -> None:
 
     if provider.cli == "codex":
         chosen = None if model == "default" else model
-        session_manager.set_codex_model(chat_id, chosen, thread_id)
+        _session_manager().set_codex_model(chat_id, chosen, thread_id)
     else:
-        session_manager.set_model(chat_id, model, thread_id)
+        _session_manager().set_model(chat_id, model, thread_id)
 
     # Update keyboard state
-    current = _current_model_label(session_manager.get(chat_id, thread_id), provider)
+    current = _current_model_label(_session_manager().get(chat_id, thread_id), provider)
     lines = [f"<b>Current model:</b> {current}\n"]
     lines.append("<b>Select a model:</b>")
 
@@ -2088,23 +2091,23 @@ async def cmd_provider(message: Message) -> None:
     parts = raw_text.split(maxsplit=1)
     if len(parts) > 1:
         requested = parts[1].strip()
-        provider = provider_manager.set_provider(scope_key, requested)
+        provider = _provider_manager().set_provider(scope_key, requested)
         if not provider:
-            available = ", ".join(p.name for p in provider_manager.providers)
+            available = ", ".join(p.name for p in _provider_manager().providers)
             await message.answer(f"Provider not found: {requested}\nAvailable: {available}")
             return
-        session_manager.set_provider(chat_id, provider.name, thread_id)
+        _session_manager().set_provider(chat_id, provider.name, thread_id)
         await message.answer(f"Switched to provider: <b>{provider.name}</b>", parse_mode="HTML")
         return
 
-    current = provider_manager.get_provider(scope_key)
+    current = _provider_manager().get_provider(scope_key)
 
     lines = [f"<b>Current provider:</b> {current.name}\n<i>{current.description}</i>\n"]
     lines.append("<b>Select a provider:</b>")
 
     # Build inline keyboard with buttons
     keyboard = InlineKeyboardBuilder()
-    for p in provider_manager.providers:
+    for p in _provider_manager().providers:
         button_text = f"{'✓ ' if p.name == current.name else ''}{p.name}"
         keyboard.button(text=button_text, callback_data=f"provider:{p.name}")
     keyboard.adjust(2)  # 2 buttons per row
@@ -2126,20 +2129,20 @@ async def cb_provider_switch(callback: CallbackQuery) -> None:
     name = callback.data.split(":", 1)[1]
     logger.info("Chat %s: provider selection 'provider:%s'", scope_key, name)
 
-    provider = provider_manager.set_provider(scope_key, name)
+    provider = _provider_manager().set_provider(scope_key, name)
     if not provider:
         await callback.answer("Provider not found", show_alert=True)
         return
 
     # Persist provider to session
-    session_manager.set_provider(chat_id, provider.name, thread_id)
+    _session_manager().set_provider(chat_id, provider.name, thread_id)
 
     # Update keyboard state
     lines = [f"<b>Current provider:</b> {provider.name}\n<i>{provider.description}</i>\n"]
     lines.append("<b>Select a provider:</b>")
 
     keyboard = InlineKeyboardBuilder()
-    for p in provider_manager.providers:
+    for p in _provider_manager().providers:
         button_text = f"{'✓ ' if p.name == provider.name else ''}{p.name}"
         keyboard.button(text=button_text, callback_data=f"provider:{p.name}")
     keyboard.adjust(2)  # 2 buttons per row
@@ -2155,8 +2158,8 @@ async def cmd_status(message: Message) -> None:
     chat_id = message.chat.id
     thread_id = _thread_id(message)
     scope_key = _scope_key(chat_id, thread_id)
-    session = session_manager.get(chat_id, thread_id)
-    provider = provider_manager.get_provider(scope_key)
+    session = _session_manager().get(chat_id, thread_id)
+    provider = _provider_manager().get_provider(scope_key)
     if provider.cli == "codex":
         sid = session.codex_session_id or "none (new conversation)"
     else:
@@ -2177,7 +2180,7 @@ async def cmd_memory(message: Message) -> None:
     """Show current memory state."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    content = memory_manager.format_for_display()
+    content = _memory_manager().format_for_display()
     for chunk in split_message(content):
         try:
             await message.answer(chunk, parse_mode="HTML")
@@ -2197,7 +2200,7 @@ async def cmd_memory_forget(message: Message) -> None:
         return
 
     key = parts[1].strip()
-    removed = memory_manager.forget_fact(key)
+    removed = _memory_manager().forget_fact(key)
     if not removed:
         await message.answer(f"No facts found for key: <code>{html.escape(key)}</code>", parse_mode="HTML")
         return
@@ -2209,7 +2212,7 @@ async def cmd_memory_consolidate(message: Message) -> None:
     """Merge duplicate facts and prune low-confidence noise."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    stats = memory_manager.consolidate_facts()
+    stats = _memory_manager().consolidate_facts()
     await message.answer(
         "Memory consolidation complete.\n"
         f"Before: <b>{stats['before']}</b>\n"
@@ -2224,7 +2227,7 @@ async def cmd_threads(message: Message) -> None:
     """List tracked topic/thread scopes for this chat."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    rows = session_manager.list_tracked_threads(message.chat.id)
+    rows = _session_manager().list_tracked_threads(message.chat.id)
     if not rows:
         await message.answer("No tracked threads yet for this chat.")
         return
@@ -2269,7 +2272,7 @@ async def cmd_cancel(message: Message) -> None:
         await message.answer("Nothing to cancel.")
         return
 
-    session = session_manager.get(chat_id, thread_id)
+    session = _session_manager().get(chat_id, thread_id)
     cancelled = await _cancel_active_scope_run(
         state,
         require_process=True,
@@ -2489,7 +2492,8 @@ async def cmd_bg(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
-    if not task_manager:
+    tm = _task_manager()
+    if not tm:
         await message.answer("Background tasks not available.")
         return
 
@@ -2502,8 +2506,8 @@ async def cmd_bg(message: Message) -> None:
     chat_id = message.chat.id
     thread_id = _thread_id(message)
     scope_key = _scope_key(chat_id, thread_id)
-    provider = provider_manager.get_provider(scope_key)
-    session = session_manager.get(chat_id, thread_id)
+    provider = _provider_manager().get_provider(scope_key)
+    session = _session_manager().get(chat_id, thread_id)
     provider_cli = provider.cli if _find_provider_cli(provider.cli) else "claude"
     resume_arg = provider.resume_arg if provider_cli == "codex" else None
     session_id = (
@@ -2517,7 +2521,7 @@ async def cmd_bg(message: Message) -> None:
 
     full_prompt = _build_augmented_prompt(prompt)
 
-    task_id = await task_manager.submit(
+    task_id = await tm.submit(
         chat_id=chat_id,
         message_thread_id=thread_id,
         user_id=_actor_id(message),
@@ -2549,11 +2553,12 @@ async def cmd_bg_list(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
-    if not task_manager:
+    tm = _task_manager()
+    if not tm:
         await message.answer("Background tasks not available.")
         return
 
-    tasks = task_manager.list_user_tasks(message.chat.id, _thread_id(message))
+    tasks = tm.list_user_tasks(message.chat.id, _thread_id(message))
 
     if not tasks:
         await message.answer("No active background tasks.")
@@ -2585,7 +2590,8 @@ async def cmd_bg_cancel(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
-    if not task_manager:
+    tm = _task_manager()
+    if not tm:
         await message.answer("Background tasks not available.")
         return
 
@@ -2596,7 +2602,7 @@ async def cmd_bg_cancel(message: Message) -> None:
 
     # Find full task ID from partial match
     full_task_id = None
-    for tid in task_manager.tasks:
+    for tid in tm.tasks:
         if tid.startswith(task_id):
             full_task_id = tid
             break
@@ -2605,7 +2611,7 @@ async def cmd_bg_cancel(message: Message) -> None:
         await message.answer("Task not found.")
         return
 
-    task = await task_manager.get_status(full_task_id)
+    task = await tm.get_status(full_task_id)
     if not task or task.chat_id != message.chat.id or task.message_thread_id != _thread_id(message):
         await message.answer("Task not found.")
         return
@@ -2614,7 +2620,7 @@ async def cmd_bg_cancel(message: Message) -> None:
         await message.answer(f"Task is already {task.status.value}.")
         return
 
-    cancelled = await task_manager.cancel(full_task_id)
+    cancelled = await tm.cancel(full_task_id)
     if cancelled:
         await message.answer(f"✅ Cancelled task <code>{full_task_id[:8]}</code>", parse_mode="HTML")
     else:
@@ -2629,7 +2635,8 @@ async def cmd_stepplan_start(message: Message) -> None:
     if not _is_admin(message.from_user and message.from_user.id):
         await message.answer("Only admin can start a step plan.")
         return
-    if not task_manager:
+    tm = _task_manager()
+    if not tm:
         await message.answer("Background tasks not available.")
         return
 
@@ -2718,8 +2725,9 @@ async def cmd_stepplan_stop(message: Message) -> None:
     _save_step_plan_state(state)
 
     cancelled = False
-    if running_task_id and task_manager:
-        cancelled = await task_manager.cancel(running_task_id)
+    tm = _task_manager()
+    if running_task_id and tm:
+        cancelled = await tm.cancel(running_task_id)
 
     suffix = " Running step task cancelled." if cancelled else ""
     await message.answer(f"🛑 Step plan stopped.{suffix}")
@@ -2730,7 +2738,8 @@ async def cmd_schedule_every(message: Message) -> None:
     """Create recurring background task schedule."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    if not schedule_manager:
+    sm = _schedule_manager()
+    if not sm:
         await message.answer("Scheduler not available.")
         return
 
@@ -2759,10 +2768,10 @@ async def cmd_schedule_every(message: Message) -> None:
 
     chat_id = message.chat.id
     thread_id = _thread_id(message)
-    session = session_manager.get(chat_id, thread_id)
+    session = _session_manager().get(chat_id, thread_id)
     full_prompt = _build_augmented_prompt(task_text)
 
-    schedule_id = await schedule_manager.create_every(
+    schedule_id = await sm.create_every(
         chat_id=chat_id,
         message_thread_id=thread_id,
         user_id=_actor_id(message),
@@ -2785,11 +2794,12 @@ async def cmd_schedule_list(message: Message) -> None:
     """List recurring schedules for this chat."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    if not schedule_manager:
+    sm = _schedule_manager()
+    if not sm:
         await message.answer("Scheduler not available.")
         return
 
-    schedules = await schedule_manager.list_for_chat(message.chat.id, _thread_id(message))
+    schedules = await sm.list_for_chat(message.chat.id, _thread_id(message))
     if not schedules:
         await message.answer("No recurring schedules.")
         return
@@ -2818,7 +2828,8 @@ async def cmd_schedule_weekly(message: Message) -> None:
     """Create weekly recurring background task schedule."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    if not schedule_manager:
+    sm = _schedule_manager()
+    if not sm:
         await message.answer("Scheduler not available.")
         return
 
@@ -2848,11 +2859,11 @@ async def cmd_schedule_weekly(message: Message) -> None:
     timezone_name = _default_timezone_name()
     chat_id = message.chat.id
     thread_id = _thread_id(message)
-    session = session_manager.get(chat_id, thread_id)
+    session = _session_manager().get(chat_id, thread_id)
     full_prompt = _build_augmented_prompt(task_text)
 
     try:
-        schedule_id = await schedule_manager.create_weekly(
+        schedule_id = await sm.create_weekly(
             chat_id=chat_id,
             message_thread_id=thread_id,
             user_id=_actor_id(message),
@@ -2882,7 +2893,8 @@ async def cmd_schedule_daily(message: Message) -> None:
     """Create daily recurring background task schedule."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    if not schedule_manager:
+    sm = _schedule_manager()
+    if not sm:
         await message.answer("Scheduler not available.")
         return
 
@@ -2908,11 +2920,11 @@ async def cmd_schedule_daily(message: Message) -> None:
 
     chat_id = message.chat.id
     thread_id = _thread_id(message)
-    session = session_manager.get(chat_id, thread_id)
+    session = _session_manager().get(chat_id, thread_id)
     full_prompt = _build_augmented_prompt(task_text)
 
     try:
-        schedule_id = await schedule_manager.create_daily(
+        schedule_id = await sm.create_daily(
             chat_id=chat_id,
             message_thread_id=thread_id,
             user_id=_actor_id(message),
@@ -2940,7 +2952,8 @@ async def cmd_schedule_cancel(message: Message) -> None:
     """Cancel recurring schedule by full or short ID."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
-    if not schedule_manager:
+    sm = _schedule_manager()
+    if not sm:
         await message.answer("Scheduler not available.")
         return
 
@@ -2949,13 +2962,13 @@ async def cmd_schedule_cancel(message: Message) -> None:
         await message.answer("Usage: /schedule_cancel <schedule_id>")
         return
 
-    schedules = await schedule_manager.list_for_chat(message.chat.id, _thread_id(message))
+    schedules = await sm.list_for_chat(message.chat.id, _thread_id(message))
     target = next((s for s in schedules if s.id.startswith(short_id)), None)
     if not target:
         await message.answer("Schedule not found.")
         return
 
-    cancelled = await schedule_manager.cancel(target.id)
+    cancelled = await sm.cancel(target.id)
     if cancelled:
         await message.answer(f"✅ Cancelled schedule <code>{target.id[:8]}</code>", parse_mode="HTML")
     else:
@@ -3315,8 +3328,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         run_generation = state.reset_generation
         raw_prompt = override_text or message.text or ""
 
-        provider = provider_manager.get_provider(scope_key)
-        session = session_manager.get(chat_id, thread_id)
+        provider = _provider_manager().get_provider(scope_key)
+        session = _session_manager().get(chat_id, thread_id)
         snapshot_model = (
             (_codex_model_arg(session, provider) or "default")
             if provider.cli == "codex"
@@ -3342,8 +3355,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
 
         try:
             if provider.cli != "claude" and _find_provider_cli(provider.cli) is None:
-                fallback = provider_manager.reset(scope_key)
-                session_manager.set_provider(chat_id, fallback.name, thread_id)
+                fallback = _provider_manager().reset(scope_key)
+                _session_manager().set_provider(chat_id, fallback.name, thread_id)
                 await message.answer(
                     f"Provider <b>{provider.name}</b> requires missing CLI "
                     f"<code>{provider.cli}</code>. Switched to <b>{fallback.name}</b>.",
@@ -3361,7 +3374,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 active_resume_arg=provider.resume_arg or "",
                 resume_task_id="",
             )
-            env = provider_manager.subprocess_env(provider)
+            env = _provider_manager().subprocess_env(provider)
             logger.info(
                 "Chat %s: using provider '%s' (cli=%s) with env=%s",
                 scope_key,
@@ -3396,18 +3409,18 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 and final_response.is_error
                 and not state.cancel_requested
                 and (
-                    provider_manager.is_rate_limit_error(final_response.text)
+                    _provider_manager().is_rate_limit_error(final_response.text)
                     # Claude CLI sometimes returns a generic empty-body failure.
                     or (provider.cli == "claude" and error_text_l == "claude returned an error.")
                 )
             )
             if should_fallback:
                 health_invariants.record_provider_result(success=False)
-                next_provider = provider_manager.advance(scope_key)
+                next_provider = _provider_manager().advance(scope_key)
                 if next_provider:
                     reason = (
                         "Rate limited"
-                        if provider_manager.is_rate_limit_error(final_response.text)
+                        if _provider_manager().is_rate_limit_error(final_response.text)
                         else "Provider error"
                     )
                     await message.answer(
@@ -3420,7 +3433,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                         scope_key, provider.name, next_provider.name, final_response.text,
                     )
                     provider = next_provider
-                    env = provider_manager.subprocess_env(next_provider)
+                    env = _provider_manager().subprocess_env(next_provider)
                     if next_provider.cli == "codex":
                         codex_model = _codex_model_arg(session, next_provider)
                         final_response = await _run_codex_with_retries(
@@ -3626,8 +3639,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             and final_response.session_id
             and final_response.session_id != session.claude_session_id
         ):
-            session_manager.update_session_id(chat_id, final_response.session_id, thread_id)
-            session = session_manager.get(chat_id, thread_id)
+            _session_manager().update_session_id(chat_id, final_response.session_id, thread_id)
+            session = _session_manager().get(chat_id, thread_id)
         if (
             final_response
             and provider.cli == "codex"
@@ -3636,8 +3649,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             and final_response.session_id
             and final_response.session_id != session.codex_session_id
         ):
-            session_manager.update_codex_session_id(chat_id, final_response.session_id, thread_id)
-            session = session_manager.get(chat_id, thread_id)
+            _session_manager().update_codex_session_id(chat_id, final_response.session_id, thread_id)
+            session = _session_manager().get(chat_id, thread_id)
 
         # Track metrics
         if final_response:

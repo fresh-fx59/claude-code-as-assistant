@@ -251,7 +251,7 @@ When the bot starts, it sends a Telegram notification to the first admin:
 ```
 🚀 Bot restarted
 
-📦 Version: v0.15.2
+📦 Version: v0.18.44
 📦 Commit: abc1234
 
 ✅ Ready to assist!
