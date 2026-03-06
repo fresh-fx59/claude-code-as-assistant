@@ -35,6 +35,7 @@ from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
 from .scheduler import ScheduleManager
+from .features.app_context import AppContext
 from .features.state_store import get_default_state_store
 from .plugins.tools_plugin import ToolRegistry
 from .self_modify import SelfModificationManager
@@ -56,6 +57,7 @@ context_plugins = ContextPluginRegistry([tool_registry])
 self_mod_manager = SelfModificationManager(Path(__file__).resolve().parent.parent)
 task_manager: TaskManager | None = None  # Set in main()
 schedule_manager: ScheduleManager | None = None  # Set in main()
+_app_context: AppContext | None = None
 _step_plan_restart_callback: Callable[[str], Awaitable[bool]] | None = None
 health_invariants = HealthInvariants()
 cost_guardrails = CostGuardrailEngine()
@@ -127,7 +129,19 @@ _NUMBER_WORDS = {
 
 
 def _state_store():
+    if _app_context and _app_context.state_store:
+        return _app_context.state_store
     return get_default_state_store()
+
+
+def set_app_context(context: AppContext | None) -> None:
+    """Inject runtime context for DI-friendly feature modules."""
+    global _app_context
+    _app_context = context
+
+
+def get_app_context() -> AppContext | None:
+    return _app_context
 
 
 def _thread_id(message: Message) -> int | None:

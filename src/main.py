@@ -37,11 +37,14 @@ from .bot import (
     bootstrap_step_plan_after_restart,
     resume_scope_snapshots_after_restart,
     set_step_plan_restart_callback,
+    set_app_context,
     should_restart_step_plan_now,
 )
 from . import bot as bot_module
 from .metrics import start_metrics_server
 from .autonomy import AutonomyEngine, LearningJournal
+from .features.app_context import AppContext
+from .features.state_store import get_default_state_store
 
 
 def mark_good_commit() -> None:
@@ -195,6 +198,16 @@ async def main() -> None:
     await bot_module.task_manager.start()
     bot_module.schedule_manager = ScheduleManager(bot_module.task_manager, MEMORY_DIR / "schedules.db")
     await bot_module.schedule_manager.start()
+    set_app_context(
+        AppContext(
+            provider_manager=provider_manager,
+            session_manager=bot_module.session_manager,
+            memory_manager=memory_manager,
+            task_manager=bot_module.task_manager,
+            schedule_manager=bot_module.schedule_manager,
+            state_store=get_default_state_store(),
+        )
+    )
 
     await bot.set_my_commands([
         BotCommand(command="start", description="Welcome message"),
