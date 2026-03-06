@@ -46,7 +46,11 @@ session_manager = SessionManager()
 provider_manager = ProviderManager()
 memory_manager = MemoryManager(config.MEMORY_DIR)
 identity_manager = IdentityManager(config.MEMORY_DIR)
-tool_registry = ToolRegistry(config.TOOLS_DIR)
+tool_registry = ToolRegistry(
+    config.TOOLS_DIR,
+    denylist=config.TOOL_DENYLIST,
+    require_approval_for_risky=config.TOOL_REQUIRE_APPROVAL_FOR_RISKY,
+)
 context_plugins = ContextPluginRegistry([tool_registry])
 self_mod_manager = SelfModificationManager(Path(__file__).resolve().parent.parent)
 task_manager: TaskManager | None = None  # Set in main()
@@ -2390,7 +2394,11 @@ async def cmd_selfmod_apply(message: Message) -> None:
 
     if result.ok:
         global tool_registry, context_plugins
-        tool_registry = ToolRegistry(config.TOOLS_DIR)
+        tool_registry = ToolRegistry(
+            config.TOOLS_DIR,
+            denylist=config.TOOL_DENYLIST,
+            require_approval_for_risky=config.TOOL_REQUIRE_APPROVAL_FOR_RISKY,
+        )
         context_plugins = ContextPluginRegistry([tool_registry])
 
 

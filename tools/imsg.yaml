@@ -1,5 +1,7 @@
 name: imsg
 description: iMessage/SMS CLI for listing chats, history, and sending messages via
+tier: extended
+risky: true
   Messages.app.
 triggers:
 - imsg

@@ -1,5 +1,6 @@
 name: blucli
 description: BluOS CLI (blu) for discovery, playback, grouping, and volume.
+tier: extended
 triggers:
 - blucli
 - bluos

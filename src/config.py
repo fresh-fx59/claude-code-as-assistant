@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.18.27"
+VERSION: str = "0.18.28"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -124,3 +124,11 @@ TOOLS_DIR: Path = Path(
     os.path.expanduser(_raw_tools_dir) if _raw_tools_dir else "tools"
 )
 # Note: TOOLS_DIR is optional — no auto-create, tools/ may not exist
+TOOL_DENYLIST: set[str] = {
+    item.strip().lower()
+    for item in (os.getenv("TOOL_DENYLIST", "") or "").split(",")
+    if item.strip()
+}
+TOOL_REQUIRE_APPROVAL_FOR_RISKY: bool = (
+    os.getenv("TOOL_REQUIRE_APPROVAL_FOR_RISKY", "0").strip().lower() in {"1", "true", "yes"}
+)

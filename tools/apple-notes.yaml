@@ -1,5 +1,6 @@
 name: apple-notes
 description: Manage Apple Notes via the `memo` CLI on macOS (create, view, edit, delete,
+tier: extended
   search, move, and export
 triggers:
 - apple-notes

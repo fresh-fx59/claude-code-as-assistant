@@ -1,5 +1,7 @@
 name: gmail
 description: Manage Gmail via the `gog` CLI (read/search, send, delete) with OAuth.
+tier: extended
+risky: true
 triggers:
 - gmail
 - google mail

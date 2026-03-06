@@ -1,5 +1,6 @@
 name: nano-pdf
 description: Edit PDFs with natural-language instructions using the nano-pdf CLI.
+tier: extended
 triggers:
 - nano-pdf
 - edit

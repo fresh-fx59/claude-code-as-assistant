@@ -1,5 +1,7 @@
 name: slack
 description: 'Use when you need to control Slack from OpenClaw via the slack tool,
+tier: extended
+risky: true
   including reacting to messages '
 triggers:
 - slack

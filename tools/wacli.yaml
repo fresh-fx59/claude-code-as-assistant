@@ -1,5 +1,7 @@
 name: wacli
 description: Send WhatsApp messages to other people or search/sync WhatsApp history
+tier: extended
+risky: true
   via the wacli CLI (not for no
 triggers:
 - wacli

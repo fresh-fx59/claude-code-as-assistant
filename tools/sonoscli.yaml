@@ -1,5 +1,6 @@
 name: sonoscli
 description: Control Sonos speakers (discover/status/play/volume/group).
+tier: extended
 triggers:
 - sonoscli
 - control

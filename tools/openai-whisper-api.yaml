@@ -1,5 +1,6 @@
 name: openai-whisper-api
 description: Transcribe audio via OpenAI Audio Transcriptions API (Whisper).
+tier: extended
 triggers:
 - openai-whisper-api
 - transcribe

@@ -1,5 +1,6 @@
 name: himalaya
 description: CLI to manage emails via IMAP/SMTP. Use `himalaya` to list, read, write,
+tier: extended
   reply, forward, search, and
 triggers:
 - himalaya

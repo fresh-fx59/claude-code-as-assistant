@@ -1,5 +1,6 @@
 name: oracle
 description: Best practices for using the oracle CLI (prompt + file bundling, engines,
+tier: extended
   sessions, and file attachm
 triggers:
 - oracle

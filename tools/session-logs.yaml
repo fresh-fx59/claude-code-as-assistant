@@ -1,5 +1,6 @@
 name: session-logs
 description: Search and analyze your own session logs (older/parent conversations)
+tier: core
   using jq.
 triggers:
 - session-logs

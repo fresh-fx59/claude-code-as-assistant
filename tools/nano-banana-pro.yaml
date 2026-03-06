@@ -1,5 +1,6 @@
 name: nano-banana-pro
 description: Generate or edit images via Gemini CLI + MCP image server (Nano Banana models).
+tier: extended
 triggers:
 - nano-banana-pro
 - generate

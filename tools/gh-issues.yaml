@@ -1,5 +1,6 @@
 name: gh-issues
 description: Fetch GitHub issues, spawn sub-agents to implement fixes and open PRs,
+tier: extended
   then monitor and address PR r
 triggers:
 - gh-issues

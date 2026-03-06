@@ -1,5 +1,6 @@
 name: healthcheck
 description: Host security hardening and risk-tolerance configuration for OpenClaw
+tier: extended
   deployments. Use when a user a
 triggers:
 - healthcheck

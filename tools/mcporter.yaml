@@ -1,5 +1,6 @@
 name: mcporter
 description: 'Use the mcporter CLI to list, configure, auth, and call MCP servers/tools
+tier: extended
   directly (HTTP or stdio), '
 triggers:
 - mcporter

@@ -1,5 +1,6 @@
 name: video-frames
 description: Extract frames or short clips from videos using ffmpeg.
+tier: extended
 triggers:
 - video-frames
 - extract

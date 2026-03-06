@@ -1,5 +1,6 @@
 name: coding-agent
 description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background
+tier: extended
   process. Use when: (1) buil'
 triggers:
 - coding-agent

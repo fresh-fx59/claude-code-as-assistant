@@ -1,5 +1,6 @@
 name: clawhub
 description: 'Use the ClawHub CLI to search, install, update, and publish agent skills
+tier: extended
   from clawhub.com. Use when '
 triggers:
 - clawhub

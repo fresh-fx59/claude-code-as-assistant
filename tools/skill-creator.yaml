@@ -1,5 +1,6 @@
 name: skill-creator
 description: Create or update AgentSkills. Use when designing, structuring, or packaging
+tier: core
   skills with scripts, ref
 triggers:
 - skill-creator
