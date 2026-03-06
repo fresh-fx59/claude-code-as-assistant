@@ -188,6 +188,7 @@ cat .deploy/deploy.log
 
 - Ensure `espeak` and `ffmpeg` are installed on host
 - Check `LOCAL_TTS_BIN`, `LOCAL_TTS_VOICE`, and `LOCAL_TTS_SPEED_WPM` in `.env`
+- If `sudo` is unavailable, run rootless bootstrap: `bash setup_local_tts.sh`
 
 ## Project Structure
 

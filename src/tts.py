@@ -11,9 +11,12 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_BIN = Path.home() / "local" / "bin"
 
-TTS_BIN: str = os.getenv("LOCAL_TTS_BIN", shutil.which("espeak") or str(_LOCAL_BIN / "espeak"))
+TTS_BIN: str = os.getenv(
+    "LOCAL_TTS_BIN",
+    shutil.which("espeak") or shutil.which("espeak-ng") or str(_LOCAL_BIN / "espeak"),
+)
 TTS_VOICE: str = os.getenv("LOCAL_TTS_VOICE", "en")
-TTS_SPEED: str = os.getenv("LOCAL_TTS_SPEED_WPM", "170")
+TTS_SPEED: str = os.getenv("LOCAL_TTS_SPEED_WPM", "200")
 FFMPEG_BIN: str = shutil.which("ffmpeg") or str(_LOCAL_BIN / "ffmpeg")
 
 
