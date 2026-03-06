@@ -105,6 +105,9 @@ All settings are read from `.env`.
 - `AUTONOMY_FAILURE_THRESHOLD` (optional, default `3`): failures required before proactive alert
 - `AUTONOMY_FAILURE_WINDOW_MINUTES` (optional, default `60`): rolling window for failure detection
 - `AUTONOMY_ALERT_COOLDOWN_MINUTES` (optional, default `30`): per-chat minimum gap between alerts
+- `LOCAL_TTS_BIN` (optional, default `espeak` from PATH): local TTS CLI used for voice-bubble replies
+- `LOCAL_TTS_VOICE` (optional, default `en`): local TTS voice preset passed to TTS engine
+- `LOCAL_TTS_SPEED_WPM` (optional, default `170`): local TTS speech speed in words per minute
 
 ## Upgrade and Rollback
 
@@ -180,6 +183,11 @@ cat .deploy/deploy.log
 
 - Ensure `ffmpeg` is installed
 - Verify whisper setup if enabled (`setup_whisper.sh`)
+
+### Voice bubble synthesis issues
+
+- Ensure `espeak` and `ffmpeg` are installed on host
+- Check `LOCAL_TTS_BIN`, `LOCAL_TTS_VOICE`, and `LOCAL_TTS_SPEED_WPM` in `.env`
 
 ## Project Structure
 

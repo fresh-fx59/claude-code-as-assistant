@@ -23,7 +23,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError
 
-from . import bridge, config, metrics, ocr, transcribe
+from . import bridge, config, metrics, ocr, transcribe, tts
 from .core.context_plugins import ContextPluginRegistry
 from . import context_compiler
 from .cost_guardrails import CostGuardrailEngine
@@ -3219,7 +3219,7 @@ async def handle_voice(message: Message) -> None:
 
     override = f"[Voice message] {text}"
     try:
-        await _handle_message_inner(message, override_text=override)
+        await _handle_message_inner(message, override_text=override, request_voice_reply=True)
     except Exception:
         logger.exception("Unhandled exception in handle_voice")
         metrics.MESSAGES_TOTAL.labels(status="error").inc()
@@ -3331,7 +3331,11 @@ async def handle_forum_topic_edited(message: Message) -> None:
     _touch_thread_context(message)
 
 
-async def _handle_message_inner(message: Message, override_text: str | None = None) -> None:
+async def _handle_message_inner(
+    message: Message,
+    override_text: str | None = None,
+    request_voice_reply: bool = False,
+) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         metrics.MESSAGES_TOTAL.labels(status="unauthorized").inc()
         return
@@ -3573,26 +3577,18 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             else:
                 health_invariants.record_provider_result(success=True)
                 clean_text, media_refs, audio_as_voice = _extract_media_directives(final_response.text or "")
-
-                for media_ref in media_refs:
-                    media_input = _resolve_media_input(media_ref)
+                media_refs, generated_voice_path = await _maybe_add_local_tts_media(
+                    clean_text=clean_text,
+                    media_refs=media_refs,
+                    request_voice_reply=request_voice_reply,
+                )
+                await _send_media_refs(message, media_refs, audio_as_voice)
+                if generated_voice_path:
+                    tts.cleanup_file(generated_voice_path)
                     try:
-                        if _is_voice_compatible_media(media_ref):
-                            await message.answer_voice(media_input)
-                        elif audio_as_voice and _is_audio_media(media_ref):
-                            await message.answer_voice(media_input)
-                        elif _is_audio_media(media_ref):
-                            await message.answer_audio(media_input)
-                        elif _is_image_media(media_ref):
-                            await message.answer_photo(media_input)
-                        else:
-                            await message.answer_document(media_input)
-                    except Exception:
-                        logger.exception(
-                            "Chat %d: failed to send media '%s'",
-                            message.chat.id,
-                            media_ref,
-                        )
+                        Path(generated_voice_path).parent.rmdir()
+                    except OSError:
+                        pass
 
                 chunks: list[str] = []
                 if clean_text.strip():
@@ -3747,7 +3743,11 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             return
         followup_prompt = _build_midflight_followup_prompt(queued_inputs)
         if followup_prompt:
-            await _handle_message_inner(message, override_text=followup_prompt)
+            await _handle_message_inner(
+                message,
+                override_text=followup_prompt,
+                request_voice_reply=request_voice_reply,
+            )
             if not state.cancel_requested:
                 _mark_followup_completed(scope_key, pending_hash)
 
@@ -3806,3 +3806,47 @@ async def _keep_typing(message: Message) -> None:
             await asyncio.sleep(5)
     except asyncio.CancelledError:
         return
+
+
+async def _maybe_add_local_tts_media(
+    clean_text: str,
+    media_refs: list[str],
+    request_voice_reply: bool,
+) -> tuple[list[str], str | None]:
+    if not request_voice_reply:
+        return media_refs, None
+    if not clean_text.strip():
+        return media_refs, None
+    if not tts.is_available():
+        logger.warning("Local TTS is unavailable; sending text reply without voice bubble")
+        return media_refs, None
+
+    try:
+        voice_path = await tts.synthesize_voice(clean_text)
+        # Ensure voice bubble delivery has priority over other media.
+        return [voice_path, *media_refs], voice_path
+    except Exception:
+        logger.exception("Failed to synthesize local TTS voice reply")
+        return media_refs, None
+
+
+async def _send_media_refs(message: Message, media_refs: list[str], audio_as_voice: bool) -> None:
+    for media_ref in media_refs:
+        media_input = _resolve_media_input(media_ref)
+        try:
+            if _is_voice_compatible_media(media_ref):
+                await message.answer_voice(media_input)
+            elif audio_as_voice and _is_audio_media(media_ref):
+                await message.answer_voice(media_input)
+            elif _is_audio_media(media_ref):
+                await message.answer_audio(media_input)
+            elif _is_image_media(media_ref):
+                await message.answer_photo(media_input)
+            else:
+                await message.answer_document(media_input)
+        except Exception:
+            logger.exception(
+                "Chat %d: failed to send media '%s'",
+                message.chat.id,
+                media_ref,
+            )
