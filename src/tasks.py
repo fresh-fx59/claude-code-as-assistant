@@ -212,6 +212,13 @@ class TaskManager:
             await self._process_queue()
             await asyncio.sleep(1)
 
+    async def _collect_result_event(self, stream) -> bridge.ClaudeResponse | None:
+        """Consume provider stream until a RESULT event is received."""
+        async for event in stream:
+            if event.event_type == bridge.StreamEventType.RESULT:
+                return event.response
+        return None
+
     async def _execute_task(self, task: BackgroundTask) -> None:
         """Execute a single background task."""
         typing_task: asyncio.Task | None = None
@@ -239,10 +246,10 @@ class TaskManager:
                 )
 
             # Stream the provider response with timeout
-            async for event in asyncio.wait_for(stream, timeout=self._TASK_TIMEOUT):
-                if event.event_type == bridge.StreamEventType.RESULT:
-                    response = event.response
-                    break
+            response = await asyncio.wait_for(
+                self._collect_result_event(stream),
+                timeout=self._TASK_TIMEOUT,
+            )
 
             # Update task with results
             task.completed_at = datetime.now()

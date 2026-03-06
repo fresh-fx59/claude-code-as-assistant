@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.tasks import BackgroundTask, TaskManager, TaskStatus
+from src import bridge
 
 
 @pytest.mark.asyncio
@@ -32,3 +33,37 @@ async def test_typing_loop_sends_fallback_when_chat_action_fails() -> None:
         await typing_task
 
     bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_task_stream_result_does_not_raise_typeerror(monkeypatch) -> None:
+    bot = AsyncMock()
+    manager = TaskManager(bot)
+    task = BackgroundTask(
+        id="task-2",
+        chat_id=123,
+        message_thread_id=None,
+        user_id=123,
+        prompt="x",
+        model="sonnet",
+        session_id=None,
+        status=TaskStatus.RUNNING,
+        created_at=datetime.now(),
+    )
+
+    async def fake_stream_message(**kwargs):  # noqa: ARG001
+        yield bridge.StreamEvent(
+            event_type=bridge.StreamEventType.RESULT,
+            response=bridge.ClaudeResponse(
+                text="ok",
+                session_id="sess-1",
+                is_error=False,
+                cost_usd=0.0,
+            ),
+        )
+
+    monkeypatch.setattr("src.tasks.bridge.stream_message", fake_stream_message)
+    await manager._execute_task(task)  # noqa: SLF001
+
+    assert task.status == TaskStatus.COMPLETED
+    assert task.response == "ok"
