@@ -10,12 +10,19 @@ from src.autonomy import AutonomyEngine, LearningJournal
 from src.tasks import BackgroundTask, TaskStatus
 
 
-def _mk_task(*, status: TaskStatus, task_id: str, chat_id: int = 123, error: str = "") -> BackgroundTask:
+def _mk_task(
+    *,
+    status: TaskStatus,
+    task_id: str,
+    chat_id: int = 123,
+    message_thread_id: int | None = None,
+    error: str = "",
+) -> BackgroundTask:
     now = datetime.now(timezone.utc)
     return BackgroundTask(
         id=task_id,
         chat_id=chat_id,
-        message_thread_id=None,
+        message_thread_id=message_thread_id,
         user_id=chat_id,
         prompt="investigate failures and propose minimal fix",
         model="sonnet",
@@ -61,10 +68,16 @@ async def test_autonomy_engine_alerts_on_repeated_failures(tmp_path: Path) -> No
         alert_cooldown_minutes=30,
     )
 
-    await engine.on_task_finished(_mk_task(status=TaskStatus.FAILED, task_id="f1", error="e1"))
-    await engine.on_task_finished(_mk_task(status=TaskStatus.FAILED, task_id="f2", error="e2"))
+    await engine.on_task_finished(
+        _mk_task(status=TaskStatus.FAILED, task_id="f1", message_thread_id=55, error="e1")
+    )
+    await engine.on_task_finished(
+        _mk_task(status=TaskStatus.FAILED, task_id="f2", message_thread_id=55, error="e2")
+    )
 
     assert bot.send_message.await_count == 1
+    kwargs = bot.send_message.await_args.kwargs
+    assert kwargs["message_thread_id"] == 55
     memory.add_episode.assert_called()
 
 

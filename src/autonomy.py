@@ -157,6 +157,7 @@ class AutonomyEngine:
 
         await self._bot.send_message(
             chat_id=task.chat_id,
+            message_thread_id=task.message_thread_id,
             text=(
                 "⚠️ <b>Proactive alert</b>\n\n"
                 f"I detected <b>{len(recent)} background task failures</b> in the last "

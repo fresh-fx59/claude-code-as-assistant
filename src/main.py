@@ -65,12 +65,29 @@ def mark_good_commit() -> None:
 
 
 async def send_startup_notification(bot: Bot, commit: str | None = None) -> None:
-    """Send startup notification to first admin."""
-    if not ALLOWED_USER_IDS:
+    """Send startup notification to active step-plan thread or first admin."""
+    if not ALLOWED_USER_IDS and not getattr(bot_module.config, "ALLOWED_CHAT_IDS", set()):
         return
 
     try:
-        first_admin = min(ALLOWED_USER_IDS)
+        target_chat_id: int | None = None
+        target_thread_id: int | None = None
+        try:
+            state = bot_module._load_step_plan_state()  # noqa: SLF001
+            if state.get("active"):
+                chat_id = int(state.get("chat_id") or 0)
+                if chat_id:
+                    target_chat_id = chat_id
+                    target_thread_id = state.get("message_thread_id")
+        except Exception:
+            logging.debug("Could not resolve step-plan notification target", exc_info=True)
+
+        if target_chat_id is None and ALLOWED_USER_IDS:
+            target_chat_id = min(ALLOWED_USER_IDS)
+        if target_chat_id is None and bot_module.config.ALLOWED_CHAT_IDS:
+            target_chat_id = min(bot_module.config.ALLOWED_CHAT_IDS)
+        if target_chat_id is None:
+            return
 
         lines = ["🚀 <b>Bot restarted</b>\n"]
         lines.append(f"📦 Version: <code>{VERSION}</code>")
@@ -80,8 +97,11 @@ async def send_startup_notification(bot: Bot, commit: str | None = None) -> None
         startup_message = "\n".join(lines)
 
         try:
-            await bot.send_message(chat_id=first_admin, text=startup_message, parse_mode="HTML")
-            logging.info("Sent startup notification to admin %s", first_admin)
+            kwargs = {"chat_id": target_chat_id, "text": startup_message, "parse_mode": "HTML"}
+            if target_thread_id is not None:
+                kwargs["message_thread_id"] = target_thread_id
+            await bot.send_message(**kwargs)
+            logging.info("Sent startup notification to chat=%s thread=%s", target_chat_id, target_thread_id)
         except Exception as e:
             logging.warning("Failed to send startup notification: %s", e)
 
@@ -91,12 +111,33 @@ async def send_startup_notification(bot: Bot, commit: str | None = None) -> None
 
 async def send_ready_notification(bot: Bot) -> None:
     """Send ready notification when polling loop is started."""
-    if not ALLOWED_USER_IDS:
+    if not ALLOWED_USER_IDS and not getattr(bot_module.config, "ALLOWED_CHAT_IDS", set()):
         return
     try:
-        first_admin = min(ALLOWED_USER_IDS)
-        await bot.send_message(chat_id=first_admin, text="💬 Ready to accept messages.")
-        logging.info("Sent ready notification to admin %s", first_admin)
+        target_chat_id: int | None = None
+        target_thread_id: int | None = None
+        try:
+            state = bot_module._load_step_plan_state()  # noqa: SLF001
+            if state.get("active"):
+                chat_id = int(state.get("chat_id") or 0)
+                if chat_id:
+                    target_chat_id = chat_id
+                    target_thread_id = state.get("message_thread_id")
+        except Exception:
+            logging.debug("Could not resolve step-plan ready notification target", exc_info=True)
+
+        if target_chat_id is None and ALLOWED_USER_IDS:
+            target_chat_id = min(ALLOWED_USER_IDS)
+        if target_chat_id is None and bot_module.config.ALLOWED_CHAT_IDS:
+            target_chat_id = min(bot_module.config.ALLOWED_CHAT_IDS)
+        if target_chat_id is None:
+            return
+
+        kwargs = {"chat_id": target_chat_id, "text": "💬 Ready to accept messages."}
+        if target_thread_id is not None:
+            kwargs["message_thread_id"] = target_thread_id
+        await bot.send_message(**kwargs)
+        logging.info("Sent ready notification to chat=%s thread=%s", target_chat_id, target_thread_id)
     except Exception as e:
         logging.warning("Could not send ready notification: %s", e)
 
