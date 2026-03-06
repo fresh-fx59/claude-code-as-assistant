@@ -1,5 +1,6 @@
 name: tmux
 description: Remote-control tmux sessions for interactive CLIs by sending keystrokes
+tier: extended
   and scraping pane output.
 triggers:
 - tmux

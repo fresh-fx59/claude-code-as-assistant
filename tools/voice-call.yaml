@@ -1,5 +1,7 @@
 name: voice-call
 description: Start voice calls via the OpenClaw voice-call plugin.
+tier: extended
+risky: true
 triggers:
 - voice-call
 - start

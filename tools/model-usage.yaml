@@ -1,6 +1,6 @@
 name: model-usage
-description: Use CodexBar CLI local cost usage to summarize per-model usage for Codex
-  or Claude, including the cu
+description: Use CodexBar CLI local cost usage to summarize per-model usage for Codex or Claude.
+tier: core
 triggers:
 - model-usage
 - codexbar

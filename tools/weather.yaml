@@ -1,5 +1,6 @@
 name: weather
 description: 'Get current weather and forecasts via wttr.in or Open-Meteo. Use when:
+tier: core
   user asks about weather, temp'
 triggers:
 - weather

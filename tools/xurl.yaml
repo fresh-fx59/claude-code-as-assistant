@@ -1,5 +1,6 @@
 name: xurl
 description: A CLI tool for making authenticated requests to the X (Twitter) API.
+tier: extended
   Use this skill when you need to
 triggers:
 - xurl

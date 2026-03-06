@@ -1,5 +1,6 @@
 name: goplaces
 description: Query Google Places API (New) via the goplaces CLI for text search, place
+tier: extended
   details, resolve, and revi
 triggers:
 - goplaces

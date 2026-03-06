@@ -37,6 +37,7 @@ def test_tools_plugin_loads_yaml_and_matches_triggers(tmp_path: Path) -> None:
             [
                 "name: web_search",
                 "description: Search web",
+                "tier: core",
                 "triggers: [search, latest]",
                 "instructions: |",
                 "  Use web search.",
@@ -66,6 +67,7 @@ def test_tools_plugin_explicit_use_tool_directive(tmp_path: Path) -> None:
             [
                 "name: web_search",
                 "description: Search web",
+                "tier: extended",
                 "triggers: [search]",
                 "instructions: |",
                 "  Use web search.",
@@ -84,3 +86,84 @@ def test_extract_requested_tools_deduplicates_and_normalizes() -> None:
         "USE_TOOL: Web_Search\nnoise\nUSE_TOOL: web_search\nUSE_TOOL: github_pr"
     )
     assert requested == ["web_search", "github_pr"]
+
+
+def test_extended_tool_does_not_auto_activate_from_trigger(tmp_path: Path) -> None:
+    (tmp_path / "discord.yaml").write_text(
+        "\n".join(
+            [
+                "name: discord",
+                "description: Discord ops",
+                "tier: extended",
+                "triggers: [discord]",
+                "instructions: |",
+                "  Use Discord tool.",
+            ]
+        )
+    )
+    registry = PluginToolRegistry(tmp_path)
+    context = registry.build_context("post this in discord")
+
+    assert '<tool name="discord">' not in context
+    assert "Extended tools matched by intent: discord" in context
+    assert "Activate one explicitly with: USE_TOOL: <tool_name>" in context
+
+
+def test_core_tool_auto_activates_from_trigger(tmp_path: Path) -> None:
+    (tmp_path / "web.yaml").write_text(
+        "\n".join(
+            [
+                "name: web_search",
+                "description: Search web",
+                "tier: core",
+                "triggers: [search]",
+                "instructions: |",
+                "  Use web search.",
+            ]
+        )
+    )
+    registry = PluginToolRegistry(tmp_path)
+    context = registry.build_context("search this")
+
+    assert '<tool name="web_search">' in context
+
+
+def test_guardrail_blocks_denylisted_tool(tmp_path: Path) -> None:
+    (tmp_path / "web.yaml").write_text(
+        "\n".join(
+            [
+                "name: web_search",
+                "description: Search web",
+                "tier: core",
+                "triggers: [search]",
+                "instructions: |",
+                "  Use web search.",
+            ]
+        )
+    )
+    registry = PluginToolRegistry(tmp_path, denylist={"web_search"})
+    context = registry.build_context("search now")
+
+    assert '<tool name="web_search">' not in context
+    assert "Guardrail-blocked tools: web_search (denylisted)" in context
+
+
+def test_guardrail_blocks_risky_when_approval_required(tmp_path: Path) -> None:
+    (tmp_path / "discord.yaml").write_text(
+        "\n".join(
+            [
+                "name: discord",
+                "description: Discord ops",
+                "tier: core",
+                "risky: true",
+                "triggers: [discord]",
+                "instructions: |",
+                "  Use Discord tool.",
+            ]
+        )
+    )
+    registry = PluginToolRegistry(tmp_path, require_approval_for_risky=True)
+    context = registry.build_context("send to discord")
+
+    assert '<tool name="discord">' not in context
+    assert "Guardrail-blocked tools: discord (requires-approval)" in context

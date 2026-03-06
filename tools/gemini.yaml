@@ -1,5 +1,6 @@
 name: gemini
 description: Gemini CLI for one-shot Q&A, summaries, and generation.
+tier: extended
 triggers:
 - gemini
 - gemini

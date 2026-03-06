@@ -1,5 +1,6 @@
 name: spotify-player
 description: Terminal Spotify playback/search via spogo (preferred) or spotify_player.
+tier: extended
 triggers:
 - spotify-player
 - terminal

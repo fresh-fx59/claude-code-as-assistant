@@ -1,5 +1,6 @@
 name: things-mac
 description: Manage Things 3 via the `things` CLI on macOS (add/update projects+todos
+tier: extended
   via URL scheme; read/search
 triggers:
 - things-mac

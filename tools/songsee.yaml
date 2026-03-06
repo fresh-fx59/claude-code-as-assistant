@@ -1,5 +1,6 @@
 name: songsee
 description: Generate spectrograms and feature-panel visualizations from audio with
+tier: extended
   the songsee CLI.
 triggers:
 - songsee
