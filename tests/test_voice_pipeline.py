@@ -5,6 +5,7 @@ import pytest
 from src.bot import (
     _extract_media_directives,
     _maybe_add_local_tts_media,
+    _sanitize_voice_capability_text,
     _send_media_refs,
     _wants_voice_reply,
 )
@@ -42,6 +43,21 @@ def test_wants_voice_reply_detects_english_prompt():
 
 def test_wants_voice_reply_ignores_regular_text():
     assert not _wants_voice_reply("send text answer")
+
+
+def test_sanitize_voice_capability_text_rewrites_interface_limitation_for_voice_request():
+    text = (
+        "Не могу физически отправить voice-note из этого интерфейса напрямую. "
+        "Пришли текст."
+    )
+    sanitized = _sanitize_voice_capability_text(text, request_voice_reply=True)
+    assert sanitized == "Пришли текст для озвучки, и я отправлю его голосовой заметкой в Telegram."
+
+
+def test_sanitize_voice_capability_text_keeps_regular_response():
+    text = "Готово. Сейчас отправляю голосовое сообщение."
+    sanitized = _sanitize_voice_capability_text(text, request_voice_reply=True)
+    assert sanitized == text
 
 
 @pytest.mark.asyncio

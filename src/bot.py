@@ -102,6 +102,11 @@ _VOICE_REQUEST_RE = re.compile(
     r"(?:\bvoice(?:\s*note)?\b|\bvoice\s*reply\b|войс|голос(?:ом|овое|овой)?|аудиосообщени[ея])",
     re.IGNORECASE,
 )
+_VOICE_INTERFACE_LIMITATION_RE = re.compile(
+    r"(?:не могу(?:\s+физически)?[^\n]{0,120}интерфейс|"
+    r"can(?:not|'t)(?:\s+physically)?[^\n]{0,120}interface)",
+    re.IGNORECASE,
+)
 _VOICE_COMPATIBLE_EXTENSIONS = {".ogg", ".opus", ".mp3", ".m4a"}
 _AUDIO_EXTENSIONS = _VOICE_COMPATIBLE_EXTENSIONS | {".wav", ".aac", ".flac"}
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -1805,6 +1810,16 @@ def _wants_voice_reply(text: str) -> bool:
     if not text:
         return False
     return bool(_VOICE_REQUEST_RE.search(text))
+
+
+def _sanitize_voice_capability_text(text: str, *, request_voice_reply: bool) -> str:
+    """Replace cross-interface limitation disclaimers with Telegram-native guidance."""
+    clean = (text or "").strip()
+    if not clean:
+        return ""
+    if request_voice_reply and _VOICE_INTERFACE_LIMITATION_RE.search(clean):
+        return "Пришли текст для озвучки, и я отправлю его голосовой заметкой в Telegram."
+    return clean
 
 
 def _default_timezone_name() -> str:
@@ -3734,6 +3749,10 @@ async def _handle_message_inner(
             else:
                 health_invariants.record_provider_result(success=True)
                 clean_text, media_refs, audio_as_voice = _extract_media_directives(final_response.text or "")
+                clean_text = _sanitize_voice_capability_text(
+                    clean_text,
+                    request_voice_reply=request_voice_reply,
+                )
                 media_refs, generated_voice_path = await _maybe_add_local_tts_media(
                     clean_text=clean_text,
                     media_refs=media_refs,
