@@ -117,9 +117,10 @@ All settings are read from `.env`.
 - `LOCAL_TTS_MAX_CHARS` (optional, default `1200`): max text length sent to TTS after cleanup
 - `LOCAL_TTS_VERIFY_INTELLIGIBILITY` (optional, default `1`): run post-TTS intelligibility check (via local whisper.cpp when available)
 - `LOCAL_TTS_MIN_INTELLIGIBILITY_SCORE` (optional, default `0.55`): minimum similarity score for accepted voice output
+- `LOCAL_TTS_SHERPA_MIN_INTELLIGIBILITY_SCORE` (optional, default `0.35`): softer threshold for sherpa outputs to preserve natural speech quality
 - `LOCAL_TTS_VERIFY_MAX_CHARS` (optional, default `260`): skip verification for long texts to keep latency bounded
-- `LOCAL_TTS_OPUS_BITRATE` (optional, default `48k`): Opus bitrate for voice-note encoding quality
-- `LOCAL_TTS_FFMPEG_AF` (optional): ffmpeg audio filter chain for intelligibility and loudness normalization
+- `LOCAL_TTS_OPUS_BITRATE` (optional, default `64k`): Opus bitrate for voice-note encoding quality
+- `LOCAL_TTS_FFMPEG_AF` (optional, default empty): ffmpeg audio filter chain, disabled by default to keep natural timbre
 - `SHERPA_ONNX_RUNTIME_DIR` (optional): sherpa runtime dir for offline neural TTS
 - `SHERPA_ONNX_MODEL_DIR` (optional): sherpa model dir (for example `vits-piper-ru_RU-ruslan-medium`)
 

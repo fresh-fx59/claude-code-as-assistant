@@ -62,11 +62,15 @@ TTS_MIN_INTELLIGIBILITY_SCORE: float = max(
     0.0,
     min(1.0, float(os.getenv("LOCAL_TTS_MIN_INTELLIGIBILITY_SCORE", "0.55"))),
 )
+TTS_SHERPA_MIN_INTELLIGIBILITY_SCORE: float = max(
+    0.0,
+    min(1.0, float(os.getenv("LOCAL_TTS_SHERPA_MIN_INTELLIGIBILITY_SCORE", "0.35"))),
+)
 TTS_VERIFY_MAX_CHARS: int = int(os.getenv("LOCAL_TTS_VERIFY_MAX_CHARS", "260"))
-TTS_OPUS_BITRATE: str = os.getenv("LOCAL_TTS_OPUS_BITRATE", "48k").strip() or "48k"
+TTS_OPUS_BITRATE: str = os.getenv("LOCAL_TTS_OPUS_BITRATE", "64k").strip() or "64k"
 TTS_FFMPEG_AF: str = os.getenv(
     "LOCAL_TTS_FFMPEG_AF",
-    "highpass=f=120,lowpass=f=7600,loudnorm=I=-16:TP=-1.5:LRA=11",
+    "",
 ).strip()
 
 _CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
@@ -202,7 +206,12 @@ def _intelligibility_score(expected_text: str, actual_text: str) -> float:
     return difflib.SequenceMatcher(None, expected, actual).ratio()
 
 
-async def _verify_intelligibility(ogg_path: Path, expected_text: str) -> tuple[bool, str]:
+async def _verify_intelligibility(
+    ogg_path: Path,
+    expected_text: str,
+    *,
+    min_score: float | None = None,
+) -> tuple[bool, str]:
     if not TTS_VERIFY_INTELLIGIBILITY:
         return True, "disabled"
     if len(expected_text) > TTS_VERIFY_MAX_CHARS:
@@ -222,9 +231,10 @@ async def _verify_intelligibility(ogg_path: Path, expected_text: str) -> tuple[b
         return False, f"verification transcribe failed: {exc}"
 
     score = _intelligibility_score(expected_text, recognized)
-    if score >= TTS_MIN_INTELLIGIBILITY_SCORE:
+    threshold = TTS_MIN_INTELLIGIBILITY_SCORE if min_score is None else min_score
+    if score >= threshold:
         return True, f"score={score:.2f}"
-    return False, f"low intelligibility score={score:.2f}"
+    return False, f"low intelligibility score={score:.2f} (<{threshold:.2f})"
 
 
 async def _convert_wav_to_ogg(wav_path: Path, ogg_path: Path) -> tuple[int, str]:
@@ -325,7 +335,16 @@ async def synthesize_voice(text: str) -> str:
                 errors.append("ogg output missing")
                 continue
 
-            ok, detail = await _verify_intelligibility(ogg_path, spoken_text)
+            min_score = (
+                TTS_SHERPA_MIN_INTELLIGIBILITY_SCORE
+                if engine == "sherpa"
+                else TTS_MIN_INTELLIGIBILITY_SCORE
+            )
+            ok, detail = await _verify_intelligibility(
+                ogg_path,
+                spoken_text,
+                min_score=min_score,
+            )
             if ok:
                 cleanup_file(str(wav_path))
                 return str(ogg_path)
