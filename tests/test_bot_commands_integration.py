@@ -743,6 +743,32 @@ class TestStepPlanCommands:
         assert not state["current_task_id"]
         manager.cancel.assert_awaited_once_with("task-running")
 
+    async def test_auto_continue_plan_message_starts_stepplan(self, mock_message, monkeypatch):
+        mock_message.text = "Continue with plan"
+        manager = AsyncMock()
+        manager.submit = AsyncMock(return_value="task-xyz")
+        monkeypatch.setattr("src.bot.task_manager", manager)
+        monkeypatch.setattr("src.bot.config.STEP_PLAN_AUTO_TRIGGER_ENABLED", True)
+        monkeypatch.setattr("src.bot.config.STEP_PLAN_DEFAULT_FOLDER", "/tmp/plan")
+        monkeypatch.setattr("src.bot._load_plan_steps_from_folder", lambda _: ["/tmp/plan/01 - A.md"])
+
+        await handle_message(mock_message)
+
+        manager.submit.assert_awaited_once()
+        text = mock_message.answer.call_args[0][0]
+        assert "Auto-started step plan" in text
+
+    async def test_auto_continue_plan_message_without_folder_returns_hint(self, mock_message, monkeypatch):
+        mock_message.text = "Continue with plan"
+        monkeypatch.setattr("src.bot.config.STEP_PLAN_AUTO_TRIGGER_ENABLED", True)
+        monkeypatch.setattr("src.bot.config.STEP_PLAN_DEFAULT_FOLDER", "")
+        monkeypatch.setattr("src.bot._resolve_step_plan_folder_from_text", lambda _: None)
+
+        await handle_message(mock_message)
+
+        msg = mock_message.answer.call_args[0][0]
+        assert "Could not resolve plan folder for auto-start" in msg
+
 
 @pytest.mark.asyncio
 class TestScopeSnapshotRecovery:

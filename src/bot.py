@@ -93,6 +93,12 @@ _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 _STEP_PLAN_STATE_PATH = config.MEMORY_DIR / "step_plan_state.json"
 _SCOPE_SNAPSHOT_PATH = config.MEMORY_DIR / "scope_snapshot.json"
 _STEP_PLAN_FILE_PATTERN = re.compile(r"^(\d+)\s*-\s*.+\.md$", re.IGNORECASE)
+_STEP_PLAN_AUTO_TRIGGER_RE = re.compile(r"\bcontinue\b.*\bplan\b", re.IGNORECASE)
+_STEP_PLAN_PATH_HINT_RE = re.compile(r"(/[^\n]*Ouroboros Improvement Plan[^\n]*)")
+_STEP_PLAN_FALLBACK_PATHS = (
+    "/home/claude-developer/syncthing/data/syncthing-main/Obsidian/DefaultObsidianVault/"
+    "Projects/Iron Lady Assistant/Ouroboros Improvement Plan",
+)
 
 
 def _thread_id(message: Message) -> int | None:
@@ -514,6 +520,127 @@ async def _submit_current_step_plan_task(state: dict) -> str:
     state["last_error"] = ""
     _save_step_plan_state(state)
     return task_id
+
+
+def _resolve_step_plan_folder_from_text(user_text: str) -> str | None:
+    state = _load_step_plan_state()
+    folder_from_state = str(state.get("folder_path") or "").strip()
+    if folder_from_state and Path(folder_from_state).expanduser().resolve().is_dir():
+        return str(Path(folder_from_state).expanduser().resolve())
+
+    match = _STEP_PLAN_PATH_HINT_RE.search(user_text or "")
+    if match:
+        candidate = Path(match.group(1).strip()).expanduser().resolve()
+        if candidate.is_dir():
+            return str(candidate)
+
+    if config.STEP_PLAN_DEFAULT_FOLDER:
+        candidate = Path(config.STEP_PLAN_DEFAULT_FOLDER).expanduser().resolve()
+        if candidate.is_dir():
+            return str(candidate)
+
+    for fallback in _STEP_PLAN_FALLBACK_PATHS:
+        candidate = Path(fallback).expanduser().resolve()
+        if candidate.is_dir():
+            return str(candidate)
+
+    return None
+
+
+async def _start_step_plan(
+    *,
+    message: Message,
+    folder_path: str,
+    restart_between_steps: bool,
+    source: str,
+) -> str:
+    steps = _load_plan_steps_from_folder(folder_path)
+    if not steps:
+        raise RuntimeError("No step files found in folder.")
+
+    state = _step_plan_default_state()
+    state.update(
+        {
+            "active": True,
+            "name": Path(folder_path).expanduser().resolve().name,
+            "folder_path": str(Path(folder_path).expanduser().resolve()),
+            "chat_id": message.chat.id,
+            "message_thread_id": _thread_id(message),
+            "user_id": _actor_id(message),
+            "steps": steps,
+            "current_index": 0,
+            "current_task_id": None,
+            "restart_between_steps": restart_between_steps,
+            "last_error": "",
+        }
+    )
+    _save_step_plan_state(state)
+
+    try:
+        task_id = await _submit_current_step_plan_task(state)
+    except Exception as exc:
+        state = _load_step_plan_state()
+        state["active"] = False
+        state["last_error"] = f"Failed to queue first step: {exc}"
+        _save_step_plan_state(state)
+        raise RuntimeError(f"Could not queue first step: {exc}") from exc
+
+    logger.info(
+        "step_plan_started source=%s steps=%d restart_between_steps=%s folder=%s",
+        source,
+        len(steps),
+        restart_between_steps,
+        folder_path,
+    )
+    return task_id
+
+
+async def _maybe_autostart_step_plan_from_message(message: Message) -> bool:
+    if not config.STEP_PLAN_AUTO_TRIGGER_ENABLED:
+        return False
+    if not _is_admin(message.from_user and message.from_user.id):
+        return False
+    text = (message.text or "").strip()
+    if not text or text.startswith("/"):
+        return False
+    if not _STEP_PLAN_AUTO_TRIGGER_RE.search(text):
+        return False
+
+    current = _load_step_plan_state()
+    if current.get("active"):
+        await message.answer(
+            "Step plan is already active. Use /stepplan_status to track progress.",
+            parse_mode="HTML",
+        )
+        return True
+
+    folder_path = _resolve_step_plan_folder_from_text(text)
+    if not folder_path:
+        await message.answer(
+            "Could not resolve plan folder for auto-start. "
+            "Use /stepplan_start <folder_path> once, then restart continuation will be automatic."
+        )
+        return True
+
+    try:
+        task_id = await _start_step_plan(
+            message=message,
+            folder_path=folder_path,
+            restart_between_steps=True,
+            source="message_auto_trigger",
+        )
+    except Exception as exc:
+        await message.answer(str(exc))
+        return True
+
+    await message.answer(
+        "▶️ <b>Auto-started step plan</b>\n"
+        f"<b>Folder:</b> <code>{html.escape(folder_path)}</code>\n"
+        f"<b>First task:</b> <code>{task_id}</code>\n"
+        "I will continue step-by-step across restarts automatically.",
+        parse_mode="HTML",
+    )
+    return True
 
 
 def _step_plan_status_text(state: dict) -> str:
@@ -2113,32 +2240,15 @@ async def cmd_stepplan_start(message: Message) -> None:
         )
         return
 
-    state = _step_plan_default_state()
-    state.update(
-        {
-            "active": True,
-            "name": Path(folder_path).expanduser().resolve().name,
-            "folder_path": str(Path(folder_path).expanduser().resolve()),
-            "chat_id": message.chat.id,
-            "message_thread_id": _thread_id(message),
-            "user_id": _actor_id(message),
-            "steps": steps,
-            "current_index": 0,
-            "current_task_id": None,
-            "restart_between_steps": restart_between_steps,
-            "last_error": "",
-        }
-    )
-    _save_step_plan_state(state)
-
     try:
-        task_id = await _submit_current_step_plan_task(state)
+        task_id = await _start_step_plan(
+            message=message,
+            folder_path=folder_path,
+            restart_between_steps=restart_between_steps,
+            source="command",
+        )
     except Exception as exc:
-        state = _load_step_plan_state()
-        state["active"] = False
-        state["last_error"] = f"Failed to queue first step: {exc}"
-        _save_step_plan_state(state)
-        await message.answer(f"Could not queue first step: {exc}")
+        await message.answer(str(exc))
         return
 
     await message.answer(
@@ -2692,6 +2802,8 @@ async def handle_image(message: Message) -> None:
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
     try:
+        if await _maybe_autostart_step_plan_from_message(message):
+            return
         await _handle_message_inner(message)
     except Exception:
         logger.exception("Unhandled exception in handle_message")

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.18.21"
+VERSION: str = "0.18.22"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -91,6 +91,10 @@ AUTONOMY_ENABLED: bool = os.getenv("AUTONOMY_ENABLED", "1").strip().lower() not 
 AUTONOMY_FAILURE_THRESHOLD: int = int(os.getenv("AUTONOMY_FAILURE_THRESHOLD", "3"))
 AUTONOMY_FAILURE_WINDOW_MINUTES: int = int(os.getenv("AUTONOMY_FAILURE_WINDOW_MINUTES", "60"))
 AUTONOMY_ALERT_COOLDOWN_MINUTES: int = int(os.getenv("AUTONOMY_ALERT_COOLDOWN_MINUTES", "30"))
+STEP_PLAN_AUTO_TRIGGER_ENABLED: bool = os.getenv(
+    "STEP_PLAN_AUTO_TRIGGER_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no"}
+STEP_PLAN_DEFAULT_FOLDER: str = os.getenv("STEP_PLAN_DEFAULT_FOLDER", "").strip()
 
 # ── Memory system ─────────────────────────────────────────
 _raw_memory_dir = os.getenv("MEMORY_DIR") or None
