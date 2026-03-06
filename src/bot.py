@@ -134,6 +134,36 @@ def _state_store():
     return get_default_state_store()
 
 
+def _provider_manager():
+    if _app_context and _app_context.provider_manager:
+        return _app_context.provider_manager
+    return provider_manager
+
+
+def _session_manager():
+    if _app_context and _app_context.session_manager:
+        return _app_context.session_manager
+    return session_manager
+
+
+def _memory_manager():
+    if _app_context and _app_context.memory_manager:
+        return _app_context.memory_manager
+    return memory_manager
+
+
+def _task_manager():
+    if _app_context and _app_context.task_manager is not None:
+        return _app_context.task_manager
+    return task_manager
+
+
+def _schedule_manager():
+    if _app_context and _app_context.schedule_manager is not None:
+        return _app_context.schedule_manager
+    return schedule_manager
+
+
 def set_app_context(context: AppContext | None) -> None:
     """Inject runtime context for DI-friendly feature modules."""
     global _app_context
@@ -513,7 +543,8 @@ def _build_step_plan_prompt(step_file: str, step_index: int, total_steps: int) -
 
 
 async def _submit_current_step_plan_task(state: dict) -> str:
-    if not task_manager:
+    tm = _task_manager()
+    if not tm:
         raise RuntimeError("Background tasks not available.")
     steps = state.get("steps") or []
     if not steps:
@@ -530,8 +561,8 @@ async def _submit_current_step_plan_task(state: dict) -> str:
     message_thread_id = state.get("message_thread_id")
     user_id = int(state.get("user_id") or 0)
     scope_key = _scope_key(chat_id, message_thread_id)
-    provider = provider_manager.get_provider(scope_key)
-    session = session_manager.get(chat_id, message_thread_id)
+    provider = _provider_manager().get_provider(scope_key)
+    session = _session_manager().get(chat_id, message_thread_id)
     provider_cli = provider.cli if _find_provider_cli(provider.cli) else "claude"
     resume_arg = provider.resume_arg if provider_cli == "codex" else None
     session_id = (
@@ -543,7 +574,7 @@ async def _submit_current_step_plan_task(state: dict) -> str:
         else session.model
     )
 
-    task_id = await task_manager.submit(
+    task_id = await tm.submit(
         chat_id=chat_id,
         message_thread_id=message_thread_id,
         user_id=user_id,
@@ -679,7 +710,7 @@ def _latest_scope_target() -> tuple[int, int | None] | None:
     if newest:
         return newest[1], newest[2]
     session_rows = []
-    for key, session in session_manager.sessions.items():
+    for key, session in _session_manager().sessions.items():
         try:
             chat_id, message_thread_id = _parse_scope_key_components(str(key))
         except Exception:
@@ -712,7 +743,8 @@ def _latest_scope_target() -> tuple[int, int | None] | None:
 
 async def bootstrap_step_plan_after_restart() -> None:
     """Auto-start step plan from default folder when no active state exists."""
-    if not config.STEP_PLAN_AUTO_TRIGGER_ENABLED or not task_manager:
+    tm = _task_manager()
+    if not config.STEP_PLAN_AUTO_TRIGGER_ENABLED or not tm:
         return
     current = _load_step_plan_state()
     if current.get("active"):
@@ -754,7 +786,7 @@ async def bootstrap_step_plan_after_restart() -> None:
         if target and (prev_index < len(steps) or prev_error):
             chat_id, message_thread_id = target
             try:
-                await task_manager.bot.send_message(
+                await tm.bot.send_message(
                     chat_id=chat_id,
                     message_thread_id=message_thread_id,
                     text=(
@@ -802,7 +834,7 @@ async def bootstrap_step_plan_after_restart() -> None:
         return
 
     try:
-        await task_manager.bot.send_message(
+        await tm.bot.send_message(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             text=(
@@ -981,9 +1013,10 @@ class StepPlanObserver:
             )
 
     async def _notify(self, chat_id: int, message_thread_id: int | None, text: str) -> None:
-        if not task_manager:
+        tm = _task_manager()
+        if not tm:
             return
-        await task_manager.bot.send_message(
+        await tm.bot.send_message(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             text=text,
@@ -1043,7 +1076,8 @@ async def resume_step_plan_after_restart() -> None:
     state = _load_step_plan_state()
     if not state.get("active"):
         return
-    if not task_manager:
+    tm = _task_manager()
+    if not tm:
         return
 
     steps = state.get("steps") or []
@@ -1069,7 +1103,7 @@ async def resume_step_plan_after_restart() -> None:
         return
 
     try:
-        await task_manager.bot.send_message(
+        await tm.bot.send_message(
             chat_id=int(state.get("chat_id") or 0),
             message_thread_id=state.get("message_thread_id"),
             text=(
@@ -1089,7 +1123,8 @@ async def resume_step_plan_after_restart() -> None:
 
 async def resume_scope_snapshots_after_restart() -> None:
     """Restore pending scope inputs from persisted snapshots."""
-    if not config.SCOPE_SNAPSHOT_ENABLED or not task_manager:
+    tm = _task_manager()
+    if not config.SCOPE_SNAPSHOT_ENABLED or not tm:
         return
     snapshots = _load_scope_snapshots()
     if not snapshots:
@@ -1149,7 +1184,7 @@ async def resume_scope_snapshots_after_restart() -> None:
                 else str(row.get("claude_session_id") or "")
             ) or None
             prompt = _build_augmented_prompt(active_prompt)
-            resume_task_id = await task_manager.submit(
+            resume_task_id = await tm.submit(
                 chat_id=chat_id,
                 user_id=chat_id,
                 prompt=prompt,
@@ -1178,7 +1213,7 @@ async def resume_scope_snapshots_after_restart() -> None:
         chat_id = int(row.get("chat_id") or 0)
         if notice_lines and chat_id:
             try:
-                await task_manager.bot.send_message(
+                await tm.bot.send_message(
                     chat_id=chat_id,
                     message_thread_id=row.get("message_thread_id"),
                     text=(
@@ -1197,7 +1232,7 @@ async def resume_scope_snapshots_after_restart() -> None:
                 *(f"• <code>{html.escape(line)}</code>" for line in restored_lines[:20]),
                 *(f"• <code>{html.escape(line)}</code>" for line in resumed_lines[:20]),
             ]
-            await task_manager.bot.send_message(
+            await tm.bot.send_message(
                 chat_id=admin_id,
                 text=(
                     "🔁 <b>Scope snapshot restore</b>\n"
@@ -1481,10 +1516,11 @@ def _apply_context_compaction(parts: dict[str, str]) -> tuple[dict[str, str], st
 
 def _build_augmented_prompt(raw_prompt: str) -> str:
     """Compose prompt with memory, identity, tools, and memory instructions."""
-    memory_context = _as_text(memory_manager.build_context(raw_prompt))
+    mm = _memory_manager()
+    memory_context = _as_text(mm.build_context(raw_prompt))
     identity_context = _as_text(identity_manager.build_context())
     tool_context = _as_text(context_plugins.build_context(raw_prompt))
-    memory_instructions = _as_text(memory_manager.build_instructions())
+    memory_instructions = _as_text(mm.build_instructions())
     compiler_context = ""
     if config.CONTEXT_COMPILER_ENABLED:
         compiler_context = context_compiler.build_context(
