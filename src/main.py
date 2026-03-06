@@ -36,6 +36,7 @@ from .bot import (
     get_step_plan_observer,
     get_cost_guardrail_observer,
     resume_step_plan_after_restart,
+    bootstrap_step_plan_after_restart,
     resume_scope_snapshots_after_restart,
     set_step_plan_restart_callback,
     should_restart_step_plan_now,
@@ -189,6 +190,7 @@ async def main() -> None:
     await send_startup_notification(bot, short_commit)
     await resume_step_plan_after_restart()
     await resume_scope_snapshots_after_restart()
+    await bootstrap_step_plan_after_restart()
 
     logging.info("Bot starting...")
     try:

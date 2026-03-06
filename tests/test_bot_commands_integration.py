@@ -50,6 +50,8 @@ from src.bot import (
     _is_duplicate_outbound,
     _cost_guardrail_actions_from_anomalies,
     _queue_pending_input,
+    _first_unapplied_step_index,
+    bootstrap_step_plan_after_restart,
     VALID_MODELS,
 )
 
@@ -699,6 +701,9 @@ class TestStepPlanCommands:
         await cmd_stepplan_start(mock_message)
 
         manager.submit.assert_awaited_once()
+        submit_kwargs = manager.submit.await_args.kwargs
+        assert submit_kwargs["live_feedback"] is True
+        assert "Step plan 1/2 running" in submit_kwargs["feedback_title"]
         state = _load_step_plan_state()
         assert state["active"] is True
         assert state["current_index"] == 0
@@ -769,6 +774,42 @@ class TestStepPlanCommands:
 
         msg = mock_message.answer.call_args[0][0]
         assert "Could not resolve plan folder for auto-start" in msg
+
+    async def test_first_unapplied_step_index(self, tmppath):
+        step1 = tmppath / "01 - A.md"
+        step2 = tmppath / "02 - B.md"
+        step3 = tmppath / "03 - C.md"
+        step1.write_text("Applied: [x]\n", encoding="utf-8")
+        step2.write_text("Applied: [ ]\n", encoding="utf-8")
+        step3.write_text("Applied: [ ]\n", encoding="utf-8")
+        idx = _first_unapplied_step_index([str(step1), str(step2), str(step3)])
+        assert idx == 1
+
+    async def test_bootstrap_step_plan_after_restart_autostarts_next_unapplied(
+        self, monkeypatch, tmppath
+    ):
+        step1 = tmppath / "01 - A.md"
+        step2 = tmppath / "02 - B.md"
+        step1.write_text("Applied: [x]\n", encoding="utf-8")
+        step2.write_text("Applied: [ ]\n", encoding="utf-8")
+
+        manager = AsyncMock()
+        manager.bot = AsyncMock()
+        manager.bot.send_message = AsyncMock()
+        manager.submit = AsyncMock(return_value="task-next")
+        monkeypatch.setattr("src.bot.task_manager", manager)
+        monkeypatch.setattr("src.bot.config.STEP_PLAN_AUTO_TRIGGER_ENABLED", True)
+        monkeypatch.setattr("src.bot.config.STEP_PLAN_DEFAULT_FOLDER", str(tmppath))
+        monkeypatch.setattr("src.bot.config.ALLOWED_USER_IDS", {123456789})
+        monkeypatch.setattr("src.bot._load_scope_snapshots", lambda: {})
+        monkeypatch.setattr("src.bot._load_step_plan_state", lambda: {"active": False})
+
+        await bootstrap_step_plan_after_restart()
+
+        manager.submit.assert_awaited_once()
+        call = manager.submit.await_args.kwargs
+        assert "Step plan 2/2 running" in call["feedback_title"]
+        manager.bot.send_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio

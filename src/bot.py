@@ -103,6 +103,7 @@ _STEP_PLAN_FALLBACK_PATHS = (
     "Projects/Iron Lady Assistant/Ouroboros Improvement Plan",
 )
 _MIDFLIGHT_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+_APPLIED_CHECK_RE = re.compile(r"^\s*Applied:\s*\[(x|X)\]\s*$", re.IGNORECASE | re.MULTILINE)
 _NUMBER_WORDS = {
     "one": "1",
     "two": "2",
@@ -604,11 +605,28 @@ async def _submit_current_step_plan_task(state: dict) -> str:
         prompt=full_prompt,
         model=session.model,
         session_id=session.claude_session_id,
+        live_feedback=True,
+        feedback_title=(
+            f"🛠️ <b>Step plan {current_index + 1}/{len(steps)} running...</b>\n"
+            f"<code>{html.escape(Path(step_file).name)}</code>"
+        ),
     )
     state["current_task_id"] = task_id
     state["last_error"] = ""
     _save_step_plan_state(state)
     return task_id
+
+
+def _first_unapplied_step_index(steps: list[str]) -> int:
+    for idx, step_file in enumerate(steps):
+        try:
+            content = Path(step_file).read_text(encoding="utf-8")
+        except Exception:
+            return idx
+        if _APPLIED_CHECK_RE.search(content):
+            continue
+        return idx
+    return len(steps)
 
 
 def _resolve_step_plan_folder_from_text(user_text: str) -> str | None:
@@ -682,6 +700,89 @@ async def _start_step_plan(
         folder_path,
     )
     return task_id
+
+
+def _latest_scope_target() -> tuple[int, int | None] | None:
+    snapshots = _load_scope_snapshots()
+    newest: tuple[datetime, int, int | None] | None = None
+    for row in snapshots.values():
+        chat_id = int(row.get("chat_id") or 0)
+        if not chat_id:
+            continue
+        updated_raw = str(row.get("updated_at") or "")
+        try:
+            updated_at = datetime.fromisoformat(updated_raw)
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=tz.utc)
+        except Exception:
+            updated_at = datetime.min.replace(tzinfo=tz.utc)
+        candidate = (updated_at, chat_id, row.get("message_thread_id"))
+        if newest is None or candidate[0] > newest[0]:
+            newest = candidate
+    if newest:
+        return newest[1], newest[2]
+    if config.ALLOWED_USER_IDS:
+        admin_id = min(config.ALLOWED_USER_IDS)
+        return admin_id, None
+    return None
+
+
+async def bootstrap_step_plan_after_restart() -> None:
+    """Auto-start step plan from default folder when no active state exists."""
+    if not config.STEP_PLAN_AUTO_TRIGGER_ENABLED or not task_manager:
+        return
+    current = _load_step_plan_state()
+    if current.get("active"):
+        return
+    folder_path = _resolve_step_plan_folder_from_text("")
+    if not folder_path:
+        return
+    steps = _load_plan_steps_from_folder(folder_path)
+    if not steps:
+        return
+    next_index = _first_unapplied_step_index(steps)
+    if next_index >= len(steps):
+        return
+    target = _latest_scope_target()
+    if not target:
+        return
+    chat_id, message_thread_id = target
+    state = _step_plan_default_state()
+    state.update(
+        {
+            "active": True,
+            "name": Path(folder_path).expanduser().resolve().name,
+            "folder_path": str(Path(folder_path).expanduser().resolve()),
+            "chat_id": chat_id,
+            "message_thread_id": message_thread_id,
+            "user_id": chat_id,
+            "steps": steps,
+            "current_index": next_index,
+            "current_task_id": None,
+            "restart_between_steps": True,
+            "last_error": "",
+        }
+    )
+    _save_step_plan_state(state)
+    try:
+        task_id = await _submit_current_step_plan_task(state)
+    except Exception as exc:
+        state = _load_step_plan_state()
+        state["active"] = False
+        state["last_error"] = f"Startup auto-start failed: {exc}"
+        _save_step_plan_state(state)
+        logger.exception("Failed to bootstrap step plan after restart")
+        return
+
+    await task_manager.bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=message_thread_id,
+        text=(
+            "🔁 <b>Auto-resumed step plan after restart</b>\n"
+            f"Queued step {next_index + 1}/{len(steps)} as task <code>{task_id}</code>."
+        ),
+        parse_mode="HTML",
+    )
 
 
 async def _maybe_autostart_step_plan_from_message(message: Message) -> bool:
