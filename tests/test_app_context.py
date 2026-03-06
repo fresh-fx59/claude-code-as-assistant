@@ -163,3 +163,60 @@ async def test_bg_command_uses_app_context_managers(monkeypatch, mock_message) -
         assert kwargs["prompt"] == "check context path"
     finally:
         set_app_context(None)
+
+
+@pytest.mark.asyncio
+async def test_bg_command_codex_default_resolves_to_explicit_model(monkeypatch, mock_message) -> None:
+    fake_provider = type(
+        "Provider",
+        (),
+        {"cli": "codex", "resume_arg": "resume", "model": "default", "models": ["default", "gpt-5-codex"]},
+    )()
+    fake_session = type(
+        "Session",
+        (),
+        {
+            "codex_session_id": "ctx-codex-sess",
+            "claude_session_id": None,
+            "model": "sonnet",
+            "provider": "codex",
+            "codex_model": "default",
+        },
+    )()
+    fake_provider_manager = type("PM", (), {"get_provider": lambda self, _scope: fake_provider})()
+    fake_session_manager = type("SM", (), {"get": lambda self, _chat, _thread: fake_session})()
+    fake_memory_manager = type(
+        "MM",
+        (),
+        {"build_context": lambda self, _prompt: "", "build_instructions": lambda self: ""},
+    )()
+    fake_task_manager = type(
+        "TM",
+        (),
+        {"submit": AsyncMock(return_value="ctx-task-bg"), "bot": AsyncMock()},
+    )()
+
+    mock_message.text = "/bg check context path"
+
+    try:
+        set_app_context(
+            AppContext(
+                provider_manager=fake_provider_manager,
+                session_manager=fake_session_manager,
+                memory_manager=fake_memory_manager,
+                task_manager=fake_task_manager,
+                schedule_manager=None,
+                state_store=get_default_state_store(),
+            )
+        )
+        monkeypatch.setattr("src.bot._find_provider_cli", lambda _name: "/usr/bin/codex")
+        monkeypatch.setattr("src.bot._build_augmented_prompt", lambda prompt: prompt)
+
+        await cmd_bg(mock_message)
+
+        fake_task_manager.submit.assert_awaited_once()
+        kwargs = fake_task_manager.submit.await_args.kwargs
+        assert kwargs["provider_cli"] == "codex"
+        assert kwargs["model"] == "gpt-5-codex"
+    finally:
+        set_app_context(None)

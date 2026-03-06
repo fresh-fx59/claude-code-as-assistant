@@ -569,11 +569,7 @@ async def _submit_current_step_plan_task(state: dict) -> str:
     session_id = (
         session.codex_session_id if provider_cli == "codex" else session.claude_session_id
     )
-    task_model = (
-        (_codex_model_arg(session, provider) or "default")
-        if provider_cli == "codex"
-        else session.model
-    )
+    task_model = _codex_task_model(session, provider) if provider_cli == "codex" else session.model
 
     task_id = await tm.submit(
         chat_id=chat_id,
@@ -1225,6 +1221,17 @@ async def resume_scope_snapshots_after_restart() -> None:
             active_provider_cli = str(row.get("active_provider_cli") or "claude")
             active_model = str(row.get("active_model") or "sonnet")
             active_resume_arg = str(row.get("active_resume_arg") or "")
+            if active_provider_cli == "codex" and active_model in {"", "default"}:
+                session = _session_manager().get(chat_id, message_thread_id)
+                if session.codex_model and session.codex_model != "default":
+                    active_model = session.codex_model
+                else:
+                    provider = _provider_manager().get_provider(scope_key)
+                    active_model = (
+                        _codex_task_model(session, provider)
+                        if provider.cli == "codex"
+                        else "gpt-5-codex"
+                    )
             session_id = (
                 str(row.get("codex_session_id") or "")
                 if active_provider_cli == "codex"
@@ -1905,6 +1912,31 @@ def _codex_model_arg(session: object, provider) -> str | None:
     return model
 
 
+def _codex_task_model(session: object, provider) -> str:
+    """Return an explicit non-default Codex model for background execution."""
+    model = _codex_model_arg(session, provider)
+    if model:
+        return model
+
+    candidates: list[str] = []
+    if provider.model:
+        candidates.append(provider.model)
+    candidates.extend(provider.models or [])
+    for candidate in candidates:
+        if candidate and candidate != "default":
+            return candidate
+
+    # Keep a stable fallback that is accepted by Codex accounts.
+    return "gpt-5-codex"
+
+
+def _snapshot_active_model(session: object, provider) -> str:
+    """Return model persisted in scope snapshots for restart recovery."""
+    if provider.cli == "codex":
+        return _codex_task_model(session, provider)
+    return session.model
+
+
 def _codex_working_dir() -> str:
     """Run Codex from user home so it can access files under that tree."""
     return str(Path.home())
@@ -2558,11 +2590,7 @@ async def cmd_bg(message: Message) -> None:
     session_id = (
         session.codex_session_id if provider_cli == "codex" else session.claude_session_id
     )
-    task_model = (
-        (_codex_model_arg(session, provider) or "default")
-        if provider_cli == "codex"
-        else session.model
-    )
+    task_model = _codex_task_model(session, provider) if provider_cli == "codex" else session.model
 
     full_prompt = _build_augmented_prompt(prompt)
 
@@ -3379,11 +3407,7 @@ async def _handle_message_inner(
 
         provider = _provider_manager().get_provider(scope_key)
         session = _session_manager().get(chat_id, thread_id)
-        snapshot_model = (
-            (_codex_model_arg(session, provider) or "default")
-            if provider.cli == "codex"
-            else session.model
-        )
+        snapshot_model = _snapshot_active_model(session, provider)
         _update_scope_snapshot(
             scope_key,
             state=state,
@@ -3419,7 +3443,7 @@ async def _handle_message_inner(
                 processing=True,
                 active_prompt=raw_prompt,
                 active_provider_cli=provider.cli,
-                active_model=_current_model_label(session, provider),
+                active_model=_snapshot_active_model(session, provider),
                 active_resume_arg=provider.resume_arg or "",
                 resume_task_id="",
             )
