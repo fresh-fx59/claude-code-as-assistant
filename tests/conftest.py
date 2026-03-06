@@ -14,6 +14,11 @@ import pytest_asyncio
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Never let tests mutate the runtime memory directory used by the bot service.
+_TEST_MEMORY_DIR = Path(tempfile.gettempdir()) / "iron-lady-assistant-pytest-memory"
+_TEST_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MEMORY_DIR", str(_TEST_MEMORY_DIR))
+
 
 # ── Fixture: Clean test environment ───────────────────────────────
 @pytest.fixture(autouse=True)
@@ -52,6 +57,7 @@ def clean_env(monkeypatch):
 def reset_session_manager():
     """Ensure session manager state is clean between tests."""
     try:
+        from src import config as bot_config
         from src.bot import (
             session_manager,
             provider_manager,
@@ -66,6 +72,9 @@ def reset_session_manager():
         _error_counts.clear()
         if _STEP_PLAN_STATE_PATH.exists():
             _STEP_PLAN_STATE_PATH.unlink()
+        snapshot_path = bot_config.MEMORY_DIR / "scope_snapshot.json"
+        if snapshot_path.exists():
+            snapshot_path.unlink()
     except Exception:
         pass
 

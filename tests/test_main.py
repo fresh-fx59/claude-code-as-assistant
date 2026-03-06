@@ -47,6 +47,7 @@ async def test_send_startup_notification_prefers_active_step_plan_thread(monkeyp
         "_load_step_plan_state",
         lambda: {"active": True, "chat_id": -1001, "message_thread_id": 77},
     )
+    monkeypatch.setattr(main.bot_module, "_resolve_step_plan_target", lambda state: (-1001, 77))
     monkeypatch.setattr(main.bot_module, "_latest_scope_target", lambda: (-1002, 99))
 
     await main.send_startup_notification(bot, commit="abc12345")
@@ -66,6 +67,7 @@ async def test_send_ready_notification_prefers_active_step_plan_thread(monkeypat
         "_load_step_plan_state",
         lambda: {"active": True, "chat_id": -1001, "message_thread_id": 77},
     )
+    monkeypatch.setattr(main.bot_module, "_resolve_step_plan_target", lambda state: (-1001, 77))
     monkeypatch.setattr(main.bot_module, "_latest_scope_target", lambda: (-1002, 99))
 
     await main.send_ready_notification(bot)

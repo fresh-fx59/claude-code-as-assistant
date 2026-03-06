@@ -559,8 +559,7 @@ async def _submit_current_step_plan_task(state: dict) -> str:
     prompt = _build_step_plan_prompt(step_file, current_index + 1, len(steps))
     full_prompt = _build_augmented_prompt(prompt)
 
-    chat_id = int(state.get("chat_id") or 0)
-    message_thread_id = state.get("message_thread_id")
+    chat_id, message_thread_id = _resolve_step_plan_target(state)
     user_id = int(state.get("user_id") or 0)
     scope_key = _scope_key(chat_id, message_thread_id)
     provider = _provider_manager().get_provider(scope_key)
@@ -687,9 +686,22 @@ async def _start_step_plan(
 
 
 def _latest_scope_target() -> tuple[int, int | None] | None:
+    session_chat_ids: set[int] = set()
+    for _session in _session_manager().sessions.values():
+        try:
+            session_chat_id = int(getattr(_session, "chat_id", 0) or 0)
+        except Exception:
+            session_chat_id = 0
+        if session_chat_id:
+            session_chat_ids.add(session_chat_id)
+
     def _allowed_target(chat_id: int) -> bool:
         user_hint = chat_id if chat_id > 0 else None
-        return _is_authorized(user_hint, chat_id)
+        if _is_authorized(user_hint, chat_id):
+            return True
+        # Group chats can be valid runtime targets when access is granted by user-id
+        # authorization, even if ALLOWED_CHAT_IDS does not include the group id.
+        return chat_id in session_chat_ids
 
     snapshots = _load_scope_snapshots()
     newest: tuple[datetime, int, int | None] | None = None
@@ -743,6 +755,33 @@ def _latest_scope_target() -> tuple[int, int | None] | None:
     return None
 
 
+def _resolve_step_plan_target(state: dict) -> tuple[int, int | None]:
+    chat_id = int(state.get("chat_id") or 0)
+    message_thread_id = state.get("message_thread_id")
+    user_hint = chat_id if chat_id > 0 else None
+    if chat_id and _is_authorized(user_hint, chat_id):
+        return chat_id, message_thread_id
+
+    latest = _latest_scope_target()
+    if not latest:
+        raise RuntimeError("No valid chat target available for step plan execution.")
+
+    new_chat_id, new_thread_id = latest
+    if new_chat_id != chat_id or new_thread_id != message_thread_id:
+        logger.warning(
+            "step_plan_target_repaired old_chat=%s old_thread=%s new_chat=%s new_thread=%s",
+            chat_id,
+            message_thread_id,
+            new_chat_id,
+            new_thread_id,
+        )
+    state["chat_id"] = new_chat_id
+    state["message_thread_id"] = new_thread_id
+    if int(state.get("user_id") or 0) <= 0 and new_chat_id > 0:
+        state["user_id"] = new_chat_id
+    return new_chat_id, new_thread_id
+
+
 async def bootstrap_step_plan_after_restart() -> None:
     """Auto-start step plan from default folder when no active state exists."""
     tm = _task_manager()
@@ -768,9 +807,13 @@ async def bootstrap_step_plan_after_restart() -> None:
     existing_chat_id = int(current.get("chat_id") or 0)
     existing_thread_id = current.get("message_thread_id")
     if existing_chat_id:
-        user_hint = existing_chat_id if existing_chat_id > 0 else None
-        if _is_authorized(user_hint, existing_chat_id):
-            target = (existing_chat_id, existing_thread_id)
+        try:
+            resolved_chat_id, resolved_thread_id = _resolve_step_plan_target(current)
+            target = (resolved_chat_id, resolved_thread_id)
+            if resolved_chat_id != existing_chat_id or resolved_thread_id != existing_thread_id:
+                _save_step_plan_state(current)
+        except Exception:
+            target = None
     if not target:
         target = _latest_scope_target()
 
@@ -1105,9 +1148,11 @@ async def resume_step_plan_after_restart() -> None:
         return
 
     try:
+        chat_id, message_thread_id = _resolve_step_plan_target(state)
+        _save_step_plan_state(state)
         await tm.bot.send_message(
-            chat_id=int(state.get("chat_id") or 0),
-            message_thread_id=state.get("message_thread_id"),
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
             text=(
                 "🔁 <b>Step plan resumed after restart</b>\n"
                 f"Queued step {current_index + 1}/{len(steps)} as task "

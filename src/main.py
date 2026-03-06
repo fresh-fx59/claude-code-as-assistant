@@ -78,10 +78,10 @@ async def send_startup_notification(bot: Bot, commit: str | None = None) -> None
         try:
             state = bot_module._load_step_plan_state()  # noqa: SLF001
             if state.get("active"):
-                chat_id = int(state.get("chat_id") or 0)
-                if chat_id:
-                    target_chat_id = chat_id
-                    target_thread_id = state.get("message_thread_id")
+                try:
+                    target_chat_id, target_thread_id = bot_module._resolve_step_plan_target(state)  # noqa: SLF001
+                except Exception:
+                    logging.debug("Could not resolve active step-plan startup target", exc_info=True)
         except Exception:
             logging.debug("Could not resolve step-plan notification target", exc_info=True)
 
@@ -130,10 +130,10 @@ async def send_ready_notification(bot: Bot) -> None:
         try:
             state = bot_module._load_step_plan_state()  # noqa: SLF001
             if state.get("active"):
-                chat_id = int(state.get("chat_id") or 0)
-                if chat_id:
-                    target_chat_id = chat_id
-                    target_thread_id = state.get("message_thread_id")
+                try:
+                    target_chat_id, target_thread_id = bot_module._resolve_step_plan_target(state)  # noqa: SLF001
+                except Exception:
+                    logging.debug("Could not resolve active step-plan ready target", exc_info=True)
         except Exception:
             logging.debug("Could not resolve step-plan ready notification target", exc_info=True)
 

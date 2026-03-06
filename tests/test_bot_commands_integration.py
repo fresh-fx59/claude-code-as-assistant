@@ -1193,6 +1193,44 @@ class TestStepPlanCommands:
         assert state["active"] is True
         assert state["current_task_id"] == "task-resumed"
 
+    async def test_resume_step_plan_after_restart_repairs_invalid_target(
+        self, monkeypatch, tmppath
+    ):
+        step1 = tmppath / "01 - A.md"
+        step1.write_text("Applied: [ ]\n", encoding="utf-8")
+        _save_step_plan_state(
+            {
+                "active": True,
+                "chat_id": 999,
+                "message_thread_id": None,
+                "user_id": 999,
+                "steps": [str(step1)],
+                "current_index": 0,
+                "current_task_id": "old-task",
+                "restart_between_steps": True,
+            }
+        )
+
+        manager = AsyncMock()
+        manager.submit = AsyncMock(return_value="task-resumed")
+        manager.bot = AsyncMock()
+        manager.bot.send_message = AsyncMock()
+        monkeypatch.setattr("src.bot.task_manager", manager)
+        monkeypatch.setattr("src.bot._latest_scope_target", lambda: (-1003796914868, 154))
+
+        await resume_step_plan_after_restart()
+
+        submit_kwargs = manager.submit.await_args.kwargs
+        assert submit_kwargs["chat_id"] == -1003796914868
+        assert submit_kwargs["message_thread_id"] == 154
+        notify_kwargs = manager.bot.send_message.await_args.kwargs
+        assert notify_kwargs["chat_id"] == -1003796914868
+        assert notify_kwargs["message_thread_id"] == 154
+
+        state = _load_step_plan_state()
+        assert state["chat_id"] == -1003796914868
+        assert state["message_thread_id"] == 154
+
 
 @pytest.mark.asyncio
 class TestScopeSnapshotRecovery:
