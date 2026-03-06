@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Final
+from typing import Final, Protocol, Sequence
 
 from aiogram import Bot
 
@@ -25,12 +25,17 @@ class TaskStatus(str, Enum):
 class BackgroundTask:
     id: str
     chat_id: int
+    message_thread_id: int | None
     user_id: int
     prompt: str
     model: str
     session_id: str | None
     status: TaskStatus
     created_at: datetime
+    provider_cli: str = "claude"
+    resume_arg: str | None = None
+    live_feedback: bool = False
+    feedback_title: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     response: str | None = None
@@ -41,14 +46,20 @@ class BackgroundTask:
     task: asyncio.Task | None = None
 
 
+class TaskObserver(Protocol):
+    async def on_task_finished(self, task: BackgroundTask) -> None:
+        """Called when a task reaches terminal status."""
+
+
 class TaskManager:
     """Manages background task execution and notifications."""
 
     _MAX_CONCURRENT: Final[int] = 3  # Max background tasks running at once
     _TASK_TIMEOUT: Final[int] = 600  # 10 minutes max per task
 
-    def __init__(self, bot: Bot):
+    def __init__(self, bot: Bot, observers: Sequence[TaskObserver] | None = None):
         self.bot = bot
+        self._observers = list(observers or [])
         self.tasks: dict[str, BackgroundTask] = {}
         self._queue: list[BackgroundTask] = []
         self._running_tasks: set[str] = set()
@@ -89,16 +100,26 @@ class TaskManager:
         prompt: str,
         model: str,
         session_id: str | None = None,
+        message_thread_id: int | None = None,
+        provider_cli: str = "claude",
+        resume_arg: str | None = None,
+        live_feedback: bool = False,
+        feedback_title: str | None = None,
         process_handle: dict | None = None,
     ) -> str:
         """Submit a task for background execution. Returns task ID."""
         task = BackgroundTask(
             id=str(uuid.uuid4()),
             chat_id=chat_id,
+            message_thread_id=message_thread_id,
             user_id=user_id,
             prompt=prompt,
             model=model,
             session_id=session_id,
+            provider_cli=provider_cli,
+            resume_arg=resume_arg,
+            live_feedback=live_feedback,
+            feedback_title=feedback_title,
             status=TaskStatus.QUEUED,
             created_at=datetime.now(),
         )
@@ -150,11 +171,15 @@ class TaskManager:
 
         return False
 
-    def list_user_tasks(self, chat_id: int) -> list[BackgroundTask]:
+    def list_user_tasks(self, chat_id: int, message_thread_id: int | None = None) -> list[BackgroundTask]:
         """List all tasks for a chat."""
         return [
             t for t in self.tasks.values()
-            if t.chat_id == chat_id and t.status in (TaskStatus.QUEUED, TaskStatus.RUNNING)
+            if (
+                t.chat_id == chat_id
+                and t.message_thread_id == message_thread_id
+                and t.status in (TaskStatus.QUEUED, TaskStatus.RUNNING)
+            )
         ]
 
     async def _process_queue(self) -> None:
@@ -187,25 +212,44 @@ class TaskManager:
             await self._process_queue()
             await asyncio.sleep(1)
 
+    async def _collect_result_event(self, stream) -> bridge.ClaudeResponse | None:
+        """Consume provider stream until a RESULT event is received."""
+        async for event in stream:
+            if event.event_type == bridge.StreamEventType.RESULT:
+                return event.response
+        return None
+
     async def _execute_task(self, task: BackgroundTask) -> None:
         """Execute a single background task."""
+        typing_task: asyncio.Task | None = None
         try:
             start_time = datetime.now()
             response = None
+            if task.live_feedback:
+                await self._notify_started(task)
+                typing_task = asyncio.create_task(self._typing_loop(task))
 
-            # Stream the Claude response with timeout
-            async for event in asyncio.wait_for(
-                bridge.stream_message(
+            if task.provider_cli == "codex":
+                stream = bridge.stream_codex_message(
+                    prompt=task.prompt,
+                    session_id=task.session_id,
+                    model=task.model,
+                    resume_arg=task.resume_arg,
+                    working_dir=config.CLAUDE_WORKING_DIR,
+                )
+            else:
+                stream = bridge.stream_message(
                     prompt=task.prompt,
                     session_id=task.session_id,
                     model=task.model,
                     working_dir=config.CLAUDE_WORKING_DIR,
-                ),
+                )
+
+            # Stream the provider response with timeout
+            response = await asyncio.wait_for(
+                self._collect_result_event(stream),
                 timeout=self._TASK_TIMEOUT,
-            ):
-                if event.event_type == bridge.StreamEventType.RESULT:
-                    response = event.response
-                    break
+            )
 
             # Update task with results
             task.completed_at = datetime.now()
@@ -262,9 +306,70 @@ class TaskManager:
             await self._notify_failure(task)
 
         finally:
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
             self._running_tasks.discard(task.id)
             metrics.BG_TASKS_RUNNING.set(len(self._running_tasks))
             metrics.BG_TASKS_ACTIVE.set(len(self.tasks))
+            await self._notify_observers(task)
+
+    async def _typing_loop(self, task: BackgroundTask) -> None:
+        send_failures = 0
+        fallback_sent = False
+        while True:
+            try:
+                await self.bot.send_chat_action(
+                    chat_id=task.chat_id,
+                    message_thread_id=task.message_thread_id,
+                    action="typing",
+                )
+                send_failures = 0
+            except Exception as exc:
+                send_failures += 1
+                logger.warning(
+                    "Typing action failed for task %s (attempt=%d): %s",
+                    task.id,
+                    send_failures,
+                    exc,
+                )
+                if not fallback_sent or send_failures % 6 == 0:
+                    try:
+                        await self.bot.send_message(
+                            chat_id=task.chat_id,
+                            message_thread_id=task.message_thread_id,
+                            text="⏳ Still working...",
+                        )
+                        fallback_sent = True
+                    except Exception as notify_exc:
+                        logger.warning(
+                            "Fallback progress notification failed for task %s: %s",
+                            task.id,
+                            notify_exc,
+                        )
+            await asyncio.sleep(5)
+
+    async def _notify_started(self, task: BackgroundTask) -> None:
+        try:
+            title = task.feedback_title or "🔄 <b>Working...</b>"
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text=title,
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Failed to notify task start for %s: %s", task.id, exc)
+
+    async def _notify_observers(self, task: BackgroundTask) -> None:
+        for observer in self._observers:
+            try:
+                await observer.on_task_finished(task)
+            except Exception:
+                logger.exception("Task observer failed for task %s", task.id)
 
     async def _notify_completion(self, task: BackgroundTask) -> None:
         """Send notification when a task completes."""
@@ -288,7 +393,12 @@ class TaskManager:
                 lines.append(f"...")
                 lines.append(f"(Response truncated, {len(task.response) - 3000} more characters)")
 
-            await self.bot.send_message(chat_id=task.chat_id, text="\n".join(lines), parse_mode="HTML")
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+            )
 
         except Exception as e:
             logger.warning("Failed to notify completion for task %s: %s", task.id, e)
@@ -305,7 +415,12 @@ class TaskManager:
                 f"<b>Error:</b>",
                 f"{task.error or 'Unknown error'}",
             ]
-            await self.bot.send_message(chat_id=task.chat_id, text="\n".join(lines), parse_mode="HTML")
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+            )
 
         except Exception as e:
             logger.warning("Failed to notify failure for task %s: %s", task.id, e)
@@ -318,7 +433,12 @@ class TaskManager:
                 f"",
                 f"<b>Task ID:</b> <code>{task.id[:8]}</code>",
             ]
-            await self.bot.send_message(chat_id=task.chat_id, text="\n".join(lines), parse_mode="HTML")
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+            )
 
         except Exception as e:
             logger.warning("Failed to notify cancellation for task %s: %s", task.id, e)
