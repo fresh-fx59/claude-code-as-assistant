@@ -1,6 +1,7 @@
 """Local text-to-speech helpers for Telegram voice bubbles."""
 
 import asyncio
+import difflib
 import logging
 import os
 import re
@@ -54,6 +55,14 @@ SHERPA_LIB_DIR: str = os.getenv(
     "SHERPA_ONNX_LIB_DIR",
     str(Path(SHERPA_RUNTIME_DIR) / "lib"),
 )
+TTS_VERIFY_INTELLIGIBILITY: bool = (
+    os.getenv("LOCAL_TTS_VERIFY_INTELLIGIBILITY", "1").strip().lower() not in {"0", "false", "no"}
+)
+TTS_MIN_INTELLIGIBILITY_SCORE: float = max(
+    0.0,
+    min(1.0, float(os.getenv("LOCAL_TTS_MIN_INTELLIGIBILITY_SCORE", "0.55"))),
+)
+TTS_VERIFY_MAX_CHARS: int = int(os.getenv("LOCAL_TTS_VERIFY_MAX_CHARS", "260"))
 
 _CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
@@ -172,6 +181,75 @@ def _is_cyrillic_dominant(text: str) -> bool:
     return cyr > lat
 
 
+def _normalize_for_match(text: str) -> str:
+    text = (text or "").lower()
+    text = re.sub(r"[^a-zа-яё0-9\s]", " ", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _intelligibility_score(expected_text: str, actual_text: str) -> float:
+    expected = _normalize_for_match(expected_text)
+    actual = _normalize_for_match(actual_text)
+    if not expected:
+        return 1.0
+    if not actual:
+        return 0.0
+    return difflib.SequenceMatcher(None, expected, actual).ratio()
+
+
+async def _verify_intelligibility(ogg_path: Path, expected_text: str) -> tuple[bool, str]:
+    if not TTS_VERIFY_INTELLIGIBILITY:
+        return True, "disabled"
+    if len(expected_text) > TTS_VERIFY_MAX_CHARS:
+        return True, "skipped: long text"
+
+    try:
+        from . import transcribe
+    except Exception:
+        return True, "skipped: transcribe unavailable"
+
+    if not transcribe.is_available():
+        return True, "skipped: transcribe unavailable"
+
+    try:
+        recognized = await transcribe.transcribe(str(ogg_path))
+    except Exception as exc:
+        return False, f"verification transcribe failed: {exc}"
+
+    score = _intelligibility_score(expected_text, recognized)
+    if score >= TTS_MIN_INTELLIGIBILITY_SCORE:
+        return True, f"score={score:.2f}"
+    return False, f"low intelligibility score={score:.2f}"
+
+
+async def _convert_wav_to_ogg(wav_path: Path, ogg_path: Path) -> tuple[int, str]:
+    ffmpeg_proc = await asyncio.create_subprocess_exec(
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        str(wav_path),
+        "-c:a",
+        "libopus",
+        "-b:a",
+        "32k",
+        "-vbr",
+        "on",
+        "-compression_level",
+        "10",
+        "-application",
+        "voip",
+        "-ar",
+        "48000",
+        "-ac",
+        "1",
+        str(ogg_path),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, ffmpeg_stderr = await ffmpeg_proc.communicate()
+    return ffmpeg_proc.returncode, ffmpeg_stderr.decode(errors="ignore")
+
+
 async def synthesize_voice(text: str) -> str:
     """Synthesize text to OGG/Opus suitable for Telegram sendVoice."""
     spoken_text = _prepare_spoken_text(text)
@@ -192,69 +270,52 @@ async def synthesize_voice(text: str) -> str:
             )
         )
 
-        code = 1
-        stderr_text = ""
+        selected_voice = _select_voice(spoken_text)
+        selected_speed = _select_speed(spoken_text)
+        attempts: list[tuple[str, str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        def add_attempt(engine: str, voice: str = "", speed: str = "") -> None:
+            key = (engine, voice, speed)
+            if key not in seen:
+                seen.add(key)
+                attempts.append(key)
+
         if use_sherpa:
-            code, stderr_text = await _run_sherpa_to_wav(spoken_text, wav_path)
+            add_attempt("sherpa")
+        add_attempt("espeak", selected_voice, selected_speed)
+        if selected_voice != TTS_VOICE_LATIN:
+            add_attempt("espeak", TTS_VOICE_LATIN, TTS_SPEED_LATIN)
+
+        errors: list[str] = []
+        for engine, voice, speed in attempts:
+            cleanup_file(str(wav_path))
+            cleanup_file(str(ogg_path))
+
+            if engine == "sherpa":
+                code, stderr_text = await _run_sherpa_to_wav(spoken_text, wav_path)
+            else:
+                code, stderr_text = await _run_tts_to_wav(spoken_text, wav_path, voice, speed)
+
             if code != 0:
-                logger.warning("Sherpa TTS failed, falling back to espeak: %s", stderr_text[-200:])
+                errors.append(f"{engine} failed: {stderr_text[-120:]}")
+                continue
 
-        if code != 0:
-            selected_voice = _select_voice(spoken_text)
-            selected_speed = _select_speed(spoken_text)
-            code, stderr_text = await _run_tts_to_wav(
-                spoken_text,
-                wav_path,
-                selected_voice,
-                selected_speed,
-            )
-            if code != 0 and selected_voice != TTS_VOICE_LATIN:
-                logger.warning(
-                    "TTS failed with voice '%s', retrying with fallback '%s'",
-                    selected_voice,
-                    TTS_VOICE_LATIN,
-                )
-                code, stderr_text = await _run_tts_to_wav(
-                    spoken_text,
-                    wav_path,
-                    TTS_VOICE_LATIN,
-                    TTS_SPEED_LATIN,
-                )
-        if code != 0:
-            raise RuntimeError(f"TTS synthesis failed: {stderr_text[-200:]}")
+            ff_code, ff_stderr = await _convert_wav_to_ogg(wav_path, ogg_path)
+            if ff_code != 0:
+                errors.append(f"ffmpeg failed: {ff_stderr[-120:]}")
+                continue
+            if not ogg_path.exists():
+                errors.append("ogg output missing")
+                continue
 
-        ffmpeg_proc = await asyncio.create_subprocess_exec(
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(wav_path),
-            "-c:a",
-            "libopus",
-            "-b:a",
-            "32k",
-            "-vbr",
-            "on",
-            "-compression_level",
-            "10",
-            "-application",
-            "voip",
-            "-ar",
-            "48000",
-            "-ac",
-            "1",
-            str(ogg_path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, ffmpeg_stderr = await ffmpeg_proc.communicate()
-        if ffmpeg_proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg audio conversion failed: {ffmpeg_stderr.decode()[-200:]}")
+            ok, detail = await _verify_intelligibility(ogg_path, spoken_text)
+            if ok:
+                cleanup_file(str(wav_path))
+                return str(ogg_path)
+            errors.append(f"{engine} rejected: {detail}")
 
-        if not ogg_path.exists():
-            raise RuntimeError("TTS output file was not generated")
-
-        cleanup_file(str(wav_path))
-        return str(ogg_path)
+        raise RuntimeError(f"TTS synthesis failed after retries: {' | '.join(errors)[-450:]}")
     except Exception:
         cleanup_file(str(ogg_path))
         cleanup_file(str(wav_path))
