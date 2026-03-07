@@ -23,6 +23,7 @@ from . import bridge, config, metrics, transcribe
 from .core.context_plugins import ContextPluginRegistry
 from .sessions import SessionManager, make_scope_key
 from .formatter import markdown_to_html, split_message, strip_html
+from .features.state_store import ResumeStateStore
 from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
@@ -37,6 +38,7 @@ router = Router()
 session_manager = SessionManager()
 provider_manager = ProviderManager()
 memory_manager = MemoryManager(config.MEMORY_DIR)
+resume_state_store = ResumeStateStore(config.MEMORY_DIR / "resume_envelopes.json")
 tool_registry = ToolRegistry(
     config.TOOLS_DIR,
     denylist=config.TOOL_DENYLIST,
@@ -1712,11 +1714,19 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
     chat_id = message.chat.id
     thread_id = _thread_id(message)
     scope_key = _scope_key(chat_id, thread_id)
+    raw_prompt = _as_text(override_text) or _as_text(getattr(message, "text", None))
     state = _get_state(scope_key)
 
     if state.lock.locked():
         metrics.MESSAGES_TOTAL.labels(status="busy").inc()
-        await message.answer("Still processing your previous message, please wait...")
+        ok_fast_resume, _ = resume_state_store.can_fast_resume(
+            scope_key=scope_key,
+            input_text=raw_prompt,
+        )
+        if ok_fast_resume:
+            await message.answer("I am already processing this same request and will send the result shortly.")
+        else:
+            await message.answer("Still processing your previous message, please wait...")
         return
 
     async with state.lock:
@@ -1747,6 +1757,16 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 provider.name,
                 provider.cli,
                 {k: v for k, v in env.items() if k.startswith("ANTHROPIC_")},
+            )
+            resume_state_store.record_start(
+                scope_key=scope_key,
+                task_id=f"msg:{message.message_id}",
+                step_id="interactive_turn",
+                provider_cli=provider.cli,
+                model=_current_model_label(session, provider),
+                session_id=session.codex_session_id if provider.cli == "codex" else session.claude_session_id,
+                input_text=raw_prompt,
+                resume_reason="manual_continue" if override_text else "restart",
             )
 
             if provider.cli == "codex":
@@ -1875,6 +1895,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             _clear_errors(scope_key)
         elif final_response:
             if final_response.is_error:
+                resume_state_store.record_failure(scope_key=scope_key)
                 error_text = final_response.text or "(No response)"
                 logger.warning(
                     "Chat %d: provider '%s' returned error response: %r",
@@ -1890,6 +1911,10 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 await message.answer(error_text, reply_markup=reply_markup)
                 await progress.finish()
             else:
+                resume_state_store.record_success(
+                    scope_key=scope_key,
+                    output_text=final_response.text or "",
+                )
                 raw_response_text = final_response.text or ""
                 clean_text, media_refs, audio_as_voice = _extract_media_directives(raw_response_text)
                 clean_text = _strip_tool_directive_lines(clean_text)
