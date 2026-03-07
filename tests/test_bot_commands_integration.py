@@ -175,6 +175,19 @@ class TestModelCommand:
             assert mock_message.answer.call_count == expected_calls + 1
             assert session_manager.get(123456789).model == model
 
+    async def test_model_with_arg_sets_codex_model(self, mock_message):
+        """Should set codex model when Codex-family provider is active."""
+        from src.bot import provider_manager
+        from src.bot import session_manager
+        provider_manager.set_provider("123456789:main", "codex")
+        mock_message.text = "/model gpt-5.4"
+
+        await cmd_model(mock_message)
+
+        mock_message.answer.assert_called_once()
+        assert "gpt-5.4" in mock_message.answer.call_args[0][0].lower()
+        assert session_manager.get(123456789).codex_model == "gpt-5.4"
+
     async def test_model_without_arg_shows_current(self, mock_message):
         """Should show current model when no argument."""
         from src.bot import provider_manager
