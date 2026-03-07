@@ -64,6 +64,10 @@ TTS_MIN_INTELLIGIBILITY_SCORE: float = max(
     0.0,
     min(1.0, float(os.getenv("LOCAL_TTS_MIN_INTELLIGIBILITY_SCORE", "0.55"))),
 )
+TTS_FEMALE_MIN_INTELLIGIBILITY_SCORE: float = max(
+    0.0,
+    min(1.0, float(os.getenv("LOCAL_TTS_FEMALE_MIN_INTELLIGIBILITY_SCORE", "0.10"))),
+)
 TTS_SHERPA_MIN_INTELLIGIBILITY_SCORE: float = max(
     0.0,
     min(1.0, float(os.getenv("LOCAL_TTS_SHERPA_MIN_INTELLIGIBILITY_SCORE", "0.35"))),
@@ -370,7 +374,11 @@ async def synthesize_voice(text: str, *, prefer_female: bool = False) -> str:
                 min_score = (
                     TTS_SHERPA_MIN_INTELLIGIBILITY_SCORE
                     if engine == "sherpa"
-                    else TTS_MIN_INTELLIGIBILITY_SCORE
+                    else (
+                        TTS_FEMALE_MIN_INTELLIGIBILITY_SCORE
+                        if prefer_female
+                        else TTS_MIN_INTELLIGIBILITY_SCORE
+                    )
                 )
                 ok, detail = await _verify_intelligibility(
                     ogg_path,
