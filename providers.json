@@ -84,6 +84,8 @@
     "billing",
     "quota exceeded",
     "usage cap",
+    "usage limit",
+    "you've hit your usage limit",
     "credit",
     "exceeded your"
   ],

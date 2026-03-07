@@ -1,16 +1,22 @@
 #!/bin/bash
+set -euo pipefail
 
-if [ -z "$1" ]; then
-  echo "Usage: $0 <instance_name>"
+if [ $# -lt 1 ]; then
+  echo "Usage: $0 <instance_name> [install_path]"
   echo "Example: $0 codex3"
   exit 1
 fi
 
 INSTANCE_NAME="$1"
+INSTALL_PATH="${2:-/usr/local/bin/$INSTANCE_NAME}"
 TARGET_DIR="$HOME/.$INSTANCE_NAME"
-ALIAS_NAME="$INSTANCE_NAME"
+CODEX_BIN="$(command -v codex || true)"
 
-# Check if directory already exists
+if [ -z "$CODEX_BIN" ]; then
+  echo "codex executable not found in PATH."
+  exit 1
+fi
+
 if [ -d "$TARGET_DIR" ]; then
   echo "Directory $TARGET_DIR already exists."
 else
@@ -18,7 +24,6 @@ else
   mkdir -p "$TARGET_DIR"
 fi
 
-# Symlink .gitconfig and .ssh if they exist in HOME
 if [ -f "$HOME/.gitconfig" ]; then
   echo "Symlinking .gitconfig..."
   ln -sf "$HOME/.gitconfig" "$TARGET_DIR/.gitconfig"
@@ -29,13 +34,14 @@ if [ -d "$HOME/.ssh" ]; then
   ln -sf "$HOME/.ssh" "$TARGET_DIR/.ssh"
 fi
 
-# Add alias to .bashrc if it doesn't exist
-if grep -q "alias $ALIAS_NAME=" "$HOME/.bashrc"; then
-  echo "Alias '$ALIAS_NAME' already exists in .bashrc."
-else
-  echo "Adding alias '$ALIAS_NAME' to .bashrc..."
-  echo "alias $ALIAS_NAME='HOME=$TARGET_DIR codex'" >> "$HOME/.bashrc"
-fi
+echo "Installing wrapper to $INSTALL_PATH..."
+sudo tee "$INSTALL_PATH" >/dev/null <<EOF
+#!/bin/sh
+export HOME="$TARGET_DIR"
+exec "$CODEX_BIN" "\$@"
+EOF
+sudo chmod +x "$INSTALL_PATH"
 
 echo "Setup complete for $INSTANCE_NAME."
-echo "Please run 'source ~/.bashrc' to activate the alias."
+echo "Wrapper installed at $INSTALL_PATH"
+echo "Authenticate with: HOME=$TARGET_DIR codex login"

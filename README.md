@@ -98,11 +98,10 @@ Just send any text message and the bot will respond using the currently selected
 
 ## Codex Instance Helper
 
-If you want a separate Codex home directory and shell alias, use [`create_codex_instance.sh`](/home/claude-developer/iron-lady-assistant/create_codex_instance.sh):
+If you want a separate Codex home directory and a real executable on `PATH`, use [`create_codex_instance.sh`](/home/claude-developer/iron-lady-assistant/create_codex_instance.sh):
 
 ```bash
 ./create_codex_instance.sh codex3
-source ~/.bashrc
 codex3
 ```
 
@@ -110,7 +109,13 @@ What it does:
 - Creates `~/.<instance_name>`
 - Symlinks your `~/.gitconfig`
 - Symlinks your `~/.ssh`
-- Adds a Bash alias like `alias codex3='HOME=$HOME/.codex3 codex'`
+- Installs a wrapper executable like `/usr/local/bin/codex3` that runs `codex` with `HOME=~/.codex3`
+
+Then authenticate that separate instance once:
+
+```bash
+HOME="$HOME/.codex3" codex login
+```
 
 ## Running in the Background
 
@@ -202,7 +207,7 @@ Tracked metrics include: message counts, response times, API costs, and active s
 
 ```
 ├── setup.sh              # Interactive setup wizard
-├── create_codex_instance.sh # Create isolated Codex HOME + shell alias
+├── create_codex_instance.sh # Create isolated Codex HOME + wrapper executable
 ├── run.sh                # Start the bot (crash protection + auto-installs deps)
 ├── .env.example          # Configuration template
 ├── requirements.txt      # Python dependencies
