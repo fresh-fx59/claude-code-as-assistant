@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import yaml
+
 from src.core.context_plugins import ContextPluginRegistry
 from src.plugins.tools_plugin import ToolRegistry as PluginToolRegistry
 from src.tools import ToolRegistry as ShimToolRegistry
@@ -167,3 +169,14 @@ def test_guardrail_blocks_risky_when_approval_required(tmp_path: Path) -> None:
 
     assert '<tool name="discord">' not in context
     assert "Guardrail-blocked tools: discord (requires-approval)" in context
+
+
+def test_real_summarize_manifest_is_model_agnostic() -> None:
+    manifest_path = Path(__file__).resolve().parents[1] / "tools" / "summarize.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    instructions = manifest["instructions"]
+
+    assert "google/gemini-3-flash-preview" not in instructions
+    assert 'openai/gpt-5.2' not in instructions
+    assert "--model <provider/model>" in instructions
+    assert '{ "model": "<provider/model>" }' in instructions
