@@ -24,7 +24,7 @@ class TestNewUserOnboarding:
     async def test_full_onboarding_sequence(self, mock_message):
         """User: /start → sees welcome → sends message → uses commands."""
         from src.bot import session_manager, provider_manager
-        provider_manager.set_provider(123456789, "claude")
+        provider_manager.set_provider("123456789:main", "claude")
 
         # 1. Send /start
         mock_message.text = "/start"
@@ -67,7 +67,7 @@ class TestConversationContinuity:
     async def test_session_continues_across_messages(self, mock_message):
         """Multiple messages should use same session_id."""
         from src.bot import session_manager, provider_manager
-        provider_manager.set_provider(123456789, "claude")
+        provider_manager.set_provider("123456789:main", "claude")
 
         # First message
         with patch('src.bridge.stream_message') as mock_stream:
@@ -112,7 +112,7 @@ class TestModelSwitching:
     async def test_model_switch_persists(self, mock_message):
         """Switching model should persist and apply to next request."""
         from src.bot import session_manager, provider_manager
-        provider_manager.set_provider(123456789, "claude")
+        provider_manager.set_provider("123456789:main", "claude")
 
         # Check default model
         session = session_manager.get(123456789)
