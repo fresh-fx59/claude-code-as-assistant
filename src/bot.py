@@ -115,6 +115,10 @@ _VOICE_INTERFACE_LIMITATION_RE = re.compile(
 _VOICE_COMPATIBLE_EXTENSIONS = {".ogg", ".opus", ".mp3", ".m4a"}
 _AUDIO_EXTENSIONS = _VOICE_COMPATIBLE_EXTENSIONS | {".wav", ".aac", ".flac"}
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+_EMPTY_RESPONSE_FALLBACK_TEXT = (
+    "I received an empty response from the provider. "
+    "Please resend your last message."
+)
 # Backward-compatible state paths retained for tests/fixtures importing these symbols.
 _STEP_PLAN_STATE_PATH = config.MEMORY_DIR / "step_plan_state.json"
 _SCOPE_SNAPSHOT_PATH = config.MEMORY_DIR / "scope_snapshot.json"
@@ -3823,7 +3827,7 @@ async def _handle_message_inner(
                             final_response.session_id,
                             final_response.cost_usd,
                         )
-                        chunks = ["(empty response)"]
+                        chunks = [_EMPTY_RESPONSE_FALLBACK_TEXT]
                     else:
                         health_invariants.record_empty_response(is_empty=False)
                 else:
