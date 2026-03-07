@@ -52,8 +52,16 @@ def clean_env(monkeypatch):
 def reset_session_manager():
     """Ensure session manager state is clean between tests."""
     try:
-        from src.bot import session_manager
-        session_manager.sessions.clear()
+        from src import bot
+
+        bot.session_manager.sessions.clear()
+        bot._chat_states.clear()
+        bot._error_counts.clear()
+        bot._recent_outbound_by_scope.clear()
+
+        for path in (bot.resume_state_store._path, bot.steering_ledger_store._path):
+            if path.exists():
+                path.unlink()
     except Exception:
         pass
 

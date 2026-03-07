@@ -666,7 +666,7 @@ class TestMessageHandling:
         mock_message.answer.assert_not_called()
 
     async def test_when_busy_shows_wait_message(self, mock_message):
-        """Should show waiting message if already processing."""
+        """Should enqueue follow-up steering if already processing."""
         mock_message.text = "hello"
 
         # Lock the chat
@@ -677,9 +677,56 @@ class TestMessageHandling:
             await handle_message(mock_message)
 
             mock_message.answer.assert_called_once()
-            assert "wait" in mock_message.answer.call_args[0][0].lower()
+            assert "follow-up" in mock_message.answer.call_args[0][0].lower()
         finally:
             state.lock.release()
+
+    async def test_midflight_steering_triggers_continuation(self, mock_message):
+        """Unapplied steering should cause another continuation turn before final reply."""
+        from src import bridge
+        from src.bot import steering_ledger_store
+        from src.features.state_store import SteeringEvent
+
+        response1 = bridge.ClaudeResponse(
+            text="Initial answer",
+            session_id="sess-1",
+            is_error=False,
+            cost_usd=0.0,
+            duration_ms=0,
+            num_turns=0,
+        )
+        response2 = bridge.ClaudeResponse(
+            text="Steered answer",
+            session_id="sess-1",
+            is_error=False,
+            cost_usd=0.0,
+            duration_ms=0,
+            num_turns=0,
+        )
+
+        async def fake_run_claude(message, state, session, progress, env, override_text=None):
+            if override_text is None:
+                steering_ledger_store.append(
+                    scope_key="123456789:main",
+                    event=SteeringEvent(
+                        event_id="evt-1",
+                        created_at="2026-03-07T00:00:00+00:00",
+                        source_message_id="2",
+                        event_type="clarify",
+                        text="Use tests only",
+                        intent_patch="clarify: Use tests only",
+                        conflict_flags=[],
+                    ),
+                )
+                return response1
+            return response2
+
+        with patch("src.bot._run_claude", new=AsyncMock(side_effect=fake_run_claude)) as run_mock:
+            await handle_message(mock_message)
+
+        assert run_mock.await_count == 2
+        all_answers = [call.args[0] for call in mock_message.answer.await_args_list if call.args]
+        assert any("Steered answer" in text for text in all_answers)
 
 
 # ── Contract 8: Chat state management ───────────────────────────

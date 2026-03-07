@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from src.features.state_store import ResumeStateStore
+from src.features.state_store import ResumeStateStore, SteeringEvent, SteeringLedgerStore
 
 
 def test_record_start_and_success_persists(tmp_path) -> None:
@@ -74,3 +74,29 @@ def test_fast_resume_rejects_stale(tmp_path) -> None:
     ok, reason = store.can_fast_resume(scope_key="123:main", input_text="old", ttl_seconds=60)
     assert ok is False
     assert reason == "stale"
+
+
+def test_steering_ledger_append_get_mark_and_clear(tmp_path) -> None:
+    store = SteeringLedgerStore(tmp_path / "steering_ledger.json")
+
+    event = SteeringEvent(
+        event_id="evt-1",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        source_message_id="42",
+        event_type="clarify",
+        text="Use pytest, not unittest",
+        intent_patch="clarify: Use pytest, not unittest",
+        conflict_flags=[],
+    )
+    store.append(scope_key="123:main", event=event)
+
+    unapplied = store.get_unapplied(scope_key="123:main")
+    assert len(unapplied) == 1
+    assert unapplied[0].event_id == "evt-1"
+
+    store.mark_applied(scope_key="123:main", event_ids=["evt-1"])
+    assert store.get_unapplied(scope_key="123:main") == []
+
+    store.clear(scope_key="123:main")
+    payload = json.loads((tmp_path / "steering_ledger.json").read_text(encoding="utf-8"))
+    assert "123:main" not in payload

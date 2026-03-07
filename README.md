@@ -200,8 +200,9 @@ Tracked metrics include: message counts, response times, API costs, and active s
 - Restart manually: `sudo systemctl restart telegram-bot.service`
 - If running manually, check the terminal output for errors
 
-**"Still processing your previous message"**
-- The bot handles one message at a time per chat. Wait for the current response to finish.
+**"Applied your follow-up to the active run"**
+- Mid-flight follow-up messages are treated as cumulative steering updates.
+- The bot keeps current progress, applies follow-ups in order, and continues without a hard restart.
 
 ## Project Structure
 

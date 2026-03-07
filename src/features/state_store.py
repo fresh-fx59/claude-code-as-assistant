@@ -6,6 +6,7 @@ import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 
 def _now_iso() -> str:
@@ -160,3 +161,101 @@ class ResumeStateStore:
             if scope_key in envelopes:
                 envelopes.pop(scope_key, None)
                 self._save_all_unlocked(envelopes)
+
+
+SteeringEventType = Literal[
+    "clarify",
+    "constraint_add",
+    "constraint_remove",
+    "priority_shift",
+    "correction",
+    "cancel",
+]
+
+
+@dataclass
+class SteeringEvent:
+    event_id: str
+    created_at: str
+    source_message_id: str
+    event_type: SteeringEventType
+    text: str
+    intent_patch: str
+    conflict_flags: list[str]
+    applied: bool = False
+
+
+class SteeringLedgerStore:
+    """Append-only per-scope steering ledger with applied markers."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _load_all_unlocked(self) -> dict[str, list[SteeringEvent]]:
+        if not self._path.exists():
+            return {}
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+
+        result: dict[str, list[SteeringEvent]] = {}
+        for scope_key, rows in data.items():
+            if not isinstance(rows, list):
+                continue
+            parsed: list[SteeringEvent] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    parsed.append(SteeringEvent(**row))
+                except TypeError:
+                    continue
+            if parsed:
+                result[scope_key] = parsed
+        return result
+
+    def _save_all_unlocked(self, payload: dict[str, list[SteeringEvent]]) -> None:
+        serializable = {k: [asdict(item) for item in rows] for k, rows in payload.items()}
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self._path)
+
+    def append(self, *, scope_key: str, event: SteeringEvent) -> None:
+        with self._lock:
+            rows = self._load_all_unlocked()
+            existing = rows.get(scope_key, [])
+            existing.append(event)
+            rows[scope_key] = existing
+            self._save_all_unlocked(rows)
+
+    def get_unapplied(self, *, scope_key: str) -> list[SteeringEvent]:
+        with self._lock:
+            rows = self._load_all_unlocked()
+            return [item for item in rows.get(scope_key, []) if not item.applied]
+
+    def mark_applied(self, *, scope_key: str, event_ids: list[str]) -> None:
+        if not event_ids:
+            return
+        targets = set(event_ids)
+        with self._lock:
+            rows = self._load_all_unlocked()
+            changed = False
+            for item in rows.get(scope_key, []):
+                if item.event_id in targets and not item.applied:
+                    item.applied = True
+                    changed = True
+            if changed:
+                self._save_all_unlocked(rows)
+
+    def clear(self, *, scope_key: str) -> None:
+        with self._lock:
+            rows = self._load_all_unlocked()
+            if scope_key in rows:
+                rows.pop(scope_key, None)
+                self._save_all_unlocked(rows)
