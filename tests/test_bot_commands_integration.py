@@ -30,6 +30,7 @@ from src.bot import (
     _is_transient_codex_error,
     _reflect,
     _run_codex_with_retries,
+    _worklog_subprocess_env,
     VALID_MODELS,
 )
 
@@ -215,6 +216,10 @@ class TestReflectionProviderSelection:
         assert captured["session_id"] == "codex-session"
         assert captured["cli_name"] == "codex"
         assert added[0]["summary"] == "done"
+        assert added[0]["scope_key"] == "123456789:main"
+        assert added[0]["provider"] == "codex"
+        assert added[0]["session_type"] == "codex"
+        assert added[0]["session_id"] == "codex-session"
 
     async def test_reflect_uses_provider_env_for_claude_compatible_provider(self, monkeypatch):
         from src import bridge
@@ -254,6 +259,9 @@ class TestReflectionProviderSelection:
         assert captured["model"] == "haiku"
         assert captured["subprocess_env"]["ANTHROPIC_BASE_URL"] == "http://0.0.0.0:4000"
         assert added[0]["topics"] == ["glm"]
+        assert added[0]["provider"] == "glm4.7"
+        assert added[0]["session_type"] == "claude"
+        assert added[0]["session_id"] == "glm-session"
 
     async def test_new_unauthorized_no_response(self, mock_message):
         """Unauthorized user should get no response."""
@@ -263,6 +271,33 @@ class TestReflectionProviderSelection:
         await cmd_new(mock_message)
 
         mock_message.answer.assert_not_called()
+
+
+def test_worklog_subprocess_env_includes_thread_scope_for_parallel_topics() -> None:
+    from src.sessions import ChatSession
+
+    provider = type("ProviderStub", (), {"cli": "codex", "name": "codex"})()
+    session = ChatSession(
+        codex_session_id="codex-sess-7",
+        chat_id=123456789,
+        message_thread_id=77,
+        topic_label="Parallel work",
+        topic_started_at="2026-03-07T12:00:00+00:00",
+        last_activity_at="2026-03-07T12:30:00+00:00",
+    )
+
+    env = _worklog_subprocess_env(
+        {"BASE": "1"},
+        chat_id=123456789,
+        message_thread_id=77,
+        provider=provider,
+        session=session,
+    )
+
+    assert env["ILA_WORKLOG_SCOPE_KEY"] == "123456789:77"
+    assert env["ILA_WORKLOG_MESSAGE_THREAD_ID"] == "77"
+    assert env["ILA_WORKLOG_SESSION_ID"] == "codex-sess-7"
+    assert env["ILA_WORKLOG_PROVIDER"] == "codex"
 
 
 # ── Contract 4: /model command ───────────────────────────────────

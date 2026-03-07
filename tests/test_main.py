@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from pathlib import Path
 
 import pytest
 
@@ -31,3 +32,32 @@ async def test_send_ready_notification_separate_message(monkeypatch) -> None:
         chat_id=12345,
         text="💬 Ready to accept messages.",
     )
+
+
+def test_ensure_worklog_git_hook_configures_hooks_path(monkeypatch, tmppath) -> None:
+    repo_root = tmppath / "repo"
+    git_dir = repo_root / ".git"
+    hooks_dir = repo_root / "git-hooks"
+    hook_path = hooks_dir / "post-commit"
+    git_dir.mkdir(parents=True)
+    hooks_dir.mkdir(parents=True)
+    hook_path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        class Result:
+            returncode = 0
+            stdout = ""
+        return Result()
+
+    monkeypatch.setattr(main, "subprocess", type("SubprocessStub", (), {"run": staticmethod(fake_run)}))
+    monkeypatch.setattr(main, "__file__", str(repo_root / "src" / "main.py"))
+
+    (repo_root / "src").mkdir(parents=True, exist_ok=True)
+    main.ensure_worklog_git_hook()
+
+    assert calls
+    assert calls[0][0][:6] == ["git", "-C", str(repo_root), "config", "--local", "core.hooksPath"]
+    assert calls[0][0][6] == str(hooks_dir)

@@ -126,6 +126,41 @@ def _scope_key_from_message(message: Message) -> str:
     return _scope_key(message.chat.id, _thread_id(message))
 
 
+def _worklog_subprocess_env(
+    base_env: dict[str, str] | None,
+    *,
+    chat_id: int,
+    message_thread_id: int | None,
+    provider: object,
+    session: ChatSession,
+) -> dict[str, str]:
+    env = dict(base_env or {})
+    session_type = "codex" if _is_codex_family_cli(getattr(provider, "cli", None)) else "claude"
+    session_id = session.codex_session_id if session_type == "codex" else session.claude_session_id
+    env["ILA_WORKLOG_SCOPE_KEY"] = _scope_key(chat_id, message_thread_id)
+    env["ILA_WORKLOG_CHAT_ID"] = str(chat_id)
+    env["ILA_WORKLOG_SESSION_TYPE"] = session_type
+    env["ILA_WORKLOG_PROVIDER"] = str(getattr(provider, "name", "") or "")
+    env["ILA_WORKLOG_LAST_ACTIVITY_AT"] = str(session.last_activity_at or datetime.now(tz.utc).isoformat())
+    if session_id:
+        env["ILA_WORKLOG_SESSION_ID"] = session_id
+    else:
+        env.pop("ILA_WORKLOG_SESSION_ID", None)
+    if message_thread_id is not None:
+        env["ILA_WORKLOG_MESSAGE_THREAD_ID"] = str(message_thread_id)
+    else:
+        env.pop("ILA_WORKLOG_MESSAGE_THREAD_ID", None)
+    if session.topic_label:
+        env["ILA_WORKLOG_TOPIC_LABEL"] = session.topic_label
+    else:
+        env.pop("ILA_WORKLOG_TOPIC_LABEL", None)
+    if session.topic_started_at:
+        env["ILA_WORKLOG_TOPIC_STARTED_AT"] = session.topic_started_at
+    else:
+        env.pop("ILA_WORKLOG_TOPIC_STARTED_AT", None)
+    return env
+
+
 def _get_state(scope_key: str) -> _ChatState:
     """Get or create state for a conversation scope."""
     if scope_key not in _chat_states:
@@ -644,6 +679,19 @@ def _parse_reflection_payload(text: str) -> dict[str, object]:
 async def _reflect(chat_id: int, session: object, provider: object) -> None:
     """Background: summarize the active conversation and store it as an episode."""
     try:
+        repo_path = str(_repo_root())
+        branch: str | None = None
+        try:
+            branch_result = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            branch = branch_result.stdout.strip() or None
+        except Exception:
+            logger.debug("Could not resolve git branch for reflection worklog", exc_info=True)
+
         reflect_prompt = (
             "Summarize this conversation concisely. Output ONLY valid JSON, no markdown:\n"
             '{"summary": "one-sentence summary", "topics": ["topic1"], '
@@ -665,6 +713,15 @@ async def _reflect(chat_id: int, session: object, provider: object) -> None:
                     topics=data.get("topics"),
                     decisions=data.get("decisions"),
                     entities=data.get("entities"),
+                    message_thread_id=getattr(session, "message_thread_id", None),
+                    scope_key=_scope_key(chat_id, getattr(session, "message_thread_id", None)),
+                    provider=getattr(provider, "name", None),
+                    session_type="codex" if getattr(session, "codex_session_id", None) else "claude",
+                    session_id=getattr(session, "codex_session_id", None) or getattr(session, "claude_session_id", None),
+                    topic_label=getattr(session, "topic_label", None),
+                    topic_started_at=getattr(session, "topic_started_at", None),
+                    repo_path=repo_path,
+                    branch=branch,
                 )
                 logger.info("Chat %d: reflection stored", chat_id)
                 return
@@ -1815,7 +1872,13 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                     parse_mode="HTML",
                 )
                 provider = fallback
-            env = provider_manager.subprocess_env(provider)
+            env = _worklog_subprocess_env(
+                provider_manager.subprocess_env(provider),
+                chat_id=chat_id,
+                message_thread_id=thread_id,
+                provider=provider,
+                session=session,
+            )
             logger.info(
                 "Chat %s: using provider '%s' (cli=%s) with env=%s",
                 scope_key,
@@ -1884,7 +1947,13 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                         scope_key, provider.name, next_provider.name, final_response.text,
                     )
                     provider = next_provider
-                    env = provider_manager.subprocess_env(next_provider)
+                    env = _worklog_subprocess_env(
+                        provider_manager.subprocess_env(next_provider),
+                        chat_id=chat_id,
+                        message_thread_id=thread_id,
+                        provider=next_provider,
+                        session=session,
+                    )
                     if _is_codex_family_cli(next_provider.cli):
                         codex_model = _codex_model_arg(session, next_provider)
                         final_response = await _run_codex_with_retries(

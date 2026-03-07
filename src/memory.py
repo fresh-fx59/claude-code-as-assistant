@@ -130,6 +130,60 @@ CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
 );
 """
 
+_WORKLOG_SESSIONS_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS worklog_sessions (
+    id INTEGER PRIMARY KEY,
+    episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL,
+    chat_id INTEGER NOT NULL,
+    message_thread_id INTEGER,
+    scope_key TEXT NOT NULL,
+    provider TEXT,
+    session_type TEXT,
+    session_id TEXT,
+    topic_label TEXT,
+    topic_started_at TEXT,
+    repo_path TEXT,
+    branch TEXT,
+    summary TEXT,
+    started_at TEXT NOT NULL,
+    closed_at TEXT,
+    last_seen_at TEXT NOT NULL
+);
+"""
+
+_WORKLOG_COMMITS_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS worklog_commits (
+    id INTEGER PRIMARY KEY,
+    worklog_session_id INTEGER NOT NULL REFERENCES worklog_sessions(id) ON DELETE CASCADE,
+    commit_sha TEXT NOT NULL,
+    short_sha TEXT,
+    subject TEXT,
+    repo_path TEXT,
+    branch TEXT,
+    authored_at TEXT,
+    committed_at TEXT,
+    UNIQUE(worklog_session_id, commit_sha)
+);
+"""
+
+_WORKLOG_FILES_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS worklog_files (
+    id INTEGER PRIMARY KEY,
+    worklog_commit_id INTEGER NOT NULL REFERENCES worklog_commits(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    additions INTEGER,
+    deletions INTEGER,
+    UNIQUE(worklog_commit_id, path)
+);
+"""
+
+_WORKLOG_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_worklog_sessions_scope ON worklog_sessions(scope_key, session_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_worklog_sessions_episode ON worklog_sessions(episode_id)",
+    "CREATE INDEX IF NOT EXISTS idx_worklog_commits_session ON worklog_commits(worklog_session_id, committed_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_worklog_files_commit ON worklog_files(worklog_commit_id)",
+]
+
 # Triggers to keep FTS index in sync with episodes table
 _FTS_TRIGGERS = [
     """\
@@ -175,15 +229,25 @@ class MemoryManager:
 
     def _init_db(self) -> None:
         """Create episodes table and FTS5 index if they don't exist."""
-        con = sqlite3.connect(self._db_path)
+        con = self._connect()
         try:
             con.execute(_EPISODES_SCHEMA)
             con.execute(_FTS_SCHEMA)
+            con.execute(_WORKLOG_SESSIONS_SCHEMA)
+            con.execute(_WORKLOG_COMMITS_SCHEMA)
+            con.execute(_WORKLOG_FILES_SCHEMA)
             for trigger in _FTS_TRIGGERS:
                 con.execute(trigger)
+            for statement in _WORKLOG_INDEXES:
+                con.execute(statement)
             con.commit()
         finally:
             con.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        con = sqlite3.connect(self._db_path)
+        con.execute("PRAGMA foreign_keys = ON")
+        return con
 
     def _ensure_storage(self) -> None:
         """Recreate storage if external cleanup removed the directory or DB file."""
@@ -309,6 +373,22 @@ class MemoryManager:
     @staticmethod
     def _today_utc() -> str:
         return datetime.now(timezone.utc).date().isoformat()
+
+    @staticmethod
+    def _now_utc_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _decode_json_list(value: str | None) -> list[str]:
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [str(item) for item in parsed]
 
     @staticmethod
     def _is_active_fact(fact: dict) -> bool:
@@ -620,34 +700,492 @@ class MemoryManager:
         topics: list[str] | None = None,
         decisions: list[str] | None = None,
         entities: list[str] | None = None,
-    ) -> None:
+        *,
+        message_thread_id: int | None = None,
+        scope_key: str | None = None,
+        provider: str | None = None,
+        session_type: str | None = None,
+        session_id: str | None = None,
+        topic_label: str | None = None,
+        topic_started_at: str | None = None,
+        repo_path: str | None = None,
+        branch: str | None = None,
+    ) -> int:
         """Insert a new episode into the database."""
         self._ensure_storage()
-        con = sqlite3.connect(self._db_path)
+        now_iso = self._now_utc_iso()
+        con = self._connect()
         try:
-            con.execute(
+            cursor = con.execute(
                 "INSERT INTO episodes (chat_id, timestamp, summary, topics, decisions, entities) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     chat_id,
-                    datetime.now(timezone.utc).isoformat(),
+                    now_iso,
                     summary,
                     json.dumps(topics or []),
                     json.dumps(decisions or []),
                     json.dumps(entities or []),
                 ),
             )
+            episode_id = int(cursor.lastrowid)
+            if scope_key or session_id or provider or repo_path or branch:
+                self._record_summary_link(
+                    con,
+                    episode_id=episode_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    scope_key=scope_key,
+                    provider=provider,
+                    session_type=session_type,
+                    session_id=session_id,
+                    topic_label=topic_label,
+                    topic_started_at=topic_started_at,
+                    repo_path=repo_path,
+                    branch=branch,
+                    summary=summary,
+                    recorded_at=now_iso,
+                )
             con.commit()
         finally:
             con.close()
         logger.info("Added episode for chat %d: %s", chat_id, summary[:80])
+        return episode_id
+
+    def _find_open_worklog_session(
+        self,
+        con: sqlite3.Connection,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        scope_key: str,
+        provider: str | None,
+        session_type: str | None,
+        session_id: str | None,
+    ) -> sqlite3.Row | None:
+        con.row_factory = sqlite3.Row
+        return con.execute(
+            """
+            SELECT *
+            FROM worklog_sessions
+            WHERE chat_id = ?
+              AND scope_key = ?
+              AND COALESCE(provider, '') = COALESCE(?, '')
+              AND COALESCE(session_type, '') = COALESCE(?, '')
+              AND (
+                    COALESCE(session_id, '') = COALESCE(?, '')
+                    OR (? IS NOT NULL AND session_id IS NULL)
+                  )
+              AND (
+                    (? IS NULL AND message_thread_id IS NULL)
+                    OR message_thread_id = ?
+                  )
+            ORDER BY
+              CASE
+                WHEN COALESCE(session_id, '') = COALESCE(?, '') THEN 0
+                WHEN session_id IS NULL THEN 1
+                ELSE 2
+              END,
+              CASE WHEN closed_at IS NULL THEN 0 ELSE 1 END,
+              started_at DESC
+            LIMIT 1
+            """,
+            (
+                chat_id,
+                scope_key,
+                provider,
+                session_type,
+                session_id,
+                session_id,
+                message_thread_id,
+                message_thread_id,
+                session_id,
+            ),
+        ).fetchone()
+
+    def _ensure_worklog_session(
+        self,
+        con: sqlite3.Connection,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        scope_key: str,
+        provider: str | None,
+        session_type: str | None,
+        session_id: str | None,
+        topic_label: str | None,
+        topic_started_at: str | None,
+        repo_path: str | None,
+        branch: str | None,
+        recorded_at: str,
+    ) -> int:
+        existing = self._find_open_worklog_session(
+            con,
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            scope_key=scope_key,
+            provider=provider,
+            session_type=session_type,
+            session_id=session_id,
+        )
+        if existing is not None:
+            con.execute(
+                """
+                UPDATE worklog_sessions
+                SET session_id = COALESCE(session_id, ?),
+                    topic_label = COALESCE(?, topic_label),
+                    topic_started_at = COALESCE(?, topic_started_at),
+                    repo_path = COALESCE(?, repo_path),
+                    branch = COALESCE(?, branch),
+                    last_seen_at = ?
+                WHERE id = ?
+                """,
+                (
+                    session_id,
+                    topic_label,
+                    topic_started_at,
+                    repo_path,
+                    branch,
+                    recorded_at,
+                    int(existing["id"]),
+                ),
+            )
+            return int(existing["id"])
+
+        cursor = con.execute(
+            """
+            INSERT INTO worklog_sessions (
+                episode_id, chat_id, message_thread_id, scope_key, provider, session_type,
+                session_id, topic_label, topic_started_at, repo_path, branch, summary,
+                started_at, closed_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                None,
+                chat_id,
+                message_thread_id,
+                scope_key,
+                provider,
+                session_type,
+                session_id,
+                topic_label,
+                topic_started_at,
+                repo_path,
+                branch,
+                None,
+                recorded_at,
+                None,
+                recorded_at,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def _record_summary_link(
+        self,
+        con: sqlite3.Connection,
+        *,
+        episode_id: int,
+        chat_id: int,
+        message_thread_id: int | None,
+        scope_key: str | None,
+        provider: str | None,
+        session_type: str | None,
+        session_id: str | None,
+        topic_label: str | None,
+        topic_started_at: str | None,
+        repo_path: str | None,
+        branch: str | None,
+        summary: str,
+        recorded_at: str,
+    ) -> int:
+        effective_scope = scope_key or f"{chat_id}:{message_thread_id if message_thread_id is not None else 'main'}"
+        worklog_id = self._ensure_worklog_session(
+            con,
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            scope_key=effective_scope,
+            provider=provider,
+            session_type=session_type,
+            session_id=session_id,
+            topic_label=topic_label,
+            topic_started_at=topic_started_at,
+            repo_path=repo_path,
+            branch=branch,
+            recorded_at=recorded_at,
+        )
+        con.execute(
+            """
+            UPDATE worklog_sessions
+            SET episode_id = ?,
+                summary = ?,
+                repo_path = COALESCE(?, repo_path),
+                branch = COALESCE(?, branch),
+                topic_label = COALESCE(?, topic_label),
+                topic_started_at = COALESCE(?, topic_started_at),
+                closed_at = COALESCE(closed_at, ?),
+                last_seen_at = ?
+            WHERE id = ?
+            """,
+            (
+                episode_id,
+                summary,
+                repo_path,
+                branch,
+                topic_label,
+                topic_started_at,
+                recorded_at,
+                recorded_at,
+                worklog_id,
+            ),
+        )
+        return worklog_id
+
+    def record_commit_link(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        scope_key: str | None,
+        provider: str | None,
+        session_type: str | None,
+        session_id: str | None,
+        repo_path: str,
+        branch: str | None,
+        commit_sha: str,
+        short_sha: str | None,
+        subject: str | None,
+        authored_at: str | None,
+        committed_at: str | None,
+        files: list[dict[str, object]] | None = None,
+        topic_label: str | None = None,
+        topic_started_at: str | None = None,
+    ) -> dict[str, object]:
+        self._ensure_storage()
+        if not commit_sha.strip():
+            raise ValueError("commit_sha is required")
+        recorded_at = committed_at or self._now_utc_iso()
+        effective_scope = scope_key or f"{chat_id}:{message_thread_id if message_thread_id is not None else 'main'}"
+        con = self._connect()
+        try:
+            worklog_id = self._ensure_worklog_session(
+                con,
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                scope_key=effective_scope,
+                provider=provider,
+                session_type=session_type,
+                session_id=session_id,
+                topic_label=topic_label,
+                topic_started_at=topic_started_at,
+                repo_path=repo_path,
+                branch=branch,
+                recorded_at=recorded_at,
+            )
+            cursor = con.execute(
+                """
+                INSERT INTO worklog_commits (
+                    worklog_session_id, commit_sha, short_sha, subject, repo_path, branch, authored_at, committed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worklog_session_id, commit_sha) DO UPDATE SET
+                    short_sha = excluded.short_sha,
+                    subject = excluded.subject,
+                    repo_path = excluded.repo_path,
+                    branch = excluded.branch,
+                    authored_at = excluded.authored_at,
+                    committed_at = excluded.committed_at
+                """,
+                (
+                    worklog_id,
+                    commit_sha.strip(),
+                    short_sha,
+                    subject,
+                    repo_path,
+                    branch,
+                    authored_at,
+                    committed_at,
+                ),
+            )
+            commit_row_id = int(cursor.lastrowid)
+            if commit_row_id == 0:
+                row = con.execute(
+                    "SELECT id FROM worklog_commits WHERE worklog_session_id = ? AND commit_sha = ?",
+                    (worklog_id, commit_sha.strip()),
+                ).fetchone()
+                commit_row_id = int(row[0]) if row else 0
+            con.execute(
+                """
+                UPDATE worklog_sessions
+                SET repo_path = COALESCE(?, repo_path),
+                    branch = COALESCE(?, branch),
+                    last_seen_at = ?
+                WHERE id = ?
+                """,
+                (repo_path, branch, recorded_at, worklog_id),
+            )
+            if files:
+                for file_entry in files:
+                    path = str(file_entry.get("path", "")).strip()
+                    if not path:
+                        continue
+                    con.execute(
+                        """
+                        INSERT INTO worklog_files (worklog_commit_id, path, additions, deletions)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(worklog_commit_id, path) DO UPDATE SET
+                            additions = excluded.additions,
+                            deletions = excluded.deletions
+                        """,
+                        (
+                            commit_row_id,
+                            path,
+                            file_entry.get("additions"),
+                            file_entry.get("deletions"),
+                        ),
+                    )
+            con.commit()
+        finally:
+            con.close()
+        return {
+            "worklog_session_id": worklog_id,
+            "commit_sha": commit_sha.strip(),
+            "repo_path": repo_path,
+            "branch": branch,
+            "file_count": len(files or []),
+        }
+
+    def list_worklog_links(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 5,
+        chat_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        self._ensure_storage()
+        keywords = self._extract_keywords(query or "")
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            params: list[object] = []
+            base_where = []
+            if chat_id is not None:
+                base_where.append("w.chat_id = ?")
+                params.append(chat_id)
+            where_sql = ""
+            if keywords:
+                search_expr = " OR ".join(keywords)
+                where_parts = list(base_where)
+                where_parts.append("episodes_fts MATCH ?")
+                params.append(search_expr)
+                where_sql = "WHERE " + " AND ".join(where_parts)
+                rows = con.execute(
+                    f"""
+                    SELECT DISTINCT w.*, e.timestamp,
+                           COALESCE(w.summary, e.summary) AS effective_summary
+                    FROM worklog_sessions w
+                    LEFT JOIN episodes e ON e.id = w.episode_id
+                    LEFT JOIN episodes_fts f ON f.rowid = e.id
+                    {where_sql}
+                    ORDER BY COALESCE(w.closed_at, w.last_seen_at) DESC
+                    LIMIT ?
+                    """,
+                    (*params, limit),
+                ).fetchall()
+            else:
+                if base_where:
+                    where_sql = "WHERE " + " AND ".join(base_where)
+                rows = con.execute(
+                    f"""
+                    SELECT w.*, e.timestamp,
+                           COALESCE(w.summary, e.summary) AS effective_summary
+                    FROM worklog_sessions w
+                    LEFT JOIN episodes e ON e.id = w.episode_id
+                    {where_sql}
+                    ORDER BY COALESCE(w.closed_at, w.last_seen_at) DESC
+                    LIMIT ?
+                    """,
+                    (*params, limit),
+                ).fetchall()
+
+            results: list[dict[str, object]] = []
+            for row in rows:
+                commits = con.execute(
+                    """
+                    SELECT id, commit_sha, short_sha, subject, repo_path, branch, authored_at, committed_at
+                    FROM worklog_commits
+                    WHERE worklog_session_id = ?
+                    ORDER BY COALESCE(committed_at, authored_at) DESC, id DESC
+                    """,
+                    (int(row["id"]),),
+                ).fetchall()
+                commit_items: list[dict[str, object]] = []
+                files: list[dict[str, object]] = []
+                for commit in commits:
+                    commit_id = int(commit["id"])
+                    commit_files = con.execute(
+                        """
+                        SELECT path, additions, deletions
+                        FROM worklog_files
+                        WHERE worklog_commit_id = ?
+                        ORDER BY path ASC
+                        """,
+                        (commit_id,),
+                    ).fetchall()
+                    file_items = [
+                        {
+                            "path": file_row["path"],
+                            "additions": file_row["additions"],
+                            "deletions": file_row["deletions"],
+                        }
+                        for file_row in commit_files
+                    ]
+                    files.extend(file_items)
+                    commit_items.append(
+                        {
+                            "commit_sha": commit["commit_sha"],
+                            "short_sha": commit["short_sha"],
+                            "subject": commit["subject"],
+                            "repo_path": commit["repo_path"],
+                            "branch": commit["branch"],
+                            "authored_at": commit["authored_at"],
+                            "committed_at": commit["committed_at"],
+                            "files": file_items,
+                        }
+                    )
+                results.append(
+                    {
+                        "worklog_session_id": int(row["id"]),
+                        "episode_id": row["episode_id"],
+                        "chat_id": row["chat_id"],
+                        "message_thread_id": row["message_thread_id"],
+                        "scope_key": row["scope_key"],
+                        "provider": row["provider"],
+                        "session_type": row["session_type"],
+                        "session_id": row["session_id"],
+                        "topic_label": row["topic_label"],
+                        "topic_started_at": row["topic_started_at"],
+                        "repo_path": row["repo_path"],
+                        "branch": row["branch"],
+                        "summary": row["effective_summary"],
+                        "started_at": row["started_at"],
+                        "closed_at": row["closed_at"],
+                        "last_seen_at": row["last_seen_at"],
+                        "timestamp": row["timestamp"],
+                        "commits": commit_items,
+                        "files": files,
+                    }
+                )
+            return results
+        finally:
+            con.close()
 
     def search_episodes(self, query: str, limit: int = 5) -> list[dict]:
         """Search episodes via FTS5. Falls back to recent episodes if no query match."""
         self._ensure_storage()
         keywords = self._extract_keywords(query)
 
-        con = sqlite3.connect(self._db_path)
+        con = self._connect()
         con.row_factory = sqlite3.Row
         try:
             rows: list[sqlite3.Row] = []
@@ -702,7 +1240,7 @@ class MemoryManager:
             parts.append("<b>user_profile.yaml</b>\n<i>(not created yet)</i>")
 
         # Episodes
-        con = sqlite3.connect(self._db_path)
+        con = self._connect()
         con.row_factory = sqlite3.Row
         try:
             rows = con.execute(
@@ -723,9 +1261,12 @@ class MemoryManager:
         """Reset all memory to defaults."""
         self._ensure_storage()
         self._profile_path.write_text(_PROFILE_TEMPLATE)
-        con = sqlite3.connect(self._db_path)
+        con = self._connect()
         try:
             con.execute("DELETE FROM episodes")
+            con.execute("DELETE FROM worklog_files")
+            con.execute("DELETE FROM worklog_commits")
+            con.execute("DELETE FROM worklog_sessions")
             # Rebuild FTS index
             con.execute("INSERT INTO episodes_fts(episodes_fts) VALUES ('rebuild')")
             con.commit()

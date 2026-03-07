@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -u
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$REPO_ROOT" || exit 0
+
+if [ -x "$REPO_ROOT/venv/bin/python" ]; then
+  PYTHON_BIN="$REPO_ROOT/venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python)"
+else
+  exit 0
+fi
+
+"$PYTHON_BIN" -m src.worklog_tool auto-record-commit --repo-path "$REPO_ROOT" --commit HEAD >/dev/null 2>&1 || true

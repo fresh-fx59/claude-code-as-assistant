@@ -1,0 +1,40 @@
+name: worklog-manager
+description: Persist and query SQL links between reflection summaries, conversation sessions, git commits, and changed files.
+tier: core
+triggers:
+- worklog
+- summary commit link
+- summary commits
+- session commit metadata
+- reflection metadata
+- which commit
+- changed files from summary
+instructions: |
+  # Worklog Manager
+
+  Use this tool to store and query the durable SQL linkage between:
+  - `/new` reflection summaries
+  - conversation session metadata
+  - git commits
+  - changed files
+
+  Storage:
+  - `memory/episodes.db`
+  - tables: `episodes`, `worklog_sessions`, `worklog_commits`, `worklog_files`
+
+  Command:
+  - `python -m src.worklog_tool <subcommand> [flags]`
+
+  Subcommands:
+  - `record-summary --chat-id <id> --message-thread-id <id?> --provider <name> --session-type <claude|codex> --session-id <id> --summary <text> --topics-json '[]' --decisions-json '[]' --entities-json '[]'`
+  - `record-commit --chat-id <id> --message-thread-id <id?> --provider <name> --session-type <claude|codex> --session-id <id> --repo-path <path> --commit HEAD`
+  - `auto-record-commit --repo-path <path> --commit HEAD` (prefers exact thread/session scope from inherited env; falls back to the freshest active session from `sessions.json`)
+  - `list [--query <text>] [--chat-id <id>] [--limit 5]`
+
+  Operational rule:
+  1. After `/new` reflection completes, persist the summary via `record-summary` or the equivalent internal API.
+  2. A managed `git post-commit` hook should call `auto-record-commit` so commit + file metadata is captured without LLM tokens or manual steps.
+  3. For parallel Telegram topics, the provider subprocess should export the exact `scope/session` via env so the hook attributes the commit to the correct thread instead of guessing.
+  4. When the user asks "which commits/files were part of this summary?", use `list --query ...`.
+
+setup: 'Ensure python module is available: python -m src.worklog_tool --help'

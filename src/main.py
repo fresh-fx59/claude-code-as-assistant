@@ -45,6 +45,27 @@ def mark_good_commit() -> None:
         return None
 
 
+def ensure_worklog_git_hook() -> None:
+    """Ensure local git config points to the managed post-commit hook."""
+    repo_root = Path(__file__).parent.parent
+    hooks_dir = repo_root / "git-hooks"
+    hook_path = hooks_dir / "post-commit"
+    if not hook_path.exists():
+        logging.info("Skipping git hook install because %s is missing", hook_path)
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_root), "config", "--local", "core.hooksPath", str(hooks_dir)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        logging.info("Configured git hooksPath to %s", hooks_dir)
+    except Exception as exc:
+        logging.warning("Could not configure git hooksPath: %s", exc)
+
+
 async def send_startup_notification(bot: Bot, commit: str | None = None) -> None:
     """Send startup notification to active step-plan thread or first admin."""
     if not ALLOWED_USER_IDS and not getattr(bot_module.config, "ALLOWED_CHAT_IDS", set()):
@@ -130,6 +151,7 @@ async def main() -> None:
     )
 
     start_metrics_server(METRICS_PORT)
+    ensure_worklog_git_hook()
 
     bot = Bot(
         token=BOT_TOKEN,
