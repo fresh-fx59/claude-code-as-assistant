@@ -25,6 +25,7 @@ from src.bot import (
     handle_message,
     _ChatState,
     _get_state,
+    _command_args,
     _is_authorized,
     _is_transient_codex_error,
     _run_codex_with_retries,
@@ -133,6 +134,15 @@ class TestNewCommand:
         mock_message.answer.assert_called_once()
         assert "cleared" in mock_message.answer.call_args[0][0].lower()
 
+    async def test_new_with_bot_mention_confirms_action(self, mock_message):
+        """Bot mention variant should behave like /new."""
+        mock_message.text = "/new@iron_lady_assistant_bot"
+
+        await cmd_new(mock_message)
+
+        mock_message.answer.assert_called_once()
+        assert "cleared" in mock_message.answer.call_args[0][0].lower()
+
     async def test_new_unauthorized_no_response(self, mock_message):
         """Unauthorized user should get no response."""
         mock_message.text = "/new"
@@ -160,6 +170,18 @@ class TestModelCommand:
         assert "opus" in mock_message.answer.call_args[0][0].lower()
         # Verify model was set
         from src.bot import session_manager
+        assert session_manager.get(123456789).model == "opus"
+
+    async def test_model_with_bot_mention_sets_model(self, mock_message):
+        """Mentioned command should still parse the model argument."""
+        from src.bot import provider_manager
+        from src.bot import session_manager
+        provider_manager.set_provider("123456789:main", "claude")
+        mock_message.text = "/model@iron_lady_assistant_bot opus"
+
+        await cmd_model(mock_message)
+
+        mock_message.answer.assert_called_once()
         assert session_manager.get(123456789).model == "opus"
 
     async def test_model_all_valid_models(self, mock_message):
@@ -219,6 +241,20 @@ class TestModelCommand:
         await cmd_model(mock_message)
 
         mock_message.answer.assert_not_called()
+
+
+class TestCommandArgs:
+    """Command argument parsing should ignore bot mentions."""
+
+    def test_command_args_without_args_returns_empty(self, mock_message):
+        mock_message.text = "/new@iron_lady_assistant_bot"
+
+        assert _command_args(mock_message) == ""
+
+    def test_command_args_with_bot_mention_returns_only_args(self, mock_message):
+        mock_message.text = "/schedule_every@iron_lady_assistant_bot 15 check backlog"
+
+        assert _command_args(mock_message) == "15 check backlog"
 
 
 # ── Contract 5: /status command ─────────────────────────────────

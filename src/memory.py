@@ -196,12 +196,14 @@ class MemoryManager:
         data = self._load_profile()
         normalized, changed = self._normalize_profile(data)
         if changed:
+            self._profile_path.parent.mkdir(parents=True, exist_ok=True)
             self._profile_path.write_text(
                 yaml.safe_dump(normalized, sort_keys=False, allow_unicode=True),
                 encoding="utf-8",
             )
 
     def _save_profile(self, data: dict) -> None:
+        self._profile_path.parent.mkdir(parents=True, exist_ok=True)
         self._profile_path.write_text(
             yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
             encoding="utf-8",

@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import yaml
 from aiogram import Router, F
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message, CallbackQuery, ErrorEvent, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ChatAction
@@ -241,6 +242,17 @@ def _inject_tool_request(prompt_text: str, tool_name: str) -> str:
     """Force a tool to be activated by adding an explicit directive."""
     base = prompt_text.rstrip()
     return f"{base}\n\nUSE_TOOL: {tool_name}\n"
+
+
+def _command_args(message: Message, command: CommandObject | None = None) -> str:
+    """Return command arguments with optional @bot mention stripped."""
+    if command is not None:
+        return (command.args or "").strip()
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
 
 
 def _build_augmented_prompt(raw_prompt: str) -> str:
@@ -515,7 +527,7 @@ def _codex_working_dir() -> str:
     return str(Path.home())
 
 
-@router.message(F.text == "/start")
+@router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -570,7 +582,7 @@ async def cmd_start(message: Message) -> None:
     await message.answer("\n".join(status_lines), parse_mode="HTML")
 
 
-@router.message(F.text == "/new")
+@router.message(Command("new"))
 async def cmd_new(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -619,8 +631,8 @@ async def _reflect(chat_id: int, session: object) -> None:
         logger.warning("Chat %d: reflection failed", chat_id, exc_info=True)
 
 
-@router.message(F.text.startswith("/model"))
-async def cmd_model(message: Message) -> None:
+@router.message(Command("model"))
+async def cmd_model(message: Message, command: CommandObject | None = None) -> None:
     """Show model selection keyboard."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -631,10 +643,9 @@ async def cmd_model(message: Message) -> None:
     provider = _current_provider(scope_key)
     current = _current_model_label(session, provider)
 
-    raw_text = message.text or ""
-    parts = raw_text.split(maxsplit=1)
-    if len(parts) > 1:
-        requested = parts[1].split()[0]
+    args = _command_args(message, command)
+    if args:
+        requested = args.split()[0]
         options = _model_options(provider)
         if requested not in options:
             await message.answer(f"Invalid model: {requested}. Use /model to see options.")
@@ -704,8 +715,8 @@ async def cb_model_switch(callback: CallbackQuery) -> None:
     await callback.answer(f"Switched to {current}")
 
 
-@router.message(F.text.startswith("/provider"))
-async def cmd_provider(message: Message) -> None:
+@router.message(Command("provider"))
+async def cmd_provider(message: Message, command: CommandObject | None = None) -> None:
     """Show provider selection keyboard or switch provider by argument."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -713,10 +724,8 @@ async def cmd_provider(message: Message) -> None:
     chat_id = message.chat.id
     thread_id = _thread_id(message)
     scope_key = _scope_key_from_message(message)
-    raw_text = message.text or ""
-    parts = raw_text.split(maxsplit=1)
-    if len(parts) > 1:
-        requested = parts[1].strip()
+    requested = _command_args(message, command)
+    if requested:
         provider = provider_manager.set_provider(scope_key, requested)
         if not provider:
             available = ", ".join(p.name for p in provider_manager.providers)
@@ -777,7 +786,7 @@ async def cb_provider_switch(callback: CallbackQuery) -> None:
     await callback.answer(f"Switched to {provider.name}")
 
 
-@router.message(F.text == "/status")
+@router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -801,7 +810,7 @@ async def cmd_status(message: Message) -> None:
     )
 
 
-@router.message(F.text == "/memory")
+@router.message(Command("memory"))
 async def cmd_memory(message: Message) -> None:
     """Show current memory state."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
@@ -814,7 +823,7 @@ async def cmd_memory(message: Message) -> None:
             await message.answer(strip_html(chunk))
 
 
-@router.message(F.text == "/threads")
+@router.message(Command("threads"))
 async def cmd_threads(message: Message) -> None:
     """List tracked topic/thread scopes for this chat."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
@@ -837,7 +846,7 @@ async def cmd_threads(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.message(F.text == "/tools")
+@router.message(Command("tools"))
 async def cmd_tools(message: Message) -> None:
     """List available tools."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
@@ -849,7 +858,7 @@ async def cmd_tools(message: Message) -> None:
         await message.answer(strip_html(content))
 
 
-@router.message(F.text == "/cancel")
+@router.message(Command("cancel"))
 async def cmd_cancel(message: Message) -> None:
     """Cancel the current request if one is running."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
@@ -878,7 +887,7 @@ async def cmd_cancel(message: Message) -> None:
     ).inc()
 
 
-@router.message(F.text == "/rollback")
+@router.message(Command("rollback"))
 async def cmd_rollback(message: Message) -> None:
     if not _is_admin(message.from_user and message.from_user.id):
         await message.answer("This command is admin-only.")
@@ -966,8 +975,8 @@ async def cb_rollback_cancel(callback: CallbackQuery) -> None:
         await callback.message.edit_text("Rollback cancelled.")
 
 
-@router.message(F.text.startswith("/selfmod_stage"))
-async def cmd_selfmod_stage(message: Message) -> None:
+@router.message(Command("selfmod_stage"))
+async def cmd_selfmod_stage(message: Message, command: CommandObject | None = None) -> None:
     """Admin-only: stage plugin candidate code into sandbox."""
     if not _is_admin(message.from_user and message.from_user.id):
         await message.answer("This command is admin-only.")
@@ -975,8 +984,12 @@ async def cmd_selfmod_stage(message: Message) -> None:
 
     text = message.text or ""
     header, sep, body = text.partition("\n")
-    parts = header.split(maxsplit=1)
-    if len(parts) < 2:
+    if command is not None:
+        relative_path = _command_args(message, command)
+    else:
+        header_parts = header.split(maxsplit=1)
+        relative_path = header_parts[1].strip() if len(header_parts) > 1 else ""
+    if not relative_path:
         await message.answer(
             "Usage:\n"
             "/selfmod_stage <relative_plugin_path.py>\n"
@@ -988,7 +1001,6 @@ async def cmd_selfmod_stage(message: Message) -> None:
         await message.answer("Provide plugin code on lines after the command.")
         return
 
-    relative_path = parts[1].strip()
     plugin_code = _strip_markdown_code_fence(body)
     if not plugin_code:
         await message.answer("Plugin code is empty after parsing.")
@@ -1013,23 +1025,24 @@ async def cmd_selfmod_stage(message: Message) -> None:
     )
 
 
-@router.message(F.text.startswith("/selfmod_apply"))
-async def cmd_selfmod_apply(message: Message) -> None:
+@router.message(Command("selfmod_apply"))
+async def cmd_selfmod_apply(message: Message, command: CommandObject | None = None) -> None:
     """Admin-only: validate sandbox candidate, promote, and hot-reload."""
     if not _is_admin(message.from_user and message.from_user.id):
         await message.answer("This command is admin-only.")
         return
 
-    parts = (message.text or "").split(maxsplit=2)
-    if len(parts) < 2:
+    args = _command_args(message, command)
+    if not args:
         await message.answer(
             "Usage: /selfmod_apply <relative_plugin_path.py> [test_target]\n"
             "Example: /selfmod_apply tools_plugin.py tests/test_context_plugins.py"
         )
         return
 
-    relative_path = parts[1].strip()
-    test_target = parts[2].strip() if len(parts) > 2 else "tests/test_context_plugins.py"
+    parts = args.split(maxsplit=1)
+    relative_path = parts[0].strip()
+    test_target = parts[1].strip() if len(parts) > 1 else "tests/test_context_plugins.py"
 
     await message.answer(
         f"Applying sandbox candidate <code>{relative_path}</code>\n"
@@ -1064,8 +1077,8 @@ async def cmd_selfmod_apply(message: Message) -> None:
         context_plugins = ContextPluginRegistry([tool_registry])
 
 
-@router.message(F.text.startswith("/bg "))
-async def cmd_bg(message: Message) -> None:
+@router.message(Command("bg"))
+async def cmd_bg(message: Message, command: CommandObject | None = None) -> None:
     """Run a task in the background."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -1075,7 +1088,7 @@ async def cmd_bg(message: Message) -> None:
         return
 
     # Extract prompt after /bg
-    prompt = message.text[3:].strip()
+    prompt = _command_args(message, command)
     if not prompt:
         await message.answer("Please provide a task to run in background.\n\nExample: /bg write a python script to backup my database")
         return
@@ -1124,7 +1137,7 @@ async def cmd_bg(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.message(F.text == "/bg-list")
+@router.message(F.text.regexp(r"^/bg-list(?:@[A-Za-z0-9_]+)?$"))
 async def cmd_bg_list(message: Message) -> None:
     """List active background tasks."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
@@ -1160,8 +1173,8 @@ async def cmd_bg_list(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.message(F.text.startswith("/bg_cancel "))
-async def cmd_bg_cancel(message: Message) -> None:
+@router.message(Command("bg_cancel"))
+async def cmd_bg_cancel(message: Message, command: CommandObject | None = None) -> None:
     """Cancel a background task."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -1170,7 +1183,7 @@ async def cmd_bg_cancel(message: Message) -> None:
         await message.answer("Background tasks not available.")
         return
 
-    task_id = message.text[11:].strip()
+    task_id = _command_args(message, command)
     if not task_id:
         await message.answer("Please provide a task ID.\n\nExample: /bg_cancel abc123")
         return
@@ -1202,8 +1215,8 @@ async def cmd_bg_cancel(message: Message) -> None:
         await message.answer("Could not cancel task.")
 
 
-@router.message(F.text.startswith("/schedule_every"))
-async def cmd_schedule_every(message: Message) -> None:
+@router.message(Command("schedule_every"))
+async def cmd_schedule_every(message: Message, command: CommandObject | None = None) -> None:
     """Create recurring background task schedule."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -1211,8 +1224,9 @@ async def cmd_schedule_every(message: Message) -> None:
         await message.answer("Scheduler not available.")
         return
 
-    parts = (message.text or "").split(maxsplit=2)
-    if len(parts) < 3:
+    args = _command_args(message, command)
+    parts = args.split(maxsplit=1) if args else []
+    if len(parts) < 2:
         await message.answer(
             "Usage: /schedule_every <minutes> <task>\n"
             "Example: /schedule_every 60 summarize open PRs"
@@ -1220,7 +1234,7 @@ async def cmd_schedule_every(message: Message) -> None:
         return
 
     try:
-        interval_minutes = int(parts[1])
+        interval_minutes = int(parts[0])
     except ValueError:
         await message.answer("Minutes must be an integer.")
         return
@@ -1229,7 +1243,7 @@ async def cmd_schedule_every(message: Message) -> None:
         await message.answer("Minutes must be between 1 and 10080.")
         return
 
-    task_text = parts[2].strip()
+    task_text = parts[1].strip()
     if not task_text:
         await message.answer("Task text cannot be empty.")
         return
@@ -1257,7 +1271,7 @@ async def cmd_schedule_every(message: Message) -> None:
     )
 
 
-@router.message(F.text == "/schedule_list")
+@router.message(Command("schedule_list"))
 async def cmd_schedule_list(message: Message) -> None:
     """List recurring schedules for this chat."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
@@ -1290,8 +1304,8 @@ async def cmd_schedule_list(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.message(F.text.startswith("/schedule_weekly"))
-async def cmd_schedule_weekly(message: Message) -> None:
+@router.message(Command("schedule_weekly"))
+async def cmd_schedule_weekly(message: Message, command: CommandObject | None = None) -> None:
     """Create weekly recurring background task schedule."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -1299,25 +1313,26 @@ async def cmd_schedule_weekly(message: Message) -> None:
         await message.answer("Scheduler not available.")
         return
 
-    parts = (message.text or "").split(maxsplit=3)
-    if len(parts) < 4:
+    args = _command_args(message, command)
+    parts = args.split(maxsplit=2) if args else []
+    if len(parts) < 3:
         await message.answer(
             "Usage: /schedule_weekly <day> <HH:MM> <task>\n"
             "Example: /schedule_weekly mon 09:00 check sprint board"
         )
         return
 
-    weekday = _weekday_to_int(parts[1])
+    weekday = _weekday_to_int(parts[0])
     if weekday is None:
         await message.answer("Day must be one of: mon,tue,wed,thu,fri,sat,sun.")
         return
 
-    daily_time = parts[2].strip()
+    daily_time = parts[1].strip()
     if not re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", daily_time):
         await message.answer("Time must be in HH:MM 24-hour format.")
         return
 
-    task_text = parts[3].strip()
+    task_text = parts[2].strip()
     if not task_text:
         await message.answer("Task text cannot be empty.")
         return
@@ -1354,8 +1369,8 @@ async def cmd_schedule_weekly(message: Message) -> None:
     )
 
 
-@router.message(F.text.startswith("/schedule_daily"))
-async def cmd_schedule_daily(message: Message) -> None:
+@router.message(Command("schedule_daily"))
+async def cmd_schedule_daily(message: Message, command: CommandObject | None = None) -> None:
     """Create daily recurring background task schedule."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -1363,20 +1378,21 @@ async def cmd_schedule_daily(message: Message) -> None:
         await message.answer("Scheduler not available.")
         return
 
-    parts = (message.text or "").split(maxsplit=2)
-    if len(parts) < 3:
+    args = _command_args(message, command)
+    parts = args.split(maxsplit=1) if args else []
+    if len(parts) < 2:
         await message.answer(
             "Usage: /schedule_daily <HH:MM> <task>\n"
             "Example: /schedule_daily 09:00 check PR reviews"
         )
         return
 
-    daily_time = parts[1].strip()
+    daily_time = parts[0].strip()
     if not re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", daily_time):
         await message.answer("Time must be in HH:MM 24-hour format.")
         return
 
-    task_text = parts[2].strip()
+    task_text = parts[1].strip()
     if not task_text:
         await message.answer("Task text cannot be empty.")
         return
@@ -1412,8 +1428,8 @@ async def cmd_schedule_daily(message: Message) -> None:
     )
 
 
-@router.message(F.text.startswith("/schedule_cancel "))
-async def cmd_schedule_cancel(message: Message) -> None:
+@router.message(Command("schedule_cancel"))
+async def cmd_schedule_cancel(message: Message, command: CommandObject | None = None) -> None:
     """Cancel recurring schedule by full or short ID."""
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
@@ -1421,7 +1437,7 @@ async def cmd_schedule_cancel(message: Message) -> None:
         await message.answer("Scheduler not available.")
         return
 
-    short_id = (message.text or "")[17:].strip()
+    short_id = _command_args(message, command)
     if not short_id:
         await message.answer("Usage: /schedule_cancel <schedule_id>")
         return
