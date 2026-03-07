@@ -73,6 +73,37 @@ _AUDIO_AS_VOICE_TAG_RE = re.compile(r"\[\[\s*audio_as_voice\s*\]\]", re.IGNORECA
 _MEDIA_LINE_RE = re.compile(r"^\s*MEDIA:\s*(.+?)\s*$", re.IGNORECASE)
 _VOICE_COMPATIBLE_EXTENSIONS = {".ogg", ".opus", ".mp3", ".m4a"}
 _AUDIO_EXTENSIONS = _VOICE_COMPATIBLE_EXTENSIONS | {".wav", ".aac", ".flac"}
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+_EMPTY_RESPONSE_FALLBACK_TEXT = (
+    "I received an empty response from the provider. "
+    "Please resend your last message."
+)
+# Backward-compatible state paths retained for tests/fixtures importing these symbols.
+_STEP_PLAN_STATE_PATH = config.MEMORY_DIR / "step_plan_state.json"
+_SCOPE_SNAPSHOT_PATH = config.MEMORY_DIR / "scope_snapshot.json"
+_STEP_PLAN_FILE_PATTERN = re.compile(r"^(\d+)\s*-\s*.+\.md$", re.IGNORECASE)
+_STEP_PLAN_AUTO_TRIGGER_RE = re.compile(r"\bcontinue\b.*\bplan\b", re.IGNORECASE)
+_STEP_PLAN_PATH_HINT_RE = re.compile(r"(/[^\n]*Ouroboros Improvement Plan[^\n]*)")
+_STEP_PLAN_FALLBACK_PATHS = (
+    "/home/claude-developer/syncthing/data/syncthing-main/Obsidian/DefaultObsidianVault/"
+    "Projects/Iron Lady Assistant/Ouroboros Improvement Plan",
+)
+_STEP_PLAN_AUTORESUME_FAILURE_THRESHOLD = 2
+_STEP_PLAN_AUTORESUME_BLOCK_MINUTES = 30
+_MIDFLIGHT_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+_APPLIED_CHECK_RE = re.compile(r"^\s*Applied:\s*\[(x|X)\]\s*$", re.IGNORECASE | re.MULTILINE)
+_NUMBER_WORDS = {
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+}
 
 
 def _get_state(chat_id: int) -> _ChatState:
@@ -1664,7 +1695,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                             final_response.session_id,
                             final_response.cost_usd,
                         )
-                        chunks = ["(empty response)"]
+                        chunks = [_EMPTY_RESPONSE_FALLBACK_TEXT]
 
                 for chunk in chunks:
                     if not chunk.strip():
