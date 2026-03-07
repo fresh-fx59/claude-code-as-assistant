@@ -150,6 +150,8 @@ class TestModelCommand:
 
     async def test_model_with_arg_sets_model(self, mock_message):
         """Should set model when argument provided."""
+        from src.bot import provider_manager
+        provider_manager.set_provider(123456789, "claude")
         mock_message.text = "/model opus"
 
         await cmd_model(mock_message)
@@ -162,7 +164,9 @@ class TestModelCommand:
 
     async def test_model_all_valid_models(self, mock_message):
         """All valid models should be accepted."""
+        from src.bot import provider_manager
         from src.bot import session_manager
+        provider_manager.set_provider(123456789, "claude")
 
         for model in VALID_MODELS:
             expected_calls = mock_message.answer.call_count
@@ -173,6 +177,8 @@ class TestModelCommand:
 
     async def test_model_without_arg_shows_current(self, mock_message):
         """Should show current model when no argument."""
+        from src.bot import provider_manager
+        provider_manager.set_provider(123456789, "claude")
         mock_message.text = "/model"
         from src.bot import session_manager
 
@@ -209,6 +215,8 @@ class TestStatusCommand:
 
     async def test_status_shows_session_id(self, mock_message):
         """Should show session ID or 'none' for new conversation."""
+        from src.bot import provider_manager
+        provider_manager.set_provider(123456789, "claude")
         mock_message.text = "/status"
         from src.bot import session_manager
         session_manager.update_session_id(123456789, "sess-123")
@@ -234,6 +242,8 @@ class TestStatusCommand:
 
     async def test_status_shows_model(self, mock_message):
         """Should show current model."""
+        from src.bot import provider_manager
+        provider_manager.set_provider(123456789, "claude")
         mock_message.text = "/status"
         from src.bot import session_manager
         session_manager.set_model(123456789, "opus")

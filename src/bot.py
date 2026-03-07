@@ -1406,15 +1406,15 @@ async def _run_codex(
     state.process_handle = {}
 
     # Build memory and tool-augmented prompt
-    raw_prompt = override_text or message.text or ""
+    raw_prompt = _as_text(override_text) or _as_text(getattr(message, "text", None))
     memory_context = memory_manager.build_context(raw_prompt)
     tool_context = context_plugins.build_context(raw_prompt)
     memory_instructions = memory_manager.build_instructions()
 
     prompt_parts = []
-    if memory_context:
+    if isinstance(memory_context, str) and memory_context:
         prompt_parts.append(memory_context)
-    if tool_context:
+    if isinstance(tool_context, str) and tool_context:
         prompt_parts.append(tool_context)
     prompt_parts.append(raw_prompt + memory_instructions)
 
