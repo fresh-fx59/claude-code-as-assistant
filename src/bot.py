@@ -75,6 +75,7 @@ _CODEX_TRANSIENT_ERROR_PATTERNS = (
 )
 _AUDIO_AS_VOICE_TAG_RE = re.compile(r"\[\[\s*audio_as_voice\s*\]\]", re.IGNORECASE)
 _MEDIA_LINE_RE = re.compile(r"^\s*MEDIA:\s*(.+?)\s*$", re.IGNORECASE)
+_USE_TOOL_LINE_RE = re.compile(r"^\s*USE_TOOL:\s*[A-Za-z0-9_.-]+\s*$", re.IGNORECASE | re.MULTILINE)
 _VOICE_COMPATIBLE_EXTENSIONS = {".ogg", ".opus", ".mp3", ".m4a"}
 _AUDIO_EXTENSIONS = _VOICE_COMPATIBLE_EXTENSIONS | {".wav", ".aac", ".flac"}
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -271,6 +272,9 @@ def _extract_media_directives(text: str) -> tuple[str, list[str], bool]:
     return cleaned_text, media_refs, audio_as_voice
 
 
+def _strip_tool_directive_lines(text: str) -> str:
+    stripped = _USE_TOOL_LINE_RE.sub("", text or "")
+    return "\n".join(line for line in (ln.strip() for ln in stripped.splitlines()) if line).strip()
 def _default_timezone_name() -> str:
     profile_path = config.MEMORY_DIR / "user_profile.yaml"
     try:
@@ -1786,8 +1790,9 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 await message.answer(error_text, reply_markup=reply_markup)
                 await progress.finish()
             else:
-                clean_text, media_refs, audio_as_voice = _extract_media_directives(final_response.text or "")
-
+                raw_response_text = final_response.text or ""
+                clean_text, media_refs, audio_as_voice = _extract_media_directives(raw_response_text)
+                clean_text = _strip_tool_directive_lines(clean_text)
                 for media_ref in media_refs:
                     media_input = _resolve_media_input(media_ref)
                     try:
