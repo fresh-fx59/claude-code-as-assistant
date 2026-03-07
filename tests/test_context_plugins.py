@@ -180,3 +180,12 @@ def test_real_summarize_manifest_is_model_agnostic() -> None:
     assert 'openai/gpt-5.2' not in instructions
     assert "--model <provider/model>" in instructions
     assert '{ "model": "<provider/model>" }' in instructions
+
+
+def test_summary_inspector_manifest_points_to_single_command() -> None:
+    manifest_path = Path(__file__).resolve().parents[1] / "tools" / "summary-inspector.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+
+    assert manifest["tier"] == "core"
+    assert "last summarization" in manifest["triggers"]
+    assert "python -m src.summary_inspector_tool latest --format json" in manifest["instructions"]

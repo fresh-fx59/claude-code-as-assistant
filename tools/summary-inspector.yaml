@@ -1,0 +1,26 @@
+name: summary-inspector
+description: Retrieve the latest stored conversation summarization plus linked worklog commits and files in one command.
+tier: core
+triggers:
+  - last summarization
+  - latest summarization
+  - last summary
+  - latest summary
+  - recent summary
+  - latest reflection
+instructions: |
+  # Summary Inspector
+
+  Use this tool when the user asks what the most recent stored summary/reflection says.
+
+  Command:
+  - `python -m src.summary_inspector_tool latest --format json`
+
+  Returns:
+  - latest episode timestamp and summary
+  - topics, decisions, entities
+  - linked worklog session metadata when available
+  - linked commits and changed files when available
+
+  Prefer this tool over ad hoc SQLite/bash inspection for "latest summary" questions.
+setup: "Ensure python module is available: python -m src.summary_inspector_tool --help"

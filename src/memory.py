@@ -1215,6 +1215,108 @@ class MemoryManager:
         finally:
             con.close()
 
+    def latest_episode_details(self) -> dict[str, object] | None:
+        """Return the newest episode with any linked worklog session, commits, and files."""
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            episode = con.execute(
+                "SELECT * FROM episodes ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+            if episode is None:
+                return None
+
+            episode_id = int(episode["id"])
+            worklog = con.execute(
+                """
+                SELECT *
+                FROM worklog_sessions
+                WHERE episode_id = ?
+                ORDER BY COALESCE(closed_at, last_seen_at, started_at) DESC, id DESC
+                LIMIT 1
+                """,
+                (episode_id,),
+            ).fetchone()
+
+            commits: list[dict[str, object]] = []
+            files: list[dict[str, object]] = []
+            if worklog is not None:
+                commit_rows = con.execute(
+                    """
+                    SELECT id, commit_sha, short_sha, subject, repo_path, branch, authored_at, committed_at
+                    FROM worklog_commits
+                    WHERE worklog_session_id = ?
+                    ORDER BY COALESCE(committed_at, authored_at) DESC, id DESC
+                    """,
+                    (int(worklog["id"]),),
+                ).fetchall()
+                for commit in commit_rows:
+                    file_rows = con.execute(
+                        """
+                        SELECT path, additions, deletions
+                        FROM worklog_files
+                        WHERE worklog_commit_id = ?
+                        ORDER BY path ASC
+                        """,
+                        (int(commit["id"]),),
+                    ).fetchall()
+                    file_items = [
+                        {
+                            "path": file_row["path"],
+                            "additions": file_row["additions"],
+                            "deletions": file_row["deletions"],
+                        }
+                        for file_row in file_rows
+                    ]
+                    files.extend(file_items)
+                    commits.append(
+                        {
+                            "commit_sha": commit["commit_sha"],
+                            "short_sha": commit["short_sha"],
+                            "subject": commit["subject"],
+                            "repo_path": commit["repo_path"],
+                            "branch": commit["branch"],
+                            "authored_at": commit["authored_at"],
+                            "committed_at": commit["committed_at"],
+                            "files": file_items,
+                        }
+                    )
+
+            return {
+                "episode": {
+                    "id": episode_id,
+                    "chat_id": episode["chat_id"],
+                    "timestamp": episode["timestamp"],
+                    "summary": episode["summary"],
+                    "topics": json.loads(episode["topics"] or "[]"),
+                    "decisions": json.loads(episode["decisions"] or "[]"),
+                    "entities": json.loads(episode["entities"] or "[]"),
+                },
+                "worklog": (
+                    {
+                        "worklog_session_id": int(worklog["id"]),
+                        "scope_key": worklog["scope_key"],
+                        "provider": worklog["provider"],
+                        "session_type": worklog["session_type"],
+                        "session_id": worklog["session_id"],
+                        "topic_label": worklog["topic_label"],
+                        "topic_started_at": worklog["topic_started_at"],
+                        "repo_path": worklog["repo_path"],
+                        "branch": worklog["branch"],
+                        "started_at": worklog["started_at"],
+                        "closed_at": worklog["closed_at"],
+                        "last_seen_at": worklog["last_seen_at"],
+                        "commits": commits,
+                        "files": files,
+                    }
+                    if worklog is not None
+                    else None
+                ),
+            }
+        finally:
+            con.close()
+
     def _extract_keywords(self, text: str) -> list[str]:
         """Extract non-stop-word keywords from text for FTS5 search."""
         words = []
