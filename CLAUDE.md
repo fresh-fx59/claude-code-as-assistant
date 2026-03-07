@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.19.25`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.19.26`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -380,14 +380,14 @@ Persistent, global memory that makes the assistant smarter over time. Layered ar
 | Layer | Storage | Description |
 |-------|---------|-------------|
 | **Core** | `memory/user_profile.yaml` | User profile: name, timezone, communication style, languages |
-| **Semantic** | `memory/user_profile.yaml` | Facts with confidence scores (0.0–1.0), source (explicit/inferred), date |
+| **Semantic** | `memory/user_profile.yaml` | Typed facts with confidence scores (0.0–1.0), source (explicit/inferred), date |
 | **Episodic** | `memory/episodes.db` | Conversation summaries in SQLite with FTS5 full-text search |
 | **Working** | In-context (`--resume`) | Current session state, handled by Claude Code natively |
 
 ### How it works
 
-1. **Before each message**: `MemoryManager.build_context()` reads YAML profile + searches SQLite FTS5 by keywords from the user's message, builds an XML `<memory>` block prepended to the prompt
-2. **Memory instructions**: Absolute path to `user_profile.yaml` is appended so Claude can edit it directly with its file tools
+1. **Before each message**: `MemoryManager.build_context()` reads YAML profile + selects relevant typed facts by keyword match, then searches SQLite FTS5 by keywords from the user's message
+2. **Memory instructions**: Absolute path to `user_profile.yaml` is appended so Claude edits YAML directly (without shell parsing commands)
 3. **REMEMBER/FORGET**: Claude updates the YAML file naturally — no special command parsing needed
 4. **REFLECT**: On `/new`, a background haiku call summarizes the conversation and stores it as an episode in SQLite
 5. **RECALL**: FTS5 keyword search against the user's message surfaces relevant past episodes
@@ -398,7 +398,9 @@ Persistent, global memory that makes the assistant smarter over time. Layered ar
 <memory>
 <core>Name: Alice / Timezone: UTC+3 / Style: concise technical</core>
 <relevant_facts>
+[project]
 - main_project: telegram-claude-bot
+[preference]
 - preferred_model: opus
 </relevant_facts>
 <recent_episodes>
@@ -415,6 +417,10 @@ Your profile + facts file: /absolute/path/to/memory/user_profile.yaml
 ### Configuration
 
 - `MEMORY_DIR` env var (default: `memory/` relative to working directory)
+- Facts use schema: `key`, `value`, `type`, `confidence`, `source`, `updated`, `status`, `deleted_at`
+- Supported fact types: `identity`, `preference`, `workflow`, `infrastructure`, `communication`, `project`, `operation`, `tooling`, `schedule`, `misc`
+- Optional CLI for structured edits: `python -m src.memory_tool list|upsert|delete|reclassify`
+- `upsert --mode append|replace` controls add-vs-replace behavior; `delete` performs soft-delete
 - Facts with confidence < 0.6 are stored but not injected into context
 - Episode search returns top 5 FTS5 matches, falls back to most recent if no keyword match
 

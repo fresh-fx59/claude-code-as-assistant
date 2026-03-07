@@ -1,0 +1,39 @@
+name: memory-manager
+description: Structured management of persistent memory facts (list/upsert/delete/reclassify) without ad-hoc shell parsing.
+tier: core
+triggers:
+- memory
+- remember
+- forget
+- user profile
+- fact
+- facts
+- persistent memory
+- memory type
+instructions: |
+  # Memory Manager
+
+  Use this tool for structured edits of `memory/user_profile.yaml`.
+  Prefer this tool over manual `bash` parsing commands.
+
+  Command:
+  - `python -m src.memory_tool <subcommand> [flags]`
+
+  Subcommands:
+  - `list --type <fact_type> --min-confidence 0.6 [--include-deleted]`
+  - `upsert --key <key> --value <value> --type <fact_type> --mode replace|append --confidence 1.0 --source explicit`
+  - `delete --key <key> [--value <value>]` (soft-delete)
+  - `reclassify`
+
+  Fact schema:
+  - `key`, `value`, `type`, `confidence`, `source`, `updated`
+  - Supported types: `identity`, `preference`, `workflow`, `infrastructure`, `communication`, `project`, `operation`, `tooling`, `schedule`, `misc`
+
+  Typical flow:
+  1. Read current facts with `list`
+  2. Use `upsert --mode append` to add another value for key, or `upsert --mode replace` to replace active value(s)
+  3. Use `delete` to soft-delete without data loss
+  4. If taxonomy drifted, run `reclassify`
+  5. Confirm with `list`
+
+setup: 'Ensure python module is available: python -m src.memory_tool --help'
