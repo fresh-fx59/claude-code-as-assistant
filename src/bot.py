@@ -1,5 +1,5 @@
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import html
 import inspect
 import json
@@ -22,7 +22,7 @@ from aiogram.exceptions import TelegramAPIError
 
 from . import bridge, config, metrics, transcribe
 from .core.context_plugins import ContextPluginRegistry
-from .sessions import SessionManager, make_scope_key
+from .sessions import ChatSession, SessionManager, make_scope_key
 from .formatter import markdown_to_html, split_message, strip_html
 from .features.state_store import ResumeStateStore
 from .memory import MemoryManager
@@ -490,6 +490,12 @@ def _current_model_label(session: object, provider) -> str:
     return session.model
 
 
+def _provider_session_id(session: object, provider) -> str | None:
+    if _is_codex_family_cli(getattr(provider, "cli", None)):
+        return getattr(session, "codex_session_id", None)
+    return getattr(session, "claude_session_id", None)
+
+
 def _model_options(provider) -> list[str]:
     if _is_codex_family_cli(provider.cli):
         return provider.models or ["default"]
@@ -525,6 +531,30 @@ def _codex_task_model(session: object, provider) -> str:
 def _codex_working_dir() -> str:
     """Run Codex from user home so it can access files under that tree."""
     return str(Path.home())
+
+
+def _reflection_stream(session: object, provider: object, prompt: str):
+    """Return a backend-specific reflection stream for the active provider."""
+    session_id = _provider_session_id(session, provider)
+    if not session_id:
+        return None
+    if _is_codex_family_cli(getattr(provider, "cli", None)):
+        return bridge.stream_codex_message(
+            prompt=prompt,
+            session_id=session_id,
+            model=_codex_model_arg(session, provider),
+            resume_arg=getattr(provider, "resume_arg", None),
+            cli_name=getattr(provider, "cli", "codex"),
+            working_dir=_codex_working_dir(),
+            subprocess_env=provider_manager.subprocess_env(provider),
+        )
+    return bridge.stream_message(
+        prompt=prompt,
+        session_id=session_id,
+        model="haiku",
+        working_dir=config.CLAUDE_WORKING_DIR,
+        subprocess_env=provider_manager.subprocess_env(provider),
+    )
 
 
 @router.message(CommandStart())
@@ -590,34 +620,45 @@ async def cmd_new(message: Message) -> None:
     thread_id = _thread_id(message)
     scope_key = _scope_key(chat_id, thread_id)
     session = session_manager.get(chat_id, thread_id)
-    if session.claude_session_id and os.getenv("DISABLE_REFLECTION") != "1":
-        asyncio.create_task(_reflect(chat_id, session))
+    provider = provider_manager.get_provider(scope_key)
+    if (
+        os.getenv("DISABLE_REFLECTION") != "1"
+        and (session.claude_session_id or session.codex_session_id)
+    ):
+        reflection_session: ChatSession = replace(session)
+        asyncio.create_task(_reflect(chat_id, reflection_session, provider))
     session_manager.new_conversation(chat_id, thread_id)
     session_manager.new_codex_conversation(chat_id, thread_id)
     _clear_errors(scope_key)
     await message.answer("Conversation cleared. Send a message to start fresh.")
 
 
-async def _reflect(chat_id: int, session: object) -> None:
-    """Background: ask Claude to summarize the conversation, store as episode."""
+def _parse_reflection_payload(text: str) -> dict[str, object]:
+    """Parse a JSON reflection payload, tolerating fenced wrappers."""
+    clean = text.strip()
+    if clean.startswith("```"):
+        clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return json.loads(clean)
+
+
+async def _reflect(chat_id: int, session: object, provider: object) -> None:
+    """Background: summarize the active conversation and store it as an episode."""
     try:
         reflect_prompt = (
             "Summarize this conversation concisely. Output ONLY valid JSON, no markdown:\n"
             '{"summary": "one-sentence summary", "topics": ["topic1"], '
             '"decisions": ["decision1"], "entities": ["entity1"]}'
         )
-        async for event in bridge.stream_message(
-            prompt=reflect_prompt,
-            session_id=session.claude_session_id,
-            model="haiku",
-            working_dir=config.CLAUDE_WORKING_DIR,
-        ):
+        stream = _reflection_stream(session, provider, reflect_prompt)
+        if stream is None:
+            return
+
+        async for event in stream:
             if event.event_type == bridge.StreamEventType.RESULT and event.response:
-                text = event.response.text.strip()
-                # Strip markdown code fences if present
-                if text.startswith("```"):
-                    text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                data = json.loads(text)
+                if event.response.is_error:
+                    logger.warning("Chat %d: reflection returned error: %s", chat_id, event.response.text[:200])
+                    return
+                data = _parse_reflection_payload(event.response.text)
                 memory_manager.add_episode(
                     chat_id=chat_id,
                     summary=data.get("summary", ""),

@@ -389,7 +389,7 @@ Persistent, global memory that makes the assistant smarter over time. Layered ar
 1. **Before each message**: `MemoryManager.build_context()` reads YAML profile + selects relevant typed facts by keyword match, then searches SQLite FTS5 by keywords from the user's message
 2. **Memory instructions**: Absolute path to `user_profile.yaml` is appended so Claude edits YAML directly (without shell parsing commands)
 3. **REMEMBER/FORGET**: Claude updates the YAML file naturally — no special command parsing needed
-4. **REFLECT**: On `/new`, a background haiku call summarizes the conversation and stores it as an episode in SQLite
+4. **REFLECT**: On `/new`, a background reflection resumes the active provider session, summarizes the conversation, and stores it as an episode in SQLite. Claude-compatible providers use the provider env; Codex-family providers resume via their Codex session.
 5. **RECALL**: FTS5 keyword search against the user's message surfaces relevant past episodes
 
 ### Context injection format

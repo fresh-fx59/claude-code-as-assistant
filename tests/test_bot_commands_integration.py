@@ -28,6 +28,7 @@ from src.bot import (
     _command_args,
     _is_authorized,
     _is_transient_codex_error,
+    _reflect,
     _run_codex_with_retries,
     VALID_MODELS,
 )
@@ -134,6 +135,37 @@ class TestNewCommand:
         mock_message.answer.assert_called_once()
         assert "cleared" in mock_message.answer.call_args[0][0].lower()
 
+    async def test_new_reflects_codex_session(self, mock_message, monkeypatch):
+        """Codex-backed conversations should still be summarized on /new."""
+        mock_message.text = "/new"
+        from src.bot import cmd_new, provider_manager, session_manager
+
+        monkeypatch.setenv("DISABLE_REFLECTION", "0")
+        session_manager.update_codex_session_id(123456789, "codex-session")
+        provider_manager.set_provider("123456789:main", "codex")
+
+        reflect_calls: list[tuple[int, str, str]] = []
+
+        async def fake_reflect(chat_id, session, provider):
+            reflect_calls.append((chat_id, session.codex_session_id, provider.name))
+
+        monkeypatch.setattr("src.bot._reflect", fake_reflect)
+
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            return coro
+
+        monkeypatch.setattr("src.bot.asyncio.create_task", fake_create_task)
+
+        await cmd_new(mock_message)
+        await scheduled[0]
+
+        assert reflect_calls == [(123456789, "codex-session", "codex")]
+        session = session_manager.get(123456789)
+        assert session.codex_session_id is None
+
     async def test_new_with_bot_mention_confirms_action(self, mock_message):
         """Bot mention variant should behave like /new."""
         mock_message.text = "/new@iron_lady_assistant_bot"
@@ -142,6 +174,86 @@ class TestNewCommand:
 
         mock_message.answer.assert_called_once()
         assert "cleared" in mock_message.answer.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+class TestReflectionProviderSelection:
+    async def test_reflect_uses_codex_stream_for_codex_provider(self, monkeypatch):
+        from src import bridge
+        from src.bot import provider_manager, session_manager
+
+        provider = provider_manager.set_provider("123456789:main", "codex")
+        session = session_manager.get(123456789)
+        session.codex_session_id = "codex-session"
+
+        captured = {}
+
+        async def fake_stream_codex_message(**kwargs):
+            captured.update(kwargs)
+            yield bridge.StreamEvent(
+                event_type=bridge.StreamEventType.RESULT,
+                response=bridge.ClaudeResponse(
+                    text='{"summary":"done","topics":["codex"],"decisions":[],"entities":[]}',
+                    session_id="codex-session",
+                    is_error=False,
+                    cost_usd=0,
+                ),
+            )
+
+        monkeypatch.setattr("src.bot.bridge.stream_codex_message", fake_stream_codex_message)
+        monkeypatch.setattr("src.bot.bridge.stream_message", AsyncMock())
+
+        added = []
+
+        def fake_add_episode(**kwargs):
+            added.append(kwargs)
+
+        monkeypatch.setattr("src.bot.memory_manager.add_episode", fake_add_episode)
+
+        await _reflect(123456789, session, provider)
+
+        assert captured["session_id"] == "codex-session"
+        assert captured["cli_name"] == "codex"
+        assert added[0]["summary"] == "done"
+
+    async def test_reflect_uses_provider_env_for_claude_compatible_provider(self, monkeypatch):
+        from src import bridge
+        from src.bot import provider_manager, session_manager
+
+        provider = provider_manager.set_provider("123456789:main", "glm4.7")
+        session = session_manager.get(123456789)
+        session.claude_session_id = "glm-session"
+
+        captured = {}
+
+        async def fake_stream_message(**kwargs):
+            captured.update(kwargs)
+            yield bridge.StreamEvent(
+                event_type=bridge.StreamEventType.RESULT,
+                response=bridge.ClaudeResponse(
+                    text='{"summary":"done","topics":["glm"],"decisions":[],"entities":[]}',
+                    session_id="glm-session",
+                    is_error=False,
+                    cost_usd=0,
+                ),
+            )
+
+        monkeypatch.setattr("src.bot.bridge.stream_message", fake_stream_message)
+        monkeypatch.setattr("src.bot.bridge.stream_codex_message", AsyncMock())
+
+        added = []
+
+        def fake_add_episode(**kwargs):
+            added.append(kwargs)
+
+        monkeypatch.setattr("src.bot.memory_manager.add_episode", fake_add_episode)
+
+        await _reflect(123456789, session, provider)
+
+        assert captured["session_id"] == "glm-session"
+        assert captured["model"] == "haiku"
+        assert captured["subprocess_env"]["ANTHROPIC_BASE_URL"] == "http://0.0.0.0:4000"
+        assert added[0]["topics"] == ["glm"]
 
     async def test_new_unauthorized_no_response(self, mock_message):
         """Unauthorized user should get no response."""
