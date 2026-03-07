@@ -102,6 +102,10 @@ _VOICE_REQUEST_RE = re.compile(
     r"(?:\bvoice(?:\s*note)?\b|\bvoice\s*reply\b|войс|голос(?:ом|овое|овой)?|аудиосообщени[ея])",
     re.IGNORECASE,
 )
+_FEMALE_VOICE_REQUEST_RE = re.compile(
+    r"(?:женск(?:им|ий|ая|ое)\s+голос(?:ом)?|female\s+voice|woman(?:'s)?\s+voice)",
+    re.IGNORECASE,
+)
 _VOICE_INTERFACE_LIMITATION_RE = re.compile(
     r"(?:не могу(?:\s+физически)?[^\n]{0,120}интерфейс|"
     r"can(?:not|'t)(?:\s+physically)?[^\n]{0,120}interface)",
@@ -1810,6 +1814,12 @@ def _wants_voice_reply(text: str) -> bool:
     if not text:
         return False
     return bool(_VOICE_REQUEST_RE.search(text))
+
+
+def _prefers_female_voice(text: str) -> bool:
+    if not text:
+        return False
+    return bool(_FEMALE_VOICE_REQUEST_RE.search(text))
 
 
 def _voice_reply_language_hint(raw_prompt: str) -> str:
@@ -3543,6 +3553,7 @@ async def _handle_message_inner(
         run_generation = state.reset_generation
         raw_prompt = override_text or message.text or ""
         request_voice_reply = request_voice_reply or _wants_voice_reply(raw_prompt)
+        prefer_female_voice = request_voice_reply and _prefers_female_voice(raw_prompt)
         if request_voice_reply:
             raw_prompt = f"{raw_prompt}{_voice_reply_language_hint(raw_prompt)}"
 
@@ -3774,6 +3785,7 @@ async def _handle_message_inner(
                     clean_text=clean_text,
                     media_refs=media_refs,
                     request_voice_reply=request_voice_reply,
+                    prefer_female_voice=prefer_female_voice,
                 )
                 await _send_media_refs(message, media_refs, audio_as_voice)
                 if generated_voice_path:
@@ -4005,6 +4017,7 @@ async def _maybe_add_local_tts_media(
     clean_text: str,
     media_refs: list[str],
     request_voice_reply: bool,
+    prefer_female_voice: bool = False,
 ) -> tuple[list[str], str | None]:
     if not request_voice_reply:
         return media_refs, None
@@ -4015,7 +4028,7 @@ async def _maybe_add_local_tts_media(
         return media_refs, None
 
     try:
-        voice_path = await tts.synthesize_voice(clean_text)
+        voice_path = await tts.synthesize_voice(clean_text, prefer_female=prefer_female_voice)
         # Ensure voice bubble delivery has priority over other media.
         return [voice_path, *media_refs], voice_path
     except Exception:

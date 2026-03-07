@@ -20,6 +20,8 @@ TTS_BIN: str = os.getenv(
 TTS_VOICE: str = os.getenv("LOCAL_TTS_VOICE", "auto")
 TTS_VOICE_CYRILLIC: str = os.getenv("LOCAL_TTS_VOICE_CYRILLIC", "ru")
 TTS_VOICE_LATIN: str = os.getenv("LOCAL_TTS_VOICE_LATIN", "en")
+TTS_VOICE_CYRILLIC_FEMALE: str = os.getenv("LOCAL_TTS_VOICE_CYRILLIC_FEMALE", "ru+f3")
+TTS_VOICE_LATIN_FEMALE: str = os.getenv("LOCAL_TTS_VOICE_LATIN_FEMALE", "en+f3")
 TTS_SPEED: str = os.getenv("LOCAL_TTS_SPEED_WPM", "220")
 TTS_SPEED_CYRILLIC: str = os.getenv("LOCAL_TTS_SPEED_WPM_CYRILLIC", "170")
 TTS_SPEED_LATIN: str = os.getenv("LOCAL_TTS_SPEED_WPM_LATIN", TTS_SPEED)
@@ -129,13 +131,15 @@ def _prepare_spoken_text(text: str) -> str:
     return spoken_text
 
 
-def _select_voice(spoken_text: str) -> str:
+def _select_voice(spoken_text: str, *, prefer_female: bool = False) -> str:
     manual = (TTS_VOICE or "").strip()
     if manual and manual.lower() != "auto":
         return manual
     cyr = len(_CYRILLIC_RE.findall(spoken_text))
     lat = len(_LATIN_RE.findall(spoken_text))
-    return TTS_VOICE_CYRILLIC if cyr > lat else TTS_VOICE_LATIN
+    if cyr > lat:
+        return TTS_VOICE_CYRILLIC_FEMALE if prefer_female else TTS_VOICE_CYRILLIC
+    return TTS_VOICE_LATIN_FEMALE if prefer_female else TTS_VOICE_LATIN
 
 
 def _select_speed(spoken_text: str) -> str:
@@ -277,7 +281,7 @@ async def _convert_wav_to_ogg(wav_path: Path, ogg_path: Path) -> tuple[int, str]
     return ffmpeg_proc.returncode, ffmpeg_stderr.decode(errors="ignore")
 
 
-async def synthesize_voice(text: str) -> str:
+async def synthesize_voice(text: str, *, prefer_female: bool = False) -> str:
     """Synthesize text to OGG/Opus suitable for Telegram sendVoice."""
     spoken_text = _prepare_spoken_text(text)
     if not spoken_text:
@@ -297,7 +301,7 @@ async def synthesize_voice(text: str) -> str:
             )
         )
 
-        selected_voice = _select_voice(spoken_text)
+        selected_voice = _select_voice(spoken_text, prefer_female=prefer_female)
         selected_speed = _select_speed(spoken_text)
         attempts: list[tuple[str, str, str]] = []
         seen: set[tuple[str, str, str]] = set()
@@ -309,10 +313,17 @@ async def synthesize_voice(text: str) -> str:
                 attempts.append(key)
 
         cyrillic_text = _is_cyrillic_dominant(spoken_text)
+        if prefer_female and cyrillic_text:
+            add_attempt("espeak", TTS_VOICE_CYRILLIC_FEMALE, selected_speed)
+            try:
+                female_slower_speed = str(max(120, int(selected_speed) - 20))
+            except ValueError:
+                female_slower_speed = "150"
+            add_attempt("espeak", TTS_VOICE_CYRILLIC_FEMALE, female_slower_speed)
         if use_sherpa:
             add_attempt("sherpa")
         # Keep Russian quality stable: avoid espeak fallback unless sherpa is unavailable or strict mode disabled.
-        allow_espeak_attempts = not (
+        allow_espeak_attempts = prefer_female or not (
             TTS_STRICT_CYRILLIC_QUALITY
             and cyrillic_text
             and use_sherpa

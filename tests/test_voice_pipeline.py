@@ -5,6 +5,7 @@ import pytest
 from src.bot import (
     _extract_media_directives,
     _maybe_add_local_tts_media,
+    _prefers_female_voice,
     _sanitize_voice_capability_text,
     _send_media_refs,
     _voice_reply_language_hint,
@@ -44,6 +45,14 @@ def test_wants_voice_reply_detects_english_prompt():
 
 def test_wants_voice_reply_ignores_regular_text():
     assert not _wants_voice_reply("send text answer")
+
+
+def test_prefers_female_voice_detects_russian_prompt():
+    assert _prefers_female_voice("пришли голосовое женским голосом")
+
+
+def test_prefers_female_voice_detects_english_prompt():
+    assert _prefers_female_voice("send voice reply with female voice")
 
 
 def test_voice_reply_language_hint_prefers_russian_for_cyrillic_prompt():
@@ -120,18 +129,21 @@ async def test_send_media_refs_falls_back_to_audio_when_voice_fails():
 
 @pytest.mark.asyncio
 async def test_maybe_add_local_tts_media_for_voice_request():
+    synth_mock = AsyncMock(return_value="/tmp/ila_tts/speech.ogg")
     with (
         patch("src.bot.tts.is_available", return_value=True),
-        patch("src.bot.tts.synthesize_voice", new=AsyncMock(return_value="/tmp/ila_tts/speech.ogg")),
+        patch("src.bot.tts.synthesize_voice", new=synth_mock),
     ):
         media_refs, generated = await _maybe_add_local_tts_media(
             clean_text="Voice response text",
             media_refs=["https://example.com/plot.png"],
             request_voice_reply=True,
+            prefer_female_voice=True,
         )
 
     assert generated == "/tmp/ila_tts/speech.ogg"
     assert media_refs == ["/tmp/ila_tts/speech.ogg", "https://example.com/plot.png"]
+    synth_mock.assert_awaited_once_with("Voice response text", prefer_female=True)
 
 
 @pytest.mark.asyncio

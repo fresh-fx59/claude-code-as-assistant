@@ -29,6 +29,12 @@ def test_select_voice_prefers_latin(monkeypatch) -> None:
     assert tts._select_voice("This is a test sentence in English") == "en"
 
 
+def test_select_voice_prefers_female_cyrillic(monkeypatch) -> None:
+    monkeypatch.setattr(tts, "TTS_VOICE", "auto")
+    monkeypatch.setattr(tts, "TTS_VOICE_CYRILLIC_FEMALE", "ru+f3")
+    assert tts._select_voice("Это тест русского текста", prefer_female=True) == "ru+f3"
+
+
 def test_select_speed_prefers_cyrillic(monkeypatch) -> None:
     monkeypatch.setattr(tts, "TTS_SPEED_CYRILLIC", "170")
     monkeypatch.setattr(tts, "TTS_SPEED_LATIN", "220")
