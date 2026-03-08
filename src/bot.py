@@ -2161,12 +2161,12 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                         provider.resume_arg,
                         env,
                         provider.cli,
-                        override_text=turn_prompt,
+                        override_text=effective_prompt,
                     )
                 else:
                     final_response = await _run_claude(
                         message, state, session, progress, env,
-                        override_text=turn_prompt,
+                        override_text=effective_prompt,
                     )
 
                 # ── Fallback on provider errors ───────────────────────
@@ -2219,12 +2219,12 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                                 next_provider.resume_arg,
                                 env,
                                 next_provider.cli,
-                                override_text=turn_prompt,
+                                override_text=effective_prompt,
                             )
                         else:
                             final_response = await _run_claude(
                                 message, state, session, progress, env,
-                                override_text=turn_prompt,
+                                override_text=effective_prompt,
                             )
 
                 requested_tools = ToolRegistry.extract_requested_tools(
@@ -2243,10 +2243,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                         selected_tool,
                     )
                     await progress.report_tool("tool_selector", selected_tool)
-                    forced_prompt = _inject_tool_request(
-                        turn_prompt or message.text or "",
-                        selected_tool,
-                    )
+                    forced_prompt = _inject_tool_request(effective_prompt, selected_tool)
                     if _is_codex_family_cli(provider.cli):
                         codex_model = _codex_model_arg(session, provider)
                         retry_response = await _run_codex_with_retries(
