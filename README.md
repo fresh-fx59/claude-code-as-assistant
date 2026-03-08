@@ -69,6 +69,10 @@ The wizard walks you through everything step by step:
 
 That's it. Your bot is running.
 
+## Generic Mobile App Automation MVP
+
+If you need server-side Android app automation (for Ozon or other apps), use the reusable package in [`mobile-automation/`](/home/claude-developer/iron-lady-assistant/mobile-automation/README.md) and the runbook in [`docs/mobile-automation-mvp.md`](/home/claude-developer/iron-lady-assistant/docs/mobile-automation-mvp.md).
+
 ### Alternative: Manual Setup
 
 If you prefer to configure things yourself:
