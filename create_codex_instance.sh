@@ -7,9 +7,14 @@ usage() {
   echo "Example with shared gh auth: $0 codex2 /usr/local/bin/codex2 --share-gh-config"
 }
 
-if [ $# -lt 1 ]; then
+if [ $# -eq 0 ]; then
   usage
   exit 1
+fi
+
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+  usage
+  exit 0
 fi
 
 INSTANCE_NAME="$1"
