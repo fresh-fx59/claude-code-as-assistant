@@ -9,6 +9,12 @@ This folder provides a reusable server-side stack for Android app automation wit
 
 The setup is app-agnostic. Ozon is included as an example profile only.
 
+## Hard requirement
+
+This setup requires a **KVM-capable VPS/host** for stable Android emulator automation.
+Without KVM (nested virtualization), emulator boot is slow/unstable and not suitable for reliable Appium flows.
+If KVM is unavailable, use an external browser/device farm instead of local emulator execution.
+
 ## 1) Install host prerequisites (Ubuntu/Debian)
 
 ```bash

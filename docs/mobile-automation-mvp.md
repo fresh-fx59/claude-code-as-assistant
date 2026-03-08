@@ -2,6 +2,12 @@
 
 This implementation translates the Ozon MVP plan into a generic setup that can automate other Android apps with minimal changes.
 
+## Prerequisite
+
+Use a **KVM-capable VPS/host**.
+Without KVM/nested virtualization, emulator-based automation is typically too unstable for production use.
+If your host cannot provide KVM, run this workflow in an external browser/device farm instead.
+
 ## What is included
 
 - `mobile-automation/scripts/install_host.sh`: Linux dependencies + KVM checks
