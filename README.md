@@ -100,7 +100,7 @@ Open Telegram, find your bot by its username, and start chatting.
 
 Just send any text message and the bot will respond using the currently selected provider.
 
-For voice messages, the bot now shows live transcription progress immediately after upload, retries progress delivery if Telegram returns `retry after`, then switches the live progress message into audio-conversion mode during TTS generation, keeps that conversion timer pinned instead of reverting to generic `Working...`, falls back to a fresh progress message if Telegram rate-limits edits, and keeps a final conversion-time message in chat after the audio is sent.
+For voice messages, the bot now shows live transcription progress immediately after upload, leaves a final transcription-time summary in chat before the LLM `Working...` phase starts, retries progress delivery if Telegram returns `retry after`, then switches the live progress message into audio-conversion mode during TTS generation, keeps that conversion timer pinned instead of reverting to generic `Working...`, falls back to a fresh progress message if Telegram rate-limits edits, and keeps a final conversion-time message in chat after the audio is sent.
 
 ## Codex Instance Helper
 

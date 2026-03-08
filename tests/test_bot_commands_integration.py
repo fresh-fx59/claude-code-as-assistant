@@ -787,7 +787,10 @@ class TestVoiceHandling:
         assert any("Transcribing voice message" in text for text in send_texts)
         assert mock_message.bot.send_chat_action.await_count >= 1
         assert mock_message.bot.edit_message_text.await_count >= 1
-        assert mock_message.bot.delete_message.await_count >= 1
+        edit_texts = [call.kwargs["text"] for call in mock_message.bot.edit_message_text.await_args_list]
+        assert "Voice message transcribed" in edit_texts[-1]
+        assert "Transcription time:" in edit_texts[-1]
+        mock_message.bot.delete_message.assert_not_called()
         handle_inner.assert_awaited_once()
 
     async def test_handle_voice_retries_transcription_progress_after_retry_after(
@@ -817,6 +820,7 @@ class TestVoiceHandling:
         await handle_voice(mock_message)
 
         assert mock_message.bot.send_message.await_count >= 2
+        assert "Voice message transcribed" in mock_message.bot.edit_message_text.await_args_list[-1].kwargs["text"]
         handle_inner.assert_awaited_once()
 
     async def test_handle_voice_does_not_send_duplicate_generic_error_on_delivery_failure(

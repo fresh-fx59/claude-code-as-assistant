@@ -1925,9 +1925,10 @@ async def handle_voice(message: Message) -> None:
     file = await message.bot.get_file(message.voice.file_id)
     tmp = tempfile.NamedTemporaryFile(suffix=".oga", delete=False)
     transcription_started_at = monotonic()
-    transcription_status_message_id: int | None = None
+    transcription_status_ref: dict[str, int | None] = {"message_id": None}
     transcription_status_task: asyncio.Task | None = None
     transcription_status_retry_task: asyncio.Task | None = None
+    transcription_completed = False
     await _send_chat_action_once(message, ChatAction.TYPING)
     transcription_typing_task = asyncio.create_task(_keep_chat_action(message, ChatAction.TYPING))
     try:
@@ -1939,6 +1940,7 @@ async def handle_voice(message: Message) -> None:
             message,
             monotonic() - transcription_started_at,
         )
+        transcription_status_ref["message_id"] = transcription_status_message_id
         if transcription_status_message_id is not None:
             transcription_status_task = asyncio.create_task(
                 _update_voice_transcription_progress(
@@ -1951,12 +1953,14 @@ async def handle_voice(message: Message) -> None:
             transcription_status_retry_task = asyncio.create_task(
                 _retry_voice_transcription_progress_message(
                     message,
+                    transcription_status_ref,
                     transcription_started_at,
                     transcription_retry_after,
                 )
             )
         await message.bot.download_file(file.file_path, tmp.name)
         text = await transcribe.transcribe(tmp.name)
+        transcription_completed = True
         logger.info("Chat %d: transcribed voice (%ds) → %d chars",
                      message.chat.id, message.voice.duration, len(text))
     except Exception:
@@ -1981,14 +1985,19 @@ async def handle_voice(message: Message) -> None:
                 await transcription_status_retry_task
             except asyncio.CancelledError:
                 pass
+        transcription_elapsed_seconds = monotonic() - transcription_started_at
+        transcription_status_message_id = transcription_status_ref["message_id"]
         if transcription_status_message_id is not None:
-            try:
-                await message.bot.delete_message(
-                    chat_id=message.chat.id,
-                    message_id=transcription_status_message_id,
-                )
-            except TelegramAPIError:
-                pass
+            transcription_final_text = (
+                _format_voice_transcription_complete(transcription_elapsed_seconds)
+                if transcription_completed
+                else _format_voice_transcription_failed(transcription_elapsed_seconds)
+            )
+            await _finalize_voice_transcription_progress(
+                message,
+                transcription_status_message_id,
+                transcription_final_text,
+            )
         os.unlink(tmp.name)
 
     override = f"[Voice message] {text}"
@@ -2589,6 +2598,20 @@ def _format_voice_transcription_progress(elapsed_seconds: float) -> str:
     )
 
 
+def _format_voice_transcription_complete(elapsed_seconds: float) -> str:
+    return (
+        "✅ <b>Voice message transcribed</b>\n"
+        f"Transcription time: <code>{elapsed_seconds:.1f}s</code>"
+    )
+
+
+def _format_voice_transcription_failed(elapsed_seconds: float) -> str:
+    return (
+        "❌ <b>Voice transcription failed</b>\n"
+        f"Elapsed before failure: <code>{elapsed_seconds:.1f}s</code>"
+    )
+
+
 def _format_audio_conversion_complete(elapsed_seconds: float) -> str:
     return (
         "✅ <b>Audio reply sent</b>\n"
@@ -2692,6 +2715,9 @@ async def _update_voice_transcription_progress(
                     text=_format_voice_transcription_progress(monotonic() - started_at),
                     parse_mode="HTML",
                 )
+            except TelegramRetryAfter as e:
+                logger.debug("Voice transcription progress rate-limited, retry in %ss", e.retry_after)
+                await asyncio.sleep(max(0, e.retry_after))
             except TelegramAPIError as e:
                 if "message is not modified" not in str(e).lower():
                     logger.debug("Voice transcription progress update failed: %s", e)
@@ -2700,8 +2726,37 @@ async def _update_voice_transcription_progress(
         return
 
 
+async def _finalize_voice_transcription_progress(
+    message: Message,
+    progress_message_id: int,
+    text: str,
+) -> None:
+    try:
+        while True:
+            try:
+                await message.bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=progress_message_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+                return
+            except TelegramRetryAfter as e:
+                logger.debug(
+                    "Voice transcription finalization rate-limited, retry in %ss",
+                    e.retry_after,
+                )
+                await asyncio.sleep(max(0, e.retry_after))
+            except TelegramAPIError as e:
+                logger.debug("Could not finalize voice transcription progress message: %s", e)
+                return
+    except asyncio.CancelledError:
+        return
+
+
 async def _retry_voice_transcription_progress_message(
     message: Message,
+    transcription_status_ref: dict[str, int | None],
     started_at: float,
     retry_after: int,
 ) -> None:
@@ -2712,11 +2767,13 @@ async def _retry_voice_transcription_progress_message(
             monotonic() - started_at,
         )
         if progress_message_id is not None:
+            transcription_status_ref["message_id"] = progress_message_id
             await _update_voice_transcription_progress(message, progress_message_id, started_at)
             return
         if next_retry_after is not None:
             await _retry_voice_transcription_progress_message(
                 message,
+                transcription_status_ref,
                 started_at,
                 next_retry_after,
             )
