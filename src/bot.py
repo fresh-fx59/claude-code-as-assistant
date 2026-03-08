@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+from time import monotonic
 from uuid import uuid4
 from datetime import datetime, timezone as tz
 from pathlib import Path
@@ -90,6 +91,7 @@ _EMPTY_RESPONSE_FALLBACK_TEXT = (
     "I received an empty response from the provider. "
     "Please resend your last message."
 )
+_AUDIO_PROGRESS_UPDATE_INTERVAL = 1.0
 # Backward-compatible state paths retained for tests/fixtures importing these symbols.
 _STEP_PLAN_STATE_PATH = config.MEMORY_DIR / "step_plan_state.json"
 _SCOPE_SNAPSHOT_PATH = config.MEMORY_DIR / "scope_snapshot.json"
@@ -2221,14 +2223,12 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 clean_text, media_refs, audio_as_voice = _extract_media_directives(raw_response_text)
                 clean_text = _strip_tool_directive_lines(clean_text)
                 for media_ref in media_refs:
-                    media_input = _resolve_media_input(media_ref)
                     try:
-                        if audio_as_voice and _is_voice_compatible_media(media_ref):
-                            await message.answer_voice(media_input)
-                        elif _is_audio_media(media_ref):
-                            await message.answer_audio(media_input)
-                        else:
-                            await message.answer_document(media_input)
+                        await _send_media_reply(
+                            message,
+                            media_ref,
+                            audio_as_voice=audio_as_voice,
+                        )
                     except Exception:
                         logger.exception(
                             "Chat %d: failed to send media '%s'",
@@ -2346,6 +2346,11 @@ async def on_router_error(event: ErrorEvent) -> bool:
 
 async def _keep_typing(message: Message) -> None:
     """Send typing indicator every 5 seconds."""
+    await _keep_chat_action(message, ChatAction.TYPING)
+
+
+async def _keep_chat_action(message: Message, action: ChatAction) -> None:
+    """Send a Telegram chat action every 5 seconds until cancelled."""
     thread_id = _thread_id(message)
     try:
         while True:
@@ -2354,12 +2359,123 @@ async def _keep_typing(message: Message) -> None:
                     await message.bot.send_chat_action(
                         chat_id=message.chat.id,
                         message_thread_id=thread_id,
-                        action=ChatAction.TYPING,
+                        action=action,
                     )
                 else:
-                    await message.bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+                    await message.bot.send_chat_action(chat_id=message.chat.id, action=action)
             except TelegramAPIError as e:
                 logger.debug("Typing indicator failed (transient): %s", e)
             await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        return
+
+
+async def _send_media_reply(message: Message, media_ref: str, *, audio_as_voice: bool) -> None:
+    media_input = _resolve_media_input(media_ref)
+    if audio_as_voice and _is_voice_compatible_media(media_ref):
+        await _send_audio_with_progress(message, media_input, as_voice=True)
+        return
+    if _is_audio_media(media_ref):
+        await _send_audio_with_progress(message, media_input, as_voice=False)
+        return
+    await message.answer_document(media_input)
+
+
+async def _send_audio_with_progress(message: Message, media_input, *, as_voice: bool) -> None:
+    progress_message_id: int | None = None
+    progress_task: asyncio.Task | None = None
+    started_at = monotonic()
+    completed = False
+    typing_task = asyncio.create_task(_keep_chat_action(message, ChatAction.TYPING))
+
+    try:
+        await asyncio.sleep(0)
+        try:
+            progress_message = await message.bot.send_message(
+                chat_id=message.chat.id,
+                message_thread_id=_thread_id(message),
+                text=_format_audio_conversion_progress(monotonic() - started_at),
+                parse_mode="HTML",
+            )
+            progress_message_id = progress_message.message_id
+            progress_task = asyncio.create_task(
+                _update_audio_conversion_progress(message, progress_message_id, started_at)
+            )
+        except TelegramAPIError as e:
+            logger.debug("Audio conversion progress message failed: %s", e)
+
+        if as_voice:
+            await message.answer_voice(media_input)
+        else:
+            await message.answer_audio(media_input)
+        completed = True
+    finally:
+        elapsed_seconds = monotonic() - started_at
+        typing_task.cancel()
+        if progress_task is not None:
+            progress_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+        if progress_task is not None:
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
+        if progress_message_id is not None:
+            try:
+                await message.bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=progress_message_id,
+                    text=_format_audio_conversion_complete(elapsed_seconds)
+                    if completed
+                    else _format_audio_conversion_failed(elapsed_seconds),
+                    parse_mode="HTML",
+                )
+            except TelegramAPIError as e:
+                logger.debug("Could not finalize audio conversion progress message: %s", e)
+
+
+def _format_audio_conversion_progress(elapsed_seconds: float) -> str:
+    return (
+        "🎙️ <b>Converting audio reply...</b>\n"
+        f"Elapsed: <code>{elapsed_seconds:.1f}s</code>"
+    )
+
+
+def _format_audio_conversion_complete(elapsed_seconds: float) -> str:
+    return (
+        "✅ <b>Audio reply sent</b>\n"
+        f"Conversion time: <code>{elapsed_seconds:.1f}s</code>"
+    )
+
+
+def _format_audio_conversion_failed(elapsed_seconds: float) -> str:
+    return (
+        "❌ <b>Audio reply failed</b>\n"
+        f"Elapsed before failure: <code>{elapsed_seconds:.1f}s</code>"
+    )
+
+
+async def _update_audio_conversion_progress(
+    message: Message,
+    progress_message_id: int,
+    started_at: float,
+) -> None:
+    try:
+        while True:
+            await asyncio.sleep(_AUDIO_PROGRESS_UPDATE_INTERVAL)
+            try:
+                await message.bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=progress_message_id,
+                    text=_format_audio_conversion_progress(monotonic() - started_at),
+                    parse_mode="HTML",
+                )
+            except TelegramAPIError as e:
+                if "message is not modified" not in str(e).lower():
+                    logger.debug("Audio conversion progress update failed: %s", e)
+                    return
     except asyncio.CancelledError:
         return

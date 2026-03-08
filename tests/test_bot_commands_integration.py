@@ -30,6 +30,7 @@ from src.bot import (
     _is_transient_codex_error,
     _reflect,
     _run_codex_with_retries,
+    _send_media_reply,
     _worklog_subprocess_env,
     VALID_MODELS,
 )
@@ -752,6 +753,79 @@ class TestMessageHandling:
         assert run_mock.await_count == 2
         all_answers = [call.args[0] for call in mock_message.answer.await_args_list if call.args]
         assert any("Steered answer" in text for text in all_answers)
+
+
+@pytest.mark.asyncio
+class TestAudioProgress:
+    async def test_send_media_reply_shows_conversion_progress_for_voice(self, mock_message, monkeypatch):
+        started_actions: list[str] = []
+
+        async def fake_keep_chat_action(message, action):
+            started_actions.append(action.value)
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                return
+
+        monkeypatch.setattr("src.bot._keep_chat_action", fake_keep_chat_action)
+
+        await _send_media_reply(mock_message, "/tmp/reply.ogg", audio_as_voice=True)
+
+        mock_message.bot.send_message.assert_awaited_once()
+        initial_text = mock_message.bot.send_message.await_args.kwargs["text"]
+        assert "Converting audio reply" in initial_text
+        assert "Elapsed:" in initial_text
+        mock_message.answer_voice.assert_awaited_once()
+        mock_message.answer_audio.assert_not_called()
+        mock_message.bot.edit_message_text.assert_awaited_once()
+        assert "Audio reply sent" in mock_message.bot.edit_message_text.await_args.kwargs["text"]
+        assert "Conversion time:" in mock_message.bot.edit_message_text.await_args.kwargs["text"]
+        mock_message.bot.delete_message.assert_not_called()
+        mock_message.bot.edit_message_text.assert_awaited_once_with(
+            chat_id=123456789,
+            message_id=123,
+            text=mock_message.bot.edit_message_text.await_args.kwargs["text"],
+            parse_mode="HTML",
+        )
+        assert started_actions == ["typing"]
+
+    async def test_send_media_reply_shows_conversion_progress_for_audio(self, mock_message, monkeypatch):
+        started_actions: list[str] = []
+
+        async def fake_keep_chat_action(message, action):
+            started_actions.append(action.value)
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                return
+
+        monkeypatch.setattr("src.bot._keep_chat_action", fake_keep_chat_action)
+        monkeypatch.setattr("src.bot._AUDIO_PROGRESS_UPDATE_INTERVAL", 0.01)
+
+        async def slow_answer_audio(*args, **kwargs):
+            await asyncio.sleep(0.03)
+
+        mock_message.answer_audio.side_effect = slow_answer_audio
+
+        await _send_media_reply(mock_message, "/tmp/reply.wav", audio_as_voice=False)
+
+        mock_message.bot.send_message.assert_awaited_once()
+        mock_message.answer_audio.assert_awaited_once()
+        mock_message.answer_voice.assert_not_called()
+        assert mock_message.bot.edit_message_text.await_count >= 2
+        edit_texts = [call.kwargs["text"] for call in mock_message.bot.edit_message_text.await_args_list]
+        assert any("Elapsed:" in text for text in edit_texts)
+        assert "Audio reply sent" in edit_texts[-1]
+        assert "Conversion time:" in edit_texts[-1]
+        mock_message.bot.delete_message.assert_not_called()
+        last_edit = mock_message.bot.edit_message_text.await_args
+        mock_message.bot.edit_message_text.assert_any_await(
+            chat_id=123456789,
+            message_id=123,
+            text=last_edit.kwargs["text"],
+            parse_mode="HTML",
+        )
+        assert started_actions == ["typing"]
 
 
 # ── Contract 8: Chat state management ───────────────────────────

@@ -100,6 +100,8 @@ Open Telegram, find your bot by its username, and start chatting.
 
 Just send any text message and the bot will respond using the currently selected provider.
 
+For audio or voice-note replies, the bot shows a live conversion status with elapsed time and keeps the final conversion-time message in chat after the audio is sent.
+
 ## Codex Instance Helper
 
 If you want a separate Codex home directory and a real executable on `PATH`, use [`create_codex_instance.sh`](/home/claude-developer/iron-lady-assistant/create_codex_instance.sh):
