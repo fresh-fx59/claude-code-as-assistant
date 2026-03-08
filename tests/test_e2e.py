@@ -340,6 +340,24 @@ class TestProgressReportingLifecycle:
 
         assert reporter._format_tool_action("Read", "<tmp>\n/path") == "Reading: &lt;tmp&gt; /path"  # noqa: SLF001
 
+    async def test_progress_enters_audio_conversion_mode_during_tts_tool(self, mock_message, monkeypatch):
+        """Audio-generation tools should replace generic working text with a live conversion timer."""
+        from src.progress import ProgressReporter
+
+        monkeypatch.setattr("src.progress._AUDIO_PROGRESS_INTERVAL", 0.01)
+        reporter = ProgressReporter(mock_message, debounce_seconds=0)
+
+        await reporter.show_working()
+        await reporter.report_tool("Bash", 'sag -v Clawd -o /tmp/voice-reply.mp3 "hello"')
+        await asyncio.sleep(0.03)
+
+        assert mock_message.bot.edit_message_text.called
+        texts = [call.kwargs["text"] for call in mock_message.bot.edit_message_text.await_args_list]
+        assert any("Converting audio reply" in text for text in texts)
+        assert any("Elapsed:" in text for text in texts)
+
+        await reporter.finish()
+
 
 # ── E2E Flow 8: Session persistence across restarts ──────────────
 class TestSessionPersistenceAcrossRestarts:

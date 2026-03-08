@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 from collections import deque
+from time import monotonic
 from typing import Optional
 
 from aiogram.types import Message
@@ -21,6 +22,16 @@ _HEARTBEAT_MESSAGES = [
     "🔄 Working...",
 ]
 _HEARTBEAT_INTERVAL = 5.0  # Update every 5 seconds during heartbeat
+_AUDIO_PROGRESS_INTERVAL = 1.0
+_AUDIO_PROGRESS_PATTERNS = (
+    "sag",
+    "sherpa-onnx",
+    "text-to-speech",
+    "tts",
+    "voice note",
+    "voice-note",
+)
+_AUDIO_MEDIA_EXTENSIONS = (".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".flac")
 
 
 class ProgressReporter:
@@ -48,6 +59,8 @@ class ProgressReporter:
         self._shutdown: bool = False
         self._heartbeat_task: asyncio.Task | None = None
         self._heartbeat_index: int = 0
+        self._audio_progress_task: asyncio.Task | None = None
+        self._audio_progress_started_at: float | None = None
 
     async def report_tool(self, tool_name: str, tool_input: str | None) -> None:
         """Report a tool action being performed.
@@ -58,6 +71,12 @@ class ProgressReporter:
         """
         # Stop heartbeat when we get new activity - it will restart after debounce
         self._stop_heartbeat()
+
+        if self._is_audio_conversion_action(tool_name, tool_input):
+            await self._start_audio_progress()
+            return
+
+        await self._stop_audio_progress()
 
         # Translate tool events to human-readable lines
         text = self._format_tool_action(tool_name, tool_input)
@@ -91,6 +110,83 @@ class ProgressReporter:
             self._start_heartbeat()
         except TelegramAPIError as e:
             logger.warning("Failed to send initial progress message: %s", e)
+
+    def _is_audio_conversion_action(self, tool_name: str, tool_input: str | None) -> bool:
+        blob = f"{tool_name}\n{tool_input or ''}".lower()
+        if any(pattern in blob for pattern in _AUDIO_PROGRESS_PATTERNS):
+            return True
+        if any(ext in blob for ext in _AUDIO_MEDIA_EXTENSIONS) and any(
+            token in blob for token in ("audio", "voice", "ffmpeg", "say")
+        ):
+            return True
+        return False
+
+    async def _start_audio_progress(self) -> None:
+        if self._audio_progress_task and not self._audio_progress_task.done():
+            return
+
+        if self._task and not self._task.done():
+            self._task.cancel()
+
+        self._audio_progress_started_at = monotonic()
+        await self._render_audio_progress()
+        self._audio_progress_task = asyncio.create_task(self._audio_progress_loop())
+
+    async def _stop_audio_progress(self) -> None:
+        if self._audio_progress_task and not self._audio_progress_task.done():
+            self._audio_progress_task.cancel()
+            try:
+                await self._audio_progress_task
+            except asyncio.CancelledError:
+                pass
+        self._audio_progress_task = None
+        self._audio_progress_started_at = None
+
+    async def _render_audio_progress(self) -> None:
+        started_at = self._audio_progress_started_at
+        if started_at is None or self._shutdown:
+            return
+
+        text = (
+            "🎙️ <b>Converting audio reply...</b>\n"
+            f"Elapsed: <code>{monotonic() - started_at:.1f}s</code>"
+        )
+        if text == self._last_update_text:
+            return
+
+        self._last_update_text = text
+
+        if self._progress_message_id is None:
+            try:
+                msg = await self._bot.send_message(
+                    chat_id=self._chat_id,
+                    message_thread_id=self._message_thread_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+                self._progress_message_id = msg.message_id
+            except TelegramAPIError as e:
+                logger.warning("Failed to send audio progress message: %s", e)
+            return
+
+        try:
+            await self._bot.edit_message_text(
+                chat_id=self._chat_id,
+                message_id=self._progress_message_id,
+                text=text,
+                parse_mode="HTML",
+            )
+        except TelegramAPIError as e:
+            if "message is not modified" not in str(e).lower():
+                logger.warning("Failed to update audio progress message: %s", e)
+
+    async def _audio_progress_loop(self) -> None:
+        try:
+            while not self._shutdown:
+                await asyncio.sleep(_AUDIO_PROGRESS_INTERVAL)
+                await self._render_audio_progress()
+        except asyncio.CancelledError:
+            pass
 
     def _format_tool_action(self, tool_name: str, tool_input: str | None) -> str:
         """Format a tool action into a human-readable line."""
@@ -135,6 +231,9 @@ class ProgressReporter:
             await asyncio.sleep(self._debounce_seconds)
 
             if self._shutdown:
+                return
+
+            if self._audio_progress_task and not self._audio_progress_task.done():
                 return
 
             if not self._dirty:
@@ -217,6 +316,9 @@ class ProgressReporter:
                 if self._progress_message_id is None:
                     return
 
+                if self._audio_progress_task and not self._audio_progress_task.done():
+                    continue
+
                 # Rotate to next heartbeat message
                 self._heartbeat_index = (self._heartbeat_index + 1) % len(_HEARTBEAT_MESSAGES)
                 status = _HEARTBEAT_MESSAGES[self._heartbeat_index]
@@ -256,6 +358,7 @@ class ProgressReporter:
         """
         self._shutdown = True
         self._stop_heartbeat()
+        await self._stop_audio_progress()
 
         if self._task and not self._task.done():
             self._task.cancel()
@@ -278,6 +381,7 @@ class ProgressReporter:
         """Update the progress message to show cancellation before deletion."""
         self._shutdown = True
         self._stop_heartbeat()
+        await self._stop_audio_progress()
 
         if self._progress_message_id is not None:
             try:
@@ -296,6 +400,7 @@ class ProgressReporter:
         """Update the progress message to show idle timeout before deletion."""
         self._shutdown = True
         self._stop_heartbeat()
+        await self._stop_audio_progress()
 
         if self._progress_message_id is not None:
             try:
