@@ -359,6 +359,31 @@ class TestProgressReportingLifecycle:
 
         await reporter.finish()
 
+    async def test_progress_keeps_audio_conversion_mode_after_followup_tool_events(
+        self,
+        mock_message,
+        monkeypatch,
+    ):
+        """Once audio conversion starts, generic working updates should not take over again."""
+        from src.progress import ProgressReporter
+
+        monkeypatch.setattr("src.progress._AUDIO_PROGRESS_INTERVAL", 0.01)
+        reporter = ProgressReporter(mock_message, debounce_seconds=0)
+
+        await reporter.show_working()
+        await reporter.report_tool("Bash", 'sag -v Clawd -o /tmp/voice-reply.mp3 "hello"')
+        await asyncio.sleep(0.02)
+        await reporter.report_tool("Read", "/tmp/final-audio.ogg")
+        await asyncio.sleep(0.03)
+
+        texts = [call.kwargs["text"] for call in mock_message.bot.edit_message_text.await_args_list]
+        audio_indexes = [idx for idx, text in enumerate(texts) if "Converting audio reply" in text]
+
+        assert audio_indexes
+        assert all("Working..." not in text for text in texts[audio_indexes[0]:])
+
+        await reporter.finish()
+
     async def test_progress_falls_back_to_new_message_when_edit_is_rate_limited(self, mock_message):
         """Flood-controlled edits should fall back to a fresh progress message."""
         from src.progress import ProgressReporter

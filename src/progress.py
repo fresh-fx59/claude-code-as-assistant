@@ -77,6 +77,9 @@ class ProgressReporter:
             await self._start_audio_progress()
             return
 
+        if self._audio_progress_task and not self._audio_progress_task.done():
+            return
+
         await self._stop_audio_progress()
 
         # Translate tool events to human-readable lines
