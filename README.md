@@ -90,7 +90,7 @@ Open Telegram, find your bot by its username, and start chatting.
 | Command | What it does |
 |---------|-------------|
 | `/start` | Show welcome message |
-| `/new` | Clear conversation history and start fresh |
+| `/new` | Clear conversation history and start fresh (keeps provider/model for the same thread) |
 | `/model` | Switch model (sonnet/opus/haiku) via inline keyboard |
 | `/provider` | Switch LLM provider via inline keyboard |
 | `/status` | Show current session and model info |

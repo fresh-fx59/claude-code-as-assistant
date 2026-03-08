@@ -759,6 +759,15 @@ async def cmd_new(message: Message) -> None:
     scope_key = _scope_key(chat_id, thread_id)
     session = session_manager.get(chat_id, thread_id)
     provider = provider_manager.get_provider(scope_key)
+    # Keep provider choice sticky per thread even when session ids are reset.
+    if session.provider and session.provider != provider.name:
+        restored_provider = provider_manager.set_provider(scope_key, session.provider)
+        if restored_provider:
+            provider = restored_provider
+        else:
+            session_manager.set_provider(chat_id, provider.name, thread_id)
+    elif not session.provider:
+        session_manager.set_provider(chat_id, provider.name, thread_id)
     if (
         os.getenv("DISABLE_REFLECTION") != "1"
         and (session.claude_session_id or session.codex_session_id)
@@ -2060,6 +2069,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                             scope_key, provider.name, next_provider.name, final_response.text,
                         )
                         provider = next_provider
+                        session_manager.set_provider(chat_id, next_provider.name, thread_id)
                         env = _worklog_subprocess_env(
                             provider_manager.subprocess_env(next_provider),
                             chat_id=chat_id,

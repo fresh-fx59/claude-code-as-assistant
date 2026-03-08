@@ -14,6 +14,7 @@ from src.bot import handle_message, cmd_start, cmd_new, cmd_model, cmd_status
 from src.sessions import SessionManager
 from src.formatter import markdown_to_html, split_message
 from src.progress import ProgressReporter
+from src import bridge
 
 
 # ── E2E Flow 1: New user onboarding ─────────────────────────────
@@ -193,6 +194,50 @@ class TestErrorHandling:
 
             response = mock_message.answer.call_args[0][0]
             assert "error" in response.lower()
+
+
+# ── E2E Flow 6: Provider fallback persistence ─────────────────────
+@pytest.mark.asyncio
+class TestProviderFallbackPersistence:
+    """Automatic provider fallback should persist into session state."""
+
+    async def test_rate_limit_fallback_updates_persisted_provider(self, mock_message, monkeypatch):
+        from src.bot import provider_manager, session_manager
+
+        scope_key = "123456789:main"
+        provider_manager.set_provider(scope_key, "codex")
+        session_manager.set_provider(123456789, "codex")
+
+        responses = [
+            bridge.ClaudeResponse(
+                text="rate limit exceeded",
+                session_id=None,
+                is_error=True,
+                cost_usd=0.0,
+                duration_ms=0,
+                num_turns=0,
+            ),
+            bridge.ClaudeResponse(
+                text="ok after fallback",
+                session_id="codex2-sess",
+                is_error=False,
+                cost_usd=0.0,
+                duration_ms=0,
+                num_turns=1,
+            ),
+        ]
+
+        async def fake_run_codex_with_retries(*args, **kwargs):
+            return responses.pop(0)
+
+        monkeypatch.setattr("src.bot._run_codex_with_retries", fake_run_codex_with_retries)
+        monkeypatch.setattr("src.bot._find_provider_cli", lambda _cli: "/usr/bin/mock")
+
+        mock_message.text = "please handle with fallback"
+        await handle_message(mock_message)
+
+        assert provider_manager.get_provider(scope_key).name == "codex2"
+        assert session_manager.get(123456789).provider == "codex2"
 
 
 # ── E2E Flow 6: Message formatting pipeline ────────────────────

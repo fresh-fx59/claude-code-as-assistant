@@ -176,6 +176,31 @@ class TestNewCommand:
         mock_message.answer.assert_called_once()
         assert "cleared" in mock_message.answer.call_args[0][0].lower()
 
+    async def test_new_restores_persisted_provider_for_scope(self, mock_message):
+        """If runtime provider drifted, /new should restore persisted provider selection."""
+        from src.bot import provider_manager, session_manager
+
+        mock_message.text = "/new"
+        scope_key = "123456789:main"
+        session_manager.set_provider(123456789, "codex2")
+        provider_manager.set_provider(scope_key, "codex")
+
+        await cmd_new(mock_message)
+
+        assert provider_manager.get_provider(scope_key).name == "codex2"
+
+    async def test_new_persists_provider_when_missing_in_session(self, mock_message):
+        """When provider wasn't saved yet, /new should persist active scope provider."""
+        from src.bot import provider_manager, session_manager
+
+        mock_message.text = "/new"
+        scope_key = "123456789:main"
+        provider_manager.set_provider(scope_key, "codex2")
+
+        await cmd_new(mock_message)
+
+        assert session_manager.get(123456789).provider == "codex2"
+
 
 @pytest.mark.asyncio
 class TestReflectionProviderSelection:
