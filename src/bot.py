@@ -1929,6 +1929,7 @@ async def handle_voice(message: Message) -> None:
     transcription_status_task: asyncio.Task | None = None
     transcription_status_retry_task: asyncio.Task | None = None
     transcription_completed = False
+    transcription_failed_notified = False
     await _send_chat_action_once(message, ChatAction.TYPING)
     transcription_typing_task = asyncio.create_task(_keep_chat_action(message, ChatAction.TYPING))
     try:
@@ -1965,6 +1966,7 @@ async def handle_voice(message: Message) -> None:
                      message.chat.id, message.voice.duration, len(text))
     except Exception:
         logger.exception("Voice transcription failed")
+        transcription_failed_notified = True
         await message.answer("Failed to transcribe voice message.")
         return
     finally:
@@ -1987,17 +1989,17 @@ async def handle_voice(message: Message) -> None:
                 pass
         transcription_elapsed_seconds = monotonic() - transcription_started_at
         transcription_status_message_id = transcription_status_ref["message_id"]
-        if transcription_status_message_id is not None:
-            transcription_final_text = (
-                _format_voice_transcription_complete(transcription_elapsed_seconds)
-                if transcription_completed
-                else _format_voice_transcription_failed(transcription_elapsed_seconds)
-            )
-            await _finalize_voice_transcription_progress(
-                message,
-                transcription_status_message_id,
-                transcription_final_text,
-            )
+        transcription_final_text = (
+            _format_voice_transcription_complete(transcription_elapsed_seconds)
+            if transcription_completed
+            else _format_voice_transcription_failed(transcription_elapsed_seconds)
+        )
+        await _publish_voice_transcription_result(
+            message,
+            progress_message_id=transcription_status_message_id,
+            text=transcription_final_text,
+            send_summary=transcription_completed or not transcription_failed_notified,
+        )
         os.unlink(tmp.name)
 
     override = f"[Voice message] {text}"
@@ -2726,32 +2728,29 @@ async def _update_voice_transcription_progress(
         return
 
 
-async def _finalize_voice_transcription_progress(
+async def _publish_voice_transcription_result(
     message: Message,
-    progress_message_id: int,
+    *,
+    progress_message_id: int | None,
     text: str,
+    send_summary: bool,
 ) -> None:
-    try:
-        while True:
-            try:
-                await message.bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=progress_message_id,
-                    text=text,
-                    parse_mode="HTML",
-                )
-                return
-            except TelegramRetryAfter as e:
-                logger.debug(
-                    "Voice transcription finalization rate-limited, retry in %ss",
-                    e.retry_after,
-                )
-                await asyncio.sleep(max(0, e.retry_after))
-            except TelegramAPIError as e:
-                logger.debug("Could not finalize voice transcription progress message: %s", e)
-                return
-    except asyncio.CancelledError:
+    if progress_message_id is not None:
+        try:
+            await message.bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=progress_message_id,
+            )
+        except TelegramAPIError as e:
+            logger.debug("Could not delete voice transcription progress message: %s", e)
+
+    if not send_summary:
         return
+
+    try:
+        await message.answer(text, parse_mode="HTML")
+    except TelegramAPIError as e:
+        logger.debug("Could not send voice transcription summary message: %s", e)
 
 
 async def _retry_voice_transcription_progress_message(

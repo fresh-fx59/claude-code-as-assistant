@@ -384,6 +384,26 @@ class TestProgressReportingLifecycle:
 
         await reporter.finish()
 
+    async def test_progress_does_not_enter_audio_conversion_mode_for_non_tts_bash(
+        self,
+        mock_message,
+        monkeypatch,
+    ):
+        """Generic shell commands mentioning audio-like terms should not trigger audio conversion mode."""
+        from src.progress import ProgressReporter
+
+        monkeypatch.setattr("src.progress._AUDIO_PROGRESS_INTERVAL", 0.01)
+        reporter = ProgressReporter(mock_message, debounce_seconds=0)
+
+        await reporter.show_working()
+        await reporter.report_tool("Bash", 'echo "tts notes saved to /tmp/report.wav"')
+        await asyncio.sleep(0.03)
+
+        texts = [call.kwargs["text"] for call in mock_message.bot.edit_message_text.await_args_list]
+        assert all("Converting audio reply" not in text for text in texts)
+
+        await reporter.finish()
+
     async def test_progress_falls_back_to_new_message_when_edit_is_rate_limited(self, mock_message):
         """Flood-controlled edits should fall back to a fresh progress message."""
         from src.progress import ProgressReporter

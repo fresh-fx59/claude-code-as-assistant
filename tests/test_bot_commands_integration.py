@@ -786,11 +786,21 @@ class TestVoiceHandling:
         send_texts = [call.kwargs["text"] for call in mock_message.bot.send_message.await_args_list]
         assert any("Transcribing voice message" in text for text in send_texts)
         assert mock_message.bot.send_chat_action.await_count >= 1
-        assert mock_message.bot.edit_message_text.await_count >= 1
-        edit_texts = [call.kwargs["text"] for call in mock_message.bot.edit_message_text.await_args_list]
-        assert "Voice message transcribed" in edit_texts[-1]
-        assert "Transcription time:" in edit_texts[-1]
-        mock_message.bot.delete_message.assert_not_called()
+        mock_message.bot.delete_message.assert_awaited_once_with(
+            chat_id=123456789,
+            message_id=123,
+        )
+        transcription_summary = next(
+            (
+                call
+                for call in mock_message.answer.await_args_list
+                if call.kwargs.get("parse_mode") == "HTML"
+                and "Voice message transcribed" in call.args[0]
+            ),
+            None,
+        )
+        assert transcription_summary is not None
+        assert "Transcription time:" in transcription_summary.args[0]
         handle_inner.assert_awaited_once()
 
     async def test_handle_voice_retries_transcription_progress_after_retry_after(
@@ -820,7 +830,16 @@ class TestVoiceHandling:
         await handle_voice(mock_message)
 
         assert mock_message.bot.send_message.await_count >= 2
-        assert "Voice message transcribed" in mock_message.bot.edit_message_text.await_args_list[-1].kwargs["text"]
+        transcription_summary = next(
+            (
+                call
+                for call in mock_message.answer.await_args_list
+                if call.kwargs.get("parse_mode") == "HTML"
+                and "Voice message transcribed" in call.args[0]
+            ),
+            None,
+        )
+        assert transcription_summary is not None
         handle_inner.assert_awaited_once()
 
     async def test_handle_voice_does_not_send_duplicate_generic_error_on_delivery_failure(
@@ -845,6 +864,10 @@ class TestVoiceHandling:
 
         assert not any(
             call.args and "An internal error occurred while processing your voice message." in call.args[0]
+            for call in mock_message.answer.await_args_list
+        )
+        assert not any(
+            call.kwargs.get("parse_mode") == "HTML" and "Voice transcription failed" in call.args[0]
             for call in mock_message.answer.await_args_list
         )
 

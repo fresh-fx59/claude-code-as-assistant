@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+import re
 from collections import deque
 from time import monotonic
 from typing import Optional
@@ -23,15 +24,8 @@ _HEARTBEAT_MESSAGES = [
 ]
 _HEARTBEAT_INTERVAL = 5.0  # Update every 5 seconds during heartbeat
 _AUDIO_PROGRESS_INTERVAL = 1.0
-_AUDIO_PROGRESS_PATTERNS = (
-    "sag",
-    "sherpa-onnx",
-    "text-to-speech",
-    "tts",
-    "voice note",
-    "voice-note",
-)
 _AUDIO_MEDIA_EXTENSIONS = (".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".flac")
+_AUDIO_TTS_COMMAND_RE = re.compile(r"(^|[/\\])(sag|sherpa-onnx(?:-tts)?|say)(\s|$)")
 
 
 class ProgressReporter:
@@ -110,14 +104,14 @@ class ProgressReporter:
             logger.warning("Failed to send initial progress message: %s", e)
 
     def _is_audio_conversion_action(self, tool_name: str, tool_input: str | None) -> bool:
-        blob = f"{tool_name}\n{tool_input or ''}".lower()
-        if any(pattern in blob for pattern in _AUDIO_PROGRESS_PATTERNS):
-            return True
-        if any(ext in blob for ext in _AUDIO_MEDIA_EXTENSIONS) and any(
-            token in blob for token in ("audio", "voice", "ffmpeg", "say")
-        ):
-            return True
-        return False
+        if tool_name.lower() != "bash" or not tool_input:
+            return False
+
+        command = tool_input.strip().lower()
+        if not _AUDIO_TTS_COMMAND_RE.search(command):
+            return False
+
+        return any(ext in command for ext in _AUDIO_MEDIA_EXTENSIONS)
 
     async def _start_audio_progress(self) -> None:
         if self._audio_progress_task and not self._audio_progress_task.done():
