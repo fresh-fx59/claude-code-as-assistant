@@ -1,0 +1,31 @@
+name: ozon
+description: Buy products on Ozon and retrieve Ozon order statuses via a persistent browser session backed by agent-browser.
+tier: core
+triggers:
+  - ozon
+  - buy on ozon
+  - order status on ozon
+  - ozon order
+  - ozon status
+instructions: |
+  Use the Ozon browser wrapper in this repo. It is built on top of Vercel Labs' open-source `agent-browser` CLI and keeps a persistent browser profile between commands.
+
+  Command entrypoint:
+  - `python3 -m src.ozon_browser ...`
+
+  Required workflow:
+  1. If the user is not clearly already logged in, run `python3 -m src.ozon_browser login`
+  2. For order statuses, run `python3 -m src.ozon_browser orders`
+  3. For product discovery, run `python3 -m src.ozon_browser search "<query>" --max-price <rub>`
+  4. To start a purchase, run `python3 -m src.ozon_browser prepare-buy "<query>" --max-price <rub> --checkout`
+  5. Never place the final order unless the user explicitly confirms the exact item and price in the current conversation. Final step: `python3 -m src.ozon_browser place-order --confirm`
+
+  Notes:
+  - The wrapper stores browser state under `~/.local/state/iron-lady-assistant/ozon-browser/`
+  - Use `--headed` when manual login or challenge solving is needed
+  - Optional remote providers supported by agent-browser: `--provider browseruse`, `--provider kernel`, `--provider browserbase`
+  - If a local browser fails to launch on Linux because of missing shared libraries, keep the wrapper usage the same and switch to a remote provider rather than inventing a second browser stack
+
+setup: |
+  npm install
+  npx agent-browser install
