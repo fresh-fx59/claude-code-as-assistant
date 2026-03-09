@@ -5,6 +5,7 @@ and message handling. These are observable user-facing behaviors.
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -759,6 +760,20 @@ class TestMessageHandling:
 
 @pytest.mark.asyncio
 class TestVoiceHandling:
+    async def test_handle_message_logs_incoming_metadata(self, mock_message, monkeypatch, caplog):
+        handle_inner = AsyncMock()
+        monkeypatch.setattr("src.bot._handle_message_inner", handle_inner)
+        mock_message.message_id = 321
+        mock_message.message_thread_id = 77
+        mock_message.text = "hello world"
+
+        with caplog.at_level(logging.INFO, logger="src.bot"):
+            await handle_message(mock_message)
+
+        assert "Incoming text message: chat=123456789 thread=77 message=321" in caplog.text
+        assert "Entering handle_message: chat=123456789 thread=77 message=321" in caplog.text
+        handle_inner.assert_awaited_once_with(mock_message)
+
     async def test_handle_voice_shows_transcription_progress_before_message_processing(
         self,
         mock_message,
@@ -802,6 +817,26 @@ class TestVoiceHandling:
         assert transcription_summary is not None
         assert "Transcription time:" in transcription_summary.args[0]
         handle_inner.assert_awaited_once()
+
+    async def test_handle_voice_logs_incoming_metadata(self, mock_message, monkeypatch, caplog):
+        mock_message.voice = AsyncMock()
+        mock_message.voice.file_id = "voice-file"
+        mock_message.voice.duration = 7
+        mock_message.message_id = 654
+        mock_message.message_thread_id = 88
+        mock_message.bot.get_file = AsyncMock(return_value=type("File", (), {"file_path": "voice/path.oga"})())
+        mock_message.bot.download_file = AsyncMock()
+
+        monkeypatch.setattr("src.bot.transcribe.is_available", lambda: True)
+        monkeypatch.setattr("src.bot.transcribe.transcribe", AsyncMock(return_value="hello world"))
+        monkeypatch.setattr("src.bot._handle_message_inner", AsyncMock())
+
+        with caplog.at_level(logging.INFO, logger="src.bot"):
+            await handle_voice(mock_message)
+
+        assert "Incoming voice message: chat=123456789 thread=88 message=654" in caplog.text
+        assert "voice_duration=7" in caplog.text
+        assert "Entering handle_voice: chat=123456789 thread=88 message=654" in caplog.text
 
     async def test_handle_voice_retries_transcription_progress_after_retry_after(
         self,

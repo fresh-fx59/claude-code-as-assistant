@@ -102,6 +102,8 @@ Just send any text message and the bot will respond using the currently selected
 
 For voice messages, the bot now shows live transcription progress immediately after upload, replaces that transient progress with a persistent final transcription-time summary in chat before the LLM `Working...` phase starts, retries progress delivery if Telegram returns `retry after`, only switches the live progress message into audio-conversion mode for actual TTS-style audio generation commands, keeps that conversion timer pinned instead of reverting to generic `Working...`, falls back to a fresh progress message if Telegram rate-limits edits, and keeps a final conversion-time message in chat after the audio is sent.
 
+Incoming Telegram `text`, `voice`, and `photo` updates are also logged with delivery metadata only (`chat/thread/message/user/content_type/length`, plus voice duration or photo count) so missed-message incidents can be diagnosed from `journalctl` without storing message contents in logs.
+
 ## Codex Instance Helper
 
 If you want a separate Codex home directory and a real executable on `PATH`, use [`create_codex_instance.sh`](/home/claude-developer/iron-lady-assistant/create_codex_instance.sh):

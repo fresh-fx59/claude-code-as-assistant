@@ -135,6 +135,41 @@ def _scope_key(chat_id: int, message_thread_id: int | None = None) -> str:
     return make_scope_key(chat_id, message_thread_id)
 
 
+def _message_log_context(message: Message) -> dict[str, object]:
+    caption = getattr(message, "caption", None)
+    text = message.text or caption or ""
+    voice = getattr(message, "voice", None)
+    photo = getattr(message, "photo", None)
+    return {
+        "chat_id": message.chat.id,
+        "thread_id": _thread_id(message),
+        "message_id": getattr(message, "message_id", None),
+        "user_id": message.from_user and message.from_user.id,
+        "content_type": getattr(message, "content_type", None),
+        "text_len": len(text),
+        "has_caption": bool(caption),
+        "voice_duration": getattr(voice, "duration", None) if voice else None,
+        "photo_count": len(photo) if photo else 0,
+    }
+
+
+def _log_incoming_message(message: Message, route: str) -> None:
+    ctx = _message_log_context(message)
+    logger.info(
+        "Incoming %s message: chat=%s thread=%s message=%s user=%s type=%s text_len=%s caption=%s voice_duration=%s photo_count=%s",
+        route,
+        ctx["chat_id"],
+        ctx["thread_id"],
+        ctx["message_id"],
+        ctx["user_id"],
+        ctx["content_type"],
+        ctx["text_len"],
+        ctx["has_caption"],
+        ctx["voice_duration"],
+        ctx["photo_count"],
+    )
+
+
 def _scope_key_from_message(message: Message) -> str:
     return _scope_key(message.chat.id, _thread_id(message))
 
@@ -1912,6 +1947,14 @@ async def handle_voice(message: Message) -> None:
     if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
         return
 
+    _log_incoming_message(message, "voice")
+    logger.info(
+        "Entering handle_voice: chat=%s thread=%s message=%s",
+        message.chat.id,
+        _thread_id(message),
+        message.message_id,
+    )
+
     if not transcribe.is_available():
         await message.answer(
             "Voice messages are not supported — whisper.cpp is not installed.\n"
@@ -2021,6 +2064,13 @@ async def handle_voice(message: Message) -> None:
 
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
+    _log_incoming_message(message, "text")
+    logger.info(
+        "Entering handle_message: chat=%s thread=%s message=%s",
+        message.chat.id,
+        _thread_id(message),
+        message.message_id,
+    )
     try:
         await _handle_message_inner(message)
     except Exception:
@@ -2040,6 +2090,13 @@ async def handle_message(message: Message) -> None:
 
 @router.message(F.photo)
 async def handle_photo_message(message: Message) -> None:
+    _log_incoming_message(message, "photo")
+    logger.info(
+        "Entering handle_photo_message: chat=%s thread=%s message=%s",
+        message.chat.id,
+        _thread_id(message),
+        message.message_id,
+    )
     try:
         await _handle_message_inner(message)
     except Exception:
@@ -2092,6 +2149,12 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
     scope_key = _scope_key(chat_id, thread_id)
     raw_prompt = await _compose_incoming_prompt(message, override_text)
     state = _get_state(scope_key)
+    logger.info(
+        "Starting message processing: scope=%s override=%s prompt_len=%d",
+        scope_key,
+        bool(override_text),
+        len(raw_prompt),
+    )
 
     if state.lock.locked():
         metrics.MESSAGES_TOTAL.labels(status="busy").inc()

@@ -85,13 +85,17 @@ def mock_message(mock_bot):
     """Mock Telegram Message with minimal fields."""
     msg = AsyncMock()
     msg.text = "hello"
+    msg.caption = None
     msg.chat = AsyncMock()
     msg.chat.id = 123456789
+    msg.message_id = 987
     msg.message_thread_id = None
     msg.bot = mock_bot
     msg.from_user = AsyncMock()
     msg.from_user.id = 123456789
     msg.content_type = "text"
+    msg.photo = None
+    msg.voice = None
     msg.answer = AsyncMock()
     return msg
 
