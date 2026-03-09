@@ -183,8 +183,9 @@ async def main() -> None:
     from .tasks import TaskManager
     from .scheduler import ScheduleManager
     task_manager = TaskManager(bot)
-    await task_manager.start()
     schedule_manager = ScheduleManager(task_manager, MEMORY_DIR / "schedules.db")
+    task_manager.add_observer(schedule_manager)
+    await task_manager.start()
     await schedule_manager.start()
 
     await bot.set_my_commands([
@@ -203,6 +204,7 @@ async def main() -> None:
         BotCommand(command="schedule_daily", description="Create daily schedule"),
         BotCommand(command="schedule_weekly", description="Create weekly schedule"),
         BotCommand(command="schedule_list", description="List recurring schedules"),
+        BotCommand(command="schedule_history", description="Show scheduled job history"),
         BotCommand(command="schedule_cancel", description="Cancel recurring schedule"),
         BotCommand(command="bg", description="Run task in background"),
         BotCommand(command="bg_cancel", description="Cancel background task"),

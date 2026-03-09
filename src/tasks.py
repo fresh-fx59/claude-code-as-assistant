@@ -112,6 +112,10 @@ class TaskManager:
         self._queue_lock = asyncio.Lock()
         self._worker_task: asyncio.Task | None = None
 
+    def add_observer(self, observer: TaskObserver) -> None:
+        """Register a task observer."""
+        self._observers.append(observer)
+
     async def start(self) -> None:
         """Start the background worker."""
         if self._worker_task is None:

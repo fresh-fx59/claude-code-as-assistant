@@ -92,6 +92,7 @@ This installs build deps (`cmake`, `g++`, `ffmpeg`), clones and builds whisper.c
 - `/schedule_daily <HH:MM> <task>` — Create daily recurring background task
 - `/schedule_weekly <day> <HH:MM> <task>` — Create weekly recurring background task
 - `/schedule_list` — List recurring schedules
+- `/schedule_history [schedule_id]` — Show recent scheduled job executions
 - `/schedule_cancel <schedule_id>` — Cancel recurring schedule
 - `/bg <task>` — Run a task in background (non-blocking)
 - `/bg-list` — List active background tasks
@@ -498,4 +499,5 @@ Returns JSON with title, url, snippet fields.
 - `/schedule_daily <HH:MM> <task>` — Create daily recurring background task
 - `/schedule_weekly <day> <HH:MM> <task>` — Create weekly recurring background task
 - `/schedule_list` — List recurring schedules
+- `/schedule_history [schedule_id]` — Show recent scheduled job executions
 - `/schedule_cancel <schedule_id>` — Cancel recurring schedule

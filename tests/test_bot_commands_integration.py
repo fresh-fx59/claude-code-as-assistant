@@ -23,6 +23,7 @@ from src.bot import (
     cmd_schedule_daily,
     cmd_schedule_weekly,
     cmd_schedule_list,
+    cmd_schedule_history,
     cmd_schedule_cancel,
     handle_message,
     handle_voice,
@@ -678,6 +679,13 @@ class TestScheduleCommands:
             sched_mock.list_for_chat = AsyncMock(return_value=[])
             await cmd_schedule_cancel(mock_message)
         assert "not found" in mock_message.answer.call_args[0][0].lower()
+
+    async def test_schedule_history_shows_empty(self, mock_message):
+        mock_message.text = "/schedule_history"
+        with patch("src.bot.schedule_manager") as sched_mock:
+            sched_mock.list_runs_for_chat = AsyncMock(return_value=[])
+            await cmd_schedule_history(mock_message)
+        assert "no scheduled job history" in mock_message.answer.call_args[0][0].lower()
 
 
 # ── Contract 7: Message handling ─────────────────────────────────

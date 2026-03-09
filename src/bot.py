@@ -153,6 +153,34 @@ def _message_log_context(message: Message) -> dict[str, object]:
     }
 
 
+def _format_schedule_label(item) -> str:  # noqa: ANN001
+    if item.schedule_type == "weekly" and item.daily_time and item.weekly_day is not None:
+        tz_name = item.timezone_name or "UTC"
+        weekday = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][item.weekly_day]
+        return f"weekly {weekday} {item.daily_time} ({tz_name})"
+    if item.schedule_type == "daily" and item.daily_time:
+        tz_name = item.timezone_name or "UTC"
+        return f"daily at {item.daily_time} ({tz_name})"
+    return f"every {item.interval_minutes} min"
+
+
+def _format_schedule_run_status(run) -> str:  # noqa: ANN001
+    if run.status == "submission_failed":
+        return "submission failed"
+    if run.status == "submitted":
+        return "queued"
+    return run.status.replace("_", " ")
+
+
+def _format_schedule_run_summary(run) -> str:  # noqa: ANN001
+    planned_local = run.planned_for.astimezone().strftime("%Y-%m-%d %H:%M")
+    status_label = _format_schedule_run_status(run)
+    if run.started_at:
+        started_local = run.started_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        return f"{status_label}; planned {planned_local}; started {started_local}"
+    return f"{status_label}; planned {planned_local}"
+
+
 def _log_incoming_message(message: Message, route: str) -> None:
     ctx = _message_log_context(message)
     logger.info(
@@ -1583,21 +1611,67 @@ async def cmd_schedule_list(message: Message) -> None:
         await message.answer("No recurring schedules.")
         return
 
+    latest_runs = await schedule_manager.latest_runs_by_schedule([item.id for item in schedules])
     lines = ["<b>Recurring schedules:</b>", ""]
     for item in schedules:
         next_run_local = item.next_run_at.astimezone().strftime("%Y-%m-%d %H:%M")
-        if item.schedule_type == "weekly" and item.daily_time and item.weekly_day is not None:
-            tz_name = item.timezone_name or "UTC"
-            weekday = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][item.weekly_day]
-            schedule_label = f"weekly {weekday} {item.daily_time} ({tz_name})"
-        elif item.schedule_type == "daily" and item.daily_time:
-            tz_name = item.timezone_name or "UTC"
-            schedule_label = f"daily at {item.daily_time} ({tz_name})"
-        else:
-            schedule_label = f"every {item.interval_minutes} min"
+        schedule_label = _format_schedule_label(item)
         lines.append(f"⏱ <code>{item.id[:8]}</code> — {schedule_label}")
         lines.append(f"   next: {next_run_local}")
+        latest_run = latest_runs.get(item.id)
+        if latest_run:
+            lines.append(f"   last: {_format_schedule_run_summary(latest_run)}")
+        else:
+            lines.append("   last: no executions yet")
         lines.append(f"   {item.prompt[:80]}...")
+        lines.append("")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("schedule_history"))
+async def cmd_schedule_history(message: Message, command: CommandObject | None = None) -> None:
+    """Show recent recurring schedule executions for this chat."""
+    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
+        return
+    if not schedule_manager:
+        await message.answer("Scheduler not available.")
+        return
+
+    short_id = _command_args(message, command).strip()
+    schedule_id: str | None = None
+    if short_id:
+        schedules = await schedule_manager.list_for_chat(message.chat.id, _thread_id(message))
+        target = next((s for s in schedules if s.id.startswith(short_id)), None)
+        if not target:
+            await message.answer("Schedule not found.")
+            return
+        schedule_id = target.id
+
+    runs = await schedule_manager.list_runs_for_chat(
+        message.chat.id,
+        _thread_id(message),
+        schedule_id=schedule_id,
+        limit=10,
+    )
+    if not runs:
+        await message.answer("No scheduled job history yet.")
+        return
+
+    lines = ["<b>Scheduled job history:</b>", ""]
+    for run in runs:
+        lines.append(
+            f"🕓 <code>{run.schedule_id[:8]}</code> — {_format_schedule_run_status(run)}"
+        )
+        lines.append(f"   planned: {run.planned_for.astimezone().strftime('%Y-%m-%d %H:%M')}")
+        if run.started_at:
+            lines.append(f"   started: {run.started_at.astimezone().strftime('%Y-%m-%d %H:%M:%S')}")
+        if run.completed_at:
+            lines.append(f"   finished: {run.completed_at.astimezone().strftime('%Y-%m-%d %H:%M:%S')}")
+        if run.background_task_id:
+            lines.append(f"   task: <code>{run.background_task_id[:8]}</code>")
+        detail = run.error_text or run.response_preview
+        if detail:
+            lines.append(f"   result: {html.escape(detail[:160])}")
         lines.append("")
     await message.answer("\n".join(lines), parse_mode="HTML")
 

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .tasks import TaskManager
+from .tasks import BackgroundTask, TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,22 @@ class ScheduledTask:
     session_id: str | None
     next_run_at: datetime
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class ScheduleRun:
+    id: str
+    schedule_id: str
+    chat_id: int
+    message_thread_id: int | None
+    background_task_id: str | None
+    planned_for: datetime
+    submitted_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    status: str
+    error_text: str | None
+    response_preview: str | None
 
 
 class ScheduleManager:
@@ -78,6 +94,36 @@ class ScheduleManager:
             self._ensure_column(con, "timezone_name", "TEXT")
             self._ensure_column(con, "weekly_day", "INTEGER")
             self._ensure_column(con, "message_thread_id", "INTEGER")
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+                    id TEXT PRIMARY KEY,
+                    schedule_id TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    message_thread_id INTEGER,
+                    background_task_id TEXT,
+                    planned_for TEXT NOT NULL,
+                    submitted_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    status TEXT NOT NULL,
+                    error_text TEXT,
+                    response_preview TEXT
+                )
+                """
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_schedule_time "
+                "ON scheduled_task_runs(schedule_id, submitted_at DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_chat_time "
+                "ON scheduled_task_runs(chat_id, message_thread_id, submitted_at DESC)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task_id "
+                "ON scheduled_task_runs(background_task_id)"
+            )
 
     @staticmethod
     def _ensure_column(con: sqlite3.Connection, name: str, definition: str) -> None:
@@ -296,8 +342,11 @@ class ScheduleManager:
         due_rows = await asyncio.to_thread(self._fetch_due_rows, datetime.now(timezone.utc).isoformat())
         for row in due_rows:
             schedule = self._row_to_scheduled_task(row)
+            planned_for = schedule.next_run_at
+            submitted_at = datetime.now(timezone.utc)
+            run_id = str(uuid.uuid4())
             try:
-                await self._task_manager.submit(
+                background_task_id = await self._task_manager.submit(
                     chat_id=schedule.chat_id,
                     message_thread_id=schedule.message_thread_id,
                     user_id=schedule.user_id,
@@ -305,11 +354,64 @@ class ScheduleManager:
                     model=schedule.model,
                     session_id=schedule.session_id,
                 )
+                await asyncio.to_thread(
+                    self._insert_run,
+                    run_id,
+                    schedule.id,
+                    schedule.chat_id,
+                    schedule.message_thread_id,
+                    background_task_id,
+                    planned_for.isoformat(),
+                    submitted_at.isoformat(),
+                    "submitted",
+                    None,
+                    None,
+                )
             except Exception:
                 logger.exception("Failed to submit scheduled task %s", schedule.id)
+                await asyncio.to_thread(
+                    self._insert_run,
+                    run_id,
+                    schedule.id,
+                    schedule.chat_id,
+                    schedule.message_thread_id,
+                    None,
+                    planned_for.isoformat(),
+                    submitted_at.isoformat(),
+                    "submission_failed",
+                    "Failed to submit background task",
+                    None,
+                )
             finally:
                 next_run = self._next_run_for_schedule(schedule, datetime.now(timezone.utc))
                 await asyncio.to_thread(self._update_next_run, schedule.id, next_run.isoformat())
+
+    async def on_task_finished(self, task: BackgroundTask) -> None:
+        await asyncio.to_thread(
+            self._update_run_for_background_task,
+            task.id,
+            task.status.value,
+            task.started_at.isoformat() if task.started_at else None,
+            task.completed_at.isoformat() if task.completed_at else None,
+            task.error,
+            self._preview_text(task.response),
+        )
+
+    async def list_runs_for_chat(
+        self,
+        chat_id: int,
+        message_thread_id: int | None = None,
+        schedule_id: str | None = None,
+        limit: int = 10,
+    ) -> list[ScheduleRun]:
+        rows = await asyncio.to_thread(self._list_run_rows, chat_id, message_thread_id, schedule_id, limit)
+        return [self._row_to_schedule_run(row) for row in rows]
+
+    async def latest_runs_by_schedule(self, schedule_ids: list[str]) -> dict[str, ScheduleRun]:
+        if not schedule_ids:
+            return {}
+        rows = await asyncio.to_thread(self._latest_run_rows_by_schedule, schedule_ids)
+        return {row["schedule_id"]: self._row_to_schedule_run(row) for row in rows}
 
     def _fetch_due_rows(self, now_iso: str) -> list[sqlite3.Row]:
         with self._connect() as con:
@@ -333,6 +435,106 @@ class ScheduleManager:
                 (next_run_at, task_id),
             )
 
+    def _insert_run(
+        self,
+        run_id: str,
+        schedule_id: str,
+        chat_id: int,
+        message_thread_id: int | None,
+        background_task_id: str | None,
+        planned_for: str,
+        submitted_at: str,
+        status: str,
+        error_text: str | None,
+        response_preview: str | None,
+    ) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO scheduled_task_runs
+                (id, schedule_id, chat_id, message_thread_id, background_task_id, planned_for, submitted_at, status, error_text, response_preview)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    schedule_id,
+                    chat_id,
+                    message_thread_id,
+                    background_task_id,
+                    planned_for,
+                    submitted_at,
+                    status,
+                    error_text,
+                    response_preview,
+                ),
+            )
+
+    def _update_run_for_background_task(
+        self,
+        background_task_id: str,
+        status: str,
+        started_at: str | None,
+        completed_at: str | None,
+        error_text: str | None,
+        response_preview: str | None,
+    ) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                UPDATE scheduled_task_runs
+                SET status = ?, started_at = ?, completed_at = ?, error_text = ?, response_preview = ?
+                WHERE background_task_id = ?
+                """,
+                (status, started_at, completed_at, error_text, response_preview, background_task_id),
+            )
+
+    def _list_run_rows(
+        self,
+        chat_id: int,
+        message_thread_id: int | None,
+        schedule_id: str | None,
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        query = (
+            "SELECT id, schedule_id, chat_id, message_thread_id, background_task_id, planned_for, submitted_at,"
+            " started_at, completed_at, status, error_text, response_preview "
+            "FROM scheduled_task_runs WHERE chat_id = ?"
+        )
+        params: list[object] = [chat_id]
+        if message_thread_id is None:
+            query += " AND message_thread_id IS NULL"
+        else:
+            query += " AND message_thread_id = ?"
+            params.append(message_thread_id)
+        if schedule_id:
+            query += " AND schedule_id = ?"
+            params.append(schedule_id)
+        query += " ORDER BY submitted_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as con:
+            cur = con.execute(query, tuple(params))
+            return list(cur.fetchall())
+
+    def _latest_run_rows_by_schedule(self, schedule_ids: list[str]) -> list[sqlite3.Row]:
+        placeholders = ", ".join("?" for _ in schedule_ids)
+        query = (
+            "SELECT id, schedule_id, chat_id, message_thread_id, background_task_id, planned_for, submitted_at,"
+            " started_at, completed_at, status, error_text, response_preview "
+            "FROM scheduled_task_runs "
+            f"WHERE schedule_id IN ({placeholders}) "
+            "ORDER BY submitted_at DESC"
+        )
+        seen: set[str] = set()
+        latest_rows: list[sqlite3.Row] = []
+        with self._connect() as con:
+            for row in con.execute(query, tuple(schedule_ids)):
+                schedule_id = row["schedule_id"]
+                if schedule_id in seen:
+                    continue
+                seen.add(schedule_id)
+                latest_rows.append(row)
+        return latest_rows
+
     @staticmethod
     def _row_to_scheduled_task(row: sqlite3.Row) -> ScheduledTask:
         return ScheduledTask(
@@ -351,6 +553,32 @@ class ScheduleManager:
             next_run_at=datetime.fromisoformat(row["next_run_at"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
+
+    @staticmethod
+    def _row_to_schedule_run(row: sqlite3.Row) -> ScheduleRun:
+        return ScheduleRun(
+            id=row["id"],
+            schedule_id=row["schedule_id"],
+            chat_id=row["chat_id"],
+            message_thread_id=row["message_thread_id"],
+            background_task_id=row["background_task_id"],
+            planned_for=datetime.fromisoformat(row["planned_for"]),
+            submitted_at=datetime.fromisoformat(row["submitted_at"]),
+            started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+            completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+            status=row["status"],
+            error_text=row["error_text"],
+            response_preview=row["response_preview"],
+        )
+
+    @staticmethod
+    def _preview_text(text: str | None, limit: int = 280) -> str | None:
+        if not text:
+            return None
+        compact = " ".join(text.split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3] + "..."
 
     @staticmethod
     def _next_daily_run(daily_time: str, timezone_name: str, now_utc: datetime) -> datetime:
