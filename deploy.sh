@@ -23,6 +23,8 @@ DEPLOY_LOG="$DEPLOY_DIR/deploy.log"
 GOOD_COMMIT_FILE="$DEPLOY_DIR/good_commit"
 START_TIMES="$DEPLOY_DIR/start_times"
 HEALTH_TIMEOUT=30  # seconds to wait for healthy bot
+RESTART_MAIN_APP="${RESTART_MAIN_APP:-0}"
+RESTART_SCHEDULER="${RESTART_SCHEDULER:-0}"
 
 mkdir -p "$DEPLOY_DIR"
 
@@ -52,6 +54,21 @@ notify_admin() {
     fi
 }
 
+is_truthy() {
+    case "${1,,}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+restart_targets=()
+if is_truthy "$RESTART_MAIN_APP"; then
+    restart_targets+=("telegram-bot.service")
+fi
+if is_truthy "$RESTART_SCHEDULER"; then
+    restart_targets+=("telegram-scheduler.service")
+fi
+
 # ── 1. Save rollback target ──────────────────────────────────
 ROLLBACK_COMMIT=$(git rev-parse HEAD)
 ROLLBACK_SHORT=$(git rev-parse --short HEAD)
@@ -64,7 +81,7 @@ NEW_SHORT=$(echo "$NEW_COMMIT" | cut -c1-7)
 
 ALREADY_CURRENT=false
 if [ "$ROLLBACK_COMMIT" = "$NEW_COMMIT" ]; then
-    deploy_log "Already on latest commit $NEW_SHORT. Will restart service."
+    deploy_log "Already on latest commit $NEW_SHORT."
     ALREADY_CURRENT=true
 else
     deploy_log "Deploying $ROLLBACK_SHORT -> $NEW_SHORT"
@@ -100,50 +117,77 @@ Service was not restarted."
     exit 1
 fi
 
-# ── 5. Clear crash counter so run.sh starts fresh ────────────
-: > "$START_TIMES"
+# ── 5. Optional restarts ─────────────────────────────────────
+if [ ${#restart_targets[@]} -eq 0 ]; then
+    deploy_log "Smoke test passed. No restart flags enabled; deploy completed without restarting services."
+    echo ""
+    echo "Current commit:"
+    git log -1 --oneline
+    exit 0
+fi
 
-# ── 6. Restart service ───────────────────────────────────────
-deploy_log "Smoke test passed. Restarting service..."
-sudo systemctl restart telegram-bot.service
+if is_truthy "$RESTART_MAIN_APP"; then
+    : > "$START_TIMES"
+fi
 
-# ── 7. Health check ──────────────────────────────────────────
-# Wait for good_commit to match the new commit (written by main.py on successful startup)
+deploy_log "Smoke test passed. Restarting: ${restart_targets[*]}"
+sudo systemctl daemon-reload
+sudo systemctl restart "${restart_targets[@]}"
+
+# ── 6. Health check ──────────────────────────────────────────
 deploy_log "Waiting up to ${HEALTH_TIMEOUT}s for health check..."
 
 for i in $(seq 1 "$HEALTH_TIMEOUT"); do
     sleep 1
 
-    # Check if service crashed
-    if ! systemctl is-active --quiet telegram-bot.service; then
-        deploy_log "Service crashed during startup (attempt $i/${HEALTH_TIMEOUT})"
-        break
-    fi
-
-    # Check if good_commit was updated to new commit
-    if [ -f "$GOOD_COMMIT_FILE" ]; then
-        CURRENT_GOOD=$(cat "$GOOD_COMMIT_FILE")
-        if [ "$CURRENT_GOOD" = "$NEW_COMMIT" ]; then
-            deploy_log "Deploy successful! Bot healthy at $NEW_SHORT (${i}s)"
-            echo ""
-            echo "Current commit:"
-            git log -1 --oneline
-            exit 0
+    if is_truthy "$RESTART_MAIN_APP"; then
+        if ! systemctl is-active --quiet telegram-bot.service; then
+            deploy_log "telegram-bot.service crashed during startup (attempt $i/${HEALTH_TIMEOUT})"
+            break
         fi
     fi
+
+    if is_truthy "$RESTART_SCHEDULER"; then
+        if ! systemctl is-active --quiet telegram-scheduler.service; then
+            deploy_log "telegram-scheduler.service is not active yet (attempt $i/${HEALTH_TIMEOUT})"
+            continue
+        fi
+    fi
+
+    if is_truthy "$RESTART_MAIN_APP"; then
+        if [ -f "$GOOD_COMMIT_FILE" ]; then
+            CURRENT_GOOD=$(cat "$GOOD_COMMIT_FILE")
+            if [ "$CURRENT_GOOD" = "$NEW_COMMIT" ]; then
+                deploy_log "Deploy successful! Selected services healthy at $NEW_SHORT (${i}s)"
+                echo ""
+                echo "Current commit:"
+                git log -1 --oneline
+                exit 0
+            fi
+        fi
+        continue
+    fi
+
+    deploy_log "Deploy successful! Selected services healthy at $NEW_SHORT (${i}s)"
+    echo ""
+    echo "Current commit:"
+    git log -1 --oneline
+    exit 0
 done
 
-# ── 8. Health check failed — rollback ────────────────────────
+# ── 7. Health check failed — rollback ────────────────────────
 deploy_log "HEALTH CHECK FAILED for $NEW_SHORT after ${HEALTH_TIMEOUT}s."
 
 if [ "$ALREADY_CURRENT" = false ]; then
     deploy_log "Rolling back to $ROLLBACK_SHORT."
     git reset --hard "$ROLLBACK_COMMIT"
 
-    # Clear crash counter again for clean rollback start
-    : > "$START_TIMES"
+    if is_truthy "$RESTART_MAIN_APP"; then
+        : > "$START_TIMES"
+    fi
 
-    sudo systemctl restart telegram-bot.service
+    sudo systemctl daemon-reload
+    sudo systemctl restart "${restart_targets[@]}"
 
     notify_admin "❌ *Deploy failed* (health check)
 

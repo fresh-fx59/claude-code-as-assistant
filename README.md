@@ -186,6 +186,13 @@ journalctl -u telegram-bot.service -f         # view live logs
 cat .deploy/deploy.log                        # persistent deploy/crash log
 ```
 
+GitHub Actions deploys can restart services independently via repo variables:
+
+- `RESTART_MAIN_APP_ON_PUSH=true` — restart `telegram-bot.service`
+- `RESTART_SCHEDULER_ON_PUSH=true` — restart `telegram-scheduler.service`
+
+If both are unset or false, pushes still deploy code to disk but do not restart either service.
+
 ### Option B: Run in a terminal
 
 ```bash

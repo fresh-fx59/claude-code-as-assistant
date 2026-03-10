@@ -1,4 +1,4 @@
-name: Deploy and Restart Bot
+name: Deploy and Optional Service Restart
 
 on:
   push:
@@ -28,5 +28,7 @@ jobs:
             git show origin/main:deploy.sh > ./deploy.sh
             chmod +x ./deploy.sh
 
-            # Run protected deploy (smoke test + health check + rollback)
+            # Run protected deploy with independently-controlled restart flags.
+            export RESTART_MAIN_APP="${{ vars.RESTART_MAIN_APP_ON_PUSH }}"
+            export RESTART_SCHEDULER="${{ vars.RESTART_SCHEDULER_ON_PUSH }}"
             bash ./deploy.sh
