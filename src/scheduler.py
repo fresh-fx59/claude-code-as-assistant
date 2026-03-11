@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import re
+import shlex
 import sqlite3
+import subprocess
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -20,6 +23,23 @@ from .tasks import BackgroundTask, TaskManager, TaskNotificationMode
 
 logger = logging.getLogger(__name__)
 _RESPONSE_STATUS_RE = re.compile(r"overall status:\s*[`']?(ok|warn|critical|error|failed)[`']?", re.IGNORECASE)
+_NATIVE_SCHEDULE_HEADER = "[[SCHEDULE_NATIVE]]"
+
+
+@dataclass(frozen=True)
+class NativeScheduleSpec:
+    command: list[str]
+    escalation_context: str | None = None
+
+
+@dataclass(frozen=True)
+class NativeScheduleResult:
+    status: str
+    change_type: str
+    should_alert: bool
+    summary: str
+    payload: dict[str, Any]
+    raw_output: str
 
 
 @dataclass(frozen=True)
@@ -462,6 +482,10 @@ class ScheduleManager:
     async def _run_due_once(self) -> None:
         claimed_runs = await asyncio.to_thread(self._claim_due_runs, datetime.now(timezone.utc))
         for schedule, run_id, planned_for, submitted_at in claimed_runs:
+            native_spec = self._parse_native_schedule(schedule.prompt)
+            if native_spec is not None:
+                await self._run_native_schedule(schedule, native_spec, run_id, planned_for, submitted_at)
+                continue
             background_task_id = str(uuid.uuid4())
             try:
                 await asyncio.to_thread(
@@ -512,6 +536,141 @@ class ScheduleManager:
                         f"<b>Target:</b> {self._format_schedule_target(schedule.chat_id, schedule.message_thread_id)}"
                     )
                 )
+
+    async def _run_native_schedule(
+        self,
+        schedule: ScheduledTask,
+        native_spec: NativeScheduleSpec,
+        run_id: str,
+        planned_for: datetime,
+        submitted_at: datetime,
+    ) -> None:
+        started_at = datetime.now(timezone.utc)
+        await asyncio.to_thread(
+            self._mark_run_started_by_id,
+            schedule.id,
+            run_id,
+            started_at.isoformat(),
+        )
+        try:
+            native_result = await asyncio.to_thread(self._execute_native_schedule, native_spec)
+            if native_result.should_alert:
+                await self._submit_native_escalation(
+                    schedule,
+                    run_id,
+                    planned_for,
+                    native_result,
+                    submitted_at,
+                )
+                return
+
+            completed_at = datetime.now(timezone.utc)
+            response_preview = self._preview_text(f"NO_ALERT {native_result.summary}")
+            previous_run = await asyncio.to_thread(self._find_previous_run_row, schedule.id, run_id)
+            await asyncio.to_thread(
+                self._complete_run_by_id,
+                schedule.id,
+                run_id,
+                "completed",
+                completed_at.isoformat(),
+                None,
+                response_preview,
+            )
+            await self._notify_schedule_event(
+                "completed",
+                (
+                    "✅ <b>Scheduled run completed</b>\n"
+                    f"<b>Schedule:</b> <code>{schedule.id[:8]}</code>\n"
+                    f"<b>Planned:</b> {planned_for.astimezone().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"<b>Finished:</b> {completed_at.astimezone().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"<b>Target:</b> {self._format_schedule_target(schedule.chat_id, schedule.message_thread_id)}\n"
+                    f"<b>Result:</b> {html.escape(response_preview or 'No detail')}"
+                ),
+                previous_run=previous_run,
+                current_response=response_preview,
+            )
+        except Exception as exc:
+            logger.exception("Failed to execute native scheduled task %s", schedule.id)
+            completed_at = datetime.now(timezone.utc)
+            error_text = str(exc)
+            previous_run = await asyncio.to_thread(self._find_previous_run_row, schedule.id, run_id)
+            await asyncio.to_thread(
+                self._complete_run_by_id,
+                schedule.id,
+                run_id,
+                "failed",
+                completed_at.isoformat(),
+                error_text,
+                None,
+            )
+            await self._notify_schedule_event(
+                "failed",
+                (
+                    "❌ <b>Scheduled run failed</b>\n"
+                    f"<b>Schedule:</b> <code>{schedule.id[:8]}</code>\n"
+                    f"<b>Planned:</b> {planned_for.astimezone().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"<b>Finished:</b> {completed_at.astimezone().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"<b>Target:</b> {self._format_schedule_target(schedule.chat_id, schedule.message_thread_id)}\n"
+                    f"<b>Result:</b> {html.escape(error_text)}"
+                ),
+                previous_run=previous_run,
+                current_error=error_text,
+            )
+
+    async def _submit_native_escalation(
+        self,
+        schedule: ScheduledTask,
+        run_id: str,
+        planned_for: datetime,
+        native_result: NativeScheduleResult,
+        submitted_at: datetime,
+    ) -> None:
+        background_task_id = str(uuid.uuid4())
+        prompt = self._build_native_escalation_prompt(schedule, native_result)
+        try:
+            await asyncio.to_thread(self._mark_run_submitted, schedule.id, run_id, background_task_id)
+            background_task_id = await self._task_manager.submit(
+                chat_id=schedule.chat_id,
+                message_thread_id=schedule.message_thread_id,
+                user_id=schedule.user_id,
+                prompt=prompt,
+                model=schedule.model,
+                session_id=schedule.session_id,
+                provider_cli=schedule.provider_cli,
+                resume_arg=schedule.resume_arg,
+                notification_mode=TaskNotificationMode.SILENT,
+                live_feedback=False,
+                feedback_title=self._build_schedule_feedback_title(schedule, planned_for),
+                task_id=background_task_id,
+            )
+            await self._notify_schedule_event(
+                "submitted",
+                (
+                    "🕒 <b>Scheduled run submitted</b>\n"
+                    f"<b>Schedule:</b> <code>{schedule.id[:8]}</code>\n"
+                    f"<b>Planned:</b> {planned_for.astimezone().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"<b>Target:</b> {self._format_schedule_target(schedule.chat_id, schedule.message_thread_id)}\n"
+                    f"<b>Prompt:</b> {html.escape(native_result.summary)}"
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to submit native escalation for scheduled task %s", schedule.id)
+            await asyncio.to_thread(
+                self._mark_run_submission_failed,
+                schedule.id,
+                run_id,
+                submitted_at.isoformat(),
+                "Failed to submit background task",
+            )
+            await self._notify_schedule_event(
+                "submission_failed",
+                (
+                    "❌ <b>Scheduled run submission failed</b>\n"
+                    f"<b>Schedule:</b> <code>{schedule.id[:8]}</code>\n"
+                    f"<b>Planned:</b> {planned_for.astimezone().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"<b>Target:</b> {self._format_schedule_target(schedule.chat_id, schedule.message_thread_id)}"
+                ),
+            )
 
     def _recover_stale_runs(self, recovered_at: str) -> None:
         with self._connect() as con:
@@ -813,6 +972,26 @@ class ScheduleManager:
                     (started_at, background_task_id),
                 )
 
+    def _mark_run_started_by_id(self, schedule_id: str, run_id: str, started_at: str | None) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                UPDATE scheduled_task_runs
+                SET status = 'running', started_at = COALESCE(?, started_at)
+                WHERE id = ?
+                """,
+                (started_at, run_id),
+            )
+            con.execute(
+                """
+                UPDATE scheduled_tasks
+                SET current_started_at = COALESCE(?, current_started_at),
+                    current_status = 'running'
+                WHERE id = ? AND current_run_id = ?
+                """,
+                (started_at, schedule_id, run_id),
+            )
+
     def _update_run_for_background_task(
         self,
         background_task_id: str,
@@ -843,6 +1022,38 @@ class ScheduleManager:
                 WHERE current_background_task_id = ?
                 """,
                 (background_task_id,),
+            )
+
+    def _complete_run_by_id(
+        self,
+        schedule_id: str,
+        run_id: str,
+        status: str,
+        completed_at: str | None,
+        error_text: str | None,
+        response_preview: str | None,
+    ) -> None:
+        with self._connect() as con:
+            con.execute(
+                """
+                UPDATE scheduled_task_runs
+                SET status = ?, completed_at = ?, error_text = ?, response_preview = ?
+                WHERE id = ?
+                """,
+                (status, completed_at, error_text, response_preview, run_id),
+            )
+            con.execute(
+                """
+                UPDATE scheduled_tasks
+                SET current_run_id = NULL,
+                    current_background_task_id = NULL,
+                    current_planned_for = NULL,
+                    current_submitted_at = NULL,
+                    current_started_at = NULL,
+                    current_status = NULL
+                WHERE id = ? AND current_run_id = ?
+                """,
+                (schedule_id, run_id),
             )
 
     def _list_run_rows(
@@ -993,6 +1204,80 @@ class ScheduleManager:
             f"<b>Schedule:</b> <code>{schedule.id[:8]}</code>\n"
             f"<b>Planned:</b> {planned_for.astimezone().strftime('%Y-%m-%d %H:%M:%S')}"
         )
+
+    @staticmethod
+    def _parse_native_schedule(prompt: str) -> NativeScheduleSpec | None:
+        lines = prompt.splitlines()
+        if not lines or lines[0].strip() != _NATIVE_SCHEDULE_HEADER:
+            return None
+        command: list[str] | None = None
+        context_lines: list[str] = []
+        for line in lines[1:]:
+            if command is None and line.startswith("command:"):
+                command_text = line.partition(":")[2].strip()
+                if not command_text:
+                    raise ValueError("Native schedule is missing command text")
+                command = shlex.split(command_text)
+                continue
+            context_lines.append(line)
+        if not command:
+            raise ValueError("Native schedule is missing command")
+        escalation_context = "\n".join(context_lines).strip() or None
+        return NativeScheduleSpec(command=command, escalation_context=escalation_context)
+
+    @staticmethod
+    def _execute_native_schedule(spec: NativeScheduleSpec) -> NativeScheduleResult:
+        completed = subprocess.run(
+            spec.command,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parent.parent,
+        )
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+        if completed.returncode != 0:
+            detail = stderr or stdout or f"Native command failed with exit code {completed.returncode}"
+            raise RuntimeError(detail)
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Native schedule did not return valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("Native schedule JSON payload must be an object")
+        status = str(payload.get("status") or "ok").lower()
+        should_alert = bool(payload.get("should_alert"))
+        change_type = str(payload.get("change_type") or "unknown")
+        summary = str(payload.get("summary") or "No summary provided.")
+        raw_output = stdout
+        return NativeScheduleResult(
+            status=status,
+            change_type=change_type,
+            should_alert=should_alert,
+            summary=summary,
+            payload=payload,
+            raw_output=raw_output,
+        )
+
+    @staticmethod
+    def _build_native_escalation_prompt(schedule: ScheduledTask, result: NativeScheduleResult) -> str:
+        prompt = (
+            "A native scheduled validator detected an alert-worthy state change.\n"
+            f"Schedule ID: {schedule.id}\n"
+            f"Target: {ScheduleManager._format_schedule_target(schedule.chat_id, schedule.message_thread_id)}\n"
+            f"Overall status: `{result.status}`\n"
+            f"Change type: `{result.change_type}`\n"
+            f"Summary: {result.summary}\n\n"
+            "Write a concise operator-facing message. Keep the first line exactly as "
+            f"`Overall status: `{result.status}`` and then explain what changed, why it matters, and the next action.\n\n"
+            "Validator JSON:\n"
+            f"```json\n{json.dumps(result.payload, ensure_ascii=True, indent=2)}\n```"
+        )
+        if schedule.prompt:
+            native_spec = ScheduleManager._parse_native_schedule(schedule.prompt)
+            if native_spec and native_spec.escalation_context:
+                prompt += f"\n\nExtra escalation instructions:\n{native_spec.escalation_context}"
+        return prompt
 
     @staticmethod
     def _normalize_detail(value: str | None) -> str:

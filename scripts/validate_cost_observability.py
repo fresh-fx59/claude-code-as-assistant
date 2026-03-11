@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -20,6 +21,69 @@ class CheckResult:
     value: float | None
     threshold: float | None
     details: str
+
+
+def build_alert_fingerprint(status: str, checks: list[CheckResult], error_text: str | None = None) -> dict[str, Any]:
+    problem_checks = [
+        {
+            "name": item.name,
+            "status": item.status,
+            "value": item.value,
+        }
+        for item in checks
+        if item.status in {"warn", "critical"}
+    ]
+    return {
+        "status": status,
+        "problems": problem_checks,
+        "error": error_text,
+    }
+
+
+def load_previous_fingerprint(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        return data
+    return None
+
+
+def save_fingerprint(path: Path | None, fingerprint: dict[str, Any]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(fingerprint, ensure_ascii=True), encoding="utf-8")
+
+
+def summarize_change(current: dict[str, Any], previous: dict[str, Any] | None) -> tuple[bool, str, str]:
+    current_status = current.get("status", "unknown")
+    current_problems = current.get("problems", [])
+    previous_status = previous.get("status", "unknown") if previous else None
+    previous_problems = previous.get("problems", []) if previous else []
+
+    if previous is None:
+        if current_status == "ok":
+            return False, "steady_ok", "No new issues."
+        return True, "new_issue", f"New {current_status} issue detected."
+
+    if current == previous:
+        return False, "unchanged", "No change since last run."
+
+    if previous_status in {"warn", "critical"} and current_status == "ok":
+        return True, "recovery", "Recovered to ok from a previous issue."
+
+    if current_status in {"warn", "critical"}:
+        previous_names = {(item.get("name"), item.get("status")) for item in previous_problems}
+        current_names = {(item.get("name"), item.get("status")) for item in current_problems}
+        if current_names - previous_names:
+            return True, "new_issue", f"New {current_status} signal detected."
+        return True, "changed_issue", f"{current_status.capitalize()} signal changed."
+
+    return False, "steady_ok", "No new issues."
 
 
 def run_promql(base_url: str, query: str, timeout_s: int) -> Any:
@@ -137,17 +201,27 @@ def main() -> int:
     parser.add_argument("--prometheus-url", default="http://45.151.30.146:9090")
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--format", choices=["json", "text"], default="json")
+    parser.add_argument("--state-file")
+    parser.add_argument("--alert-on-change", action="store_true")
     args = parser.parse_args()
 
     now = datetime.now(UTC).isoformat()
+    state_file = Path(args.state_file).expanduser() if args.state_file else None
     try:
         checks = evaluate(args.prometheus_url, args.timeout)
     except Exception as exc:  # pragma: no cover - operational fallback
+        fingerprint = build_alert_fingerprint("critical", [], str(exc))
+        previous = load_previous_fingerprint(state_file)
+        should_alert, change_type, summary = summarize_change(fingerprint, previous)
+        save_fingerprint(state_file, fingerprint)
         payload = {
             "timestamp": now,
             "status": "critical",
             "error": str(exc),
             "checks": [],
+            "should_alert": should_alert if args.alert_on_change else True,
+            "change_type": change_type,
+            "summary": summary,
         }
         if args.format == "json":
             print(json.dumps(payload, ensure_ascii=True))
@@ -177,6 +251,13 @@ def main() -> int:
             for item in checks
         ],
     }
+    fingerprint = build_alert_fingerprint(status, checks)
+    previous = load_previous_fingerprint(state_file)
+    should_alert, change_type, summary = summarize_change(fingerprint, previous)
+    save_fingerprint(state_file, fingerprint)
+    payload["should_alert"] = should_alert if args.alert_on_change else status in {"warn", "critical"}
+    payload["change_type"] = change_type
+    payload["summary"] = summary
 
     if args.format == "json":
         print(json.dumps(payload, ensure_ascii=True))

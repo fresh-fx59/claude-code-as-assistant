@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -130,6 +131,69 @@ async def test_due_schedule_preserves_provider_runtime(tmp_path) -> None:
     assert stub.submissions[0]["provider_cli"] == "codex2"
     assert stub.submissions[0]["resume_arg"] == "resume"
     assert stub.submissions[0]["model"] == "gpt-5-codex"
+
+
+@pytest.mark.asyncio
+async def test_native_schedule_skips_llm_when_validator_reports_no_change(tmp_path) -> None:
+    stub = _StubTaskManager()
+    manager = ScheduleManager(stub, tmp_path / "schedules.db")
+    state_file = tmp_path / "validator-state.json"
+    prompt = (
+        "[[SCHEDULE_NATIVE]]\n"
+        f"command: {sys.executable} -c \"import json; print(json.dumps("
+        "{'status': 'ok', 'should_alert': False, 'change_type': 'steady_ok', 'summary': 'No new issues.'}))\"\n"
+        f"Run direct validator and escalate only when needed. State file: {state_file}"
+    )
+    sid = await manager.create_every(
+        chat_id=21,
+        user_id=34,
+        prompt=prompt,
+        interval_minutes=1,
+        model="opus",
+    )
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
+
+    await manager._run_due_once()  # noqa: SLF001
+
+    assert stub.submissions == []
+    run = (await manager.list_runs_for_chat(21, schedule_id=sid))[0]
+    assert run.status == "completed"
+    assert run.response_preview == "NO_ALERT No new issues."
+    schedule = (await manager.list_for_chat(21))[0]
+    assert schedule.current_run_id is None
+
+
+@pytest.mark.asyncio
+async def test_native_schedule_escalates_with_llm_on_alertworthy_change(tmp_path) -> None:
+    stub = _StubTaskManager()
+    manager = ScheduleManager(stub, tmp_path / "schedules.db")
+    prompt = (
+        "[[SCHEDULE_NATIVE]]\n"
+        f"command: {sys.executable} -c \"import json; print(json.dumps("
+        "{'status': 'warn', 'should_alert': True, 'change_type': 'new_issue', 'summary': 'Retry spikes increased.'}))\"\n"
+        "Tell the operator whether this is likely transient."
+    )
+    sid = await manager.create_every(
+        chat_id=22,
+        user_id=35,
+        prompt=prompt,
+        interval_minutes=1,
+        model="opus",
+    )
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
+
+    await manager._run_due_once()  # noqa: SLF001
+
+    assert len(stub.submissions) == 1
+    assert "Overall status: `warn`" in stub.submissions[0]["prompt"]
+    assert "Retry spikes increased." in stub.submissions[0]["prompt"]
+    assert "Tell the operator whether this is likely transient." in stub.submissions[0]["prompt"]
+    run = (await manager.list_runs_for_chat(22, schedule_id=sid))[0]
+    assert run.status == "submitted"
+    schedule = (await manager.list_for_chat(22))[0]
+    assert schedule.current_status == "submitted"
 
 
 @pytest.mark.asyncio

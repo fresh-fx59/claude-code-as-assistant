@@ -237,11 +237,15 @@ It checks:
 - Presence of key bot series (`telegrambot_messages_total`)
 - Cost-with-error ratio, retry-amplified-cost frequency, and steering-event pressure
 
-Suggested background schedule:
+For recurring runs, prefer native scheduler execution with built-in change detection so routine checks consume zero LLM tokens and only escalate to the model when something new appears:
 
-```cron
-*/15 * * * * /home/claude-developer/iron-lady-assistant/scripts/validate_cost_observability.py --format json >> /home/claude-developer/iron-lady-assistant/work-dir/cost_observability_validator.log 2>&1
+```text
+[[SCHEDULE_NATIVE]]
+command: /home/claude-developer/iron-lady-assistant/scripts/validate_cost_observability.py --format json --alert-on-change --state-file /home/claude-developer/iron-lady-assistant/work-dir/cost_observability_validator.state.json
+Write a short operator-facing alert only when the validator reports a new issue, changed issue, or recovery.
 ```
+
+The native command must return JSON with `status`, `should_alert`, `change_type`, and `summary`. When `should_alert=false`, the scheduler stores the run result and stays silent. When `should_alert=true`, the scheduler submits a background LLM task with the validator JSON as escalation context.
 
 ### External Scheduler Daemon
 
@@ -268,6 +272,7 @@ Optional monitoring topic:
 The daemon will execute due schedules in the background and mirror only high-signal events by default: new failures, warn/critical task results, and recoveries from prior problems.
 Routine submitted/started/success noise stays silent unless you explicitly set `SCHEDULER_NOTIFY_LEVEL=all`.
 Scheduled jobs also preserve the provider runtime they were created with, so a task created from a `codex*` thread will continue running through that same Codex CLI when the standalone daemon picks it up.
+Schedules can also use a native command mode by starting the prompt with `[[SCHEDULE_NATIVE]]` and providing a `command:` line. This is the recommended path for deterministic health checks and validators because it removes routine LLM cost from the steady-state path.
 `setup.sh` can also generate and install both `telegram-bot.service` and `telegram-scheduler.service` when you choose the external scheduler option.
 The bundled systemd units include the per-user npm bin path so `codex` CLIs installed under `~/.npm-<user>/bin` stay available after reboot.
 
