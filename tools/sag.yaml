@@ -87,14 +87,14 @@ instructions: '# sag
 
   ```bash
 
-  # Generate audio file
-
-  sag -v Clawd -o /tmp/voice-reply.mp3 "Your message here"
+  # Generate audio file with a unique path per run
+  OUT="$(mktemp /tmp/voice-reply-XXXXXX.mp3)"
+  sag -v Clawd -o "$OUT" "Your message here"
 
 
   # Then include in reply:
 
-  # MEDIA:/tmp/voice-reply.mp3
+  # MEDIA:$OUT
 
   ```
 

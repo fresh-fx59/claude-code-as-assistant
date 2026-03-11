@@ -1247,3 +1247,39 @@ class TestCodexTransientRetries:
         assert run_mock.await_count == 2
         # Second attempt should reset session to avoid stale resume streams
         assert run_mock.await_args_list[1].args[5] is None
+
+    @pytest.mark.asyncio
+    async def test_exhausted_transient_codex_retry_returns_user_facing_error(self, mock_message):
+        response_error = type("obj", (object,), {
+            "text": "Reconnecting... 5/5 (stream disconnected before completion: IO error: Connection reset by peer (os error 104))",
+            "session_id": None,
+            "is_error": True,
+            "cost_usd": 0.0,
+            "duration_ms": 0,
+            "num_turns": 0,
+            "cancelled": False,
+            "idle_timeout": False,
+        })()
+
+        state = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
+        with (
+            patch("src.bot._run_codex", new=AsyncMock(return_value=response_error)) as run_mock,
+            patch("src.bot.config.CODEX_TRANSIENT_MAX_RETRIES", 0),
+            patch("src.bot.config.CODEX_TRANSIENT_RETRY_BACKOFF_SECONDS", 0),
+        ):
+            result = await _run_codex_with_retries(
+                message=mock_message,
+                state=state,
+                session=object(),
+                progress=AsyncMock(),
+                model=None,
+                session_id="sess-in",
+                resume_arg=None,
+                subprocess_env=None,
+            )
+
+        assert run_mock.await_count == 1
+        assert result is not None
+        assert result.is_error
+        assert "Codex stream disconnected repeatedly" in result.text
+        assert "Connection reset by peer" not in result.text

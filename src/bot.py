@@ -554,6 +554,26 @@ def _is_transient_codex_error(text: str | None) -> bool:
     return any(pattern.search(text) for pattern in _CODEX_TRANSIENT_ERROR_PATTERNS)
 
 
+def _sanitize_transient_codex_error_response(
+    response: bridge.ClaudeResponse,
+    *,
+    attempts: int,
+) -> bridge.ClaudeResponse:
+    return bridge.ClaudeResponse(
+        text=(
+            "The Codex stream disconnected repeatedly and did not recover after "
+            f"{attempts} attempt(s). Please retry."
+        ),
+        session_id=response.session_id,
+        is_error=True,
+        cost_usd=response.cost_usd,
+        duration_ms=response.duration_ms,
+        num_turns=response.num_turns,
+        cancelled=response.cancelled,
+        idle_timeout=response.idle_timeout,
+    )
+
+
 def _media_extension(media_ref: str) -> str:
     raw = media_ref.strip().strip("`").strip("\"'")
     if not raw:
@@ -2086,7 +2106,7 @@ async def _run_codex_with_retries(
         if state.cancel_requested or not response.is_error or not _is_transient_codex_error(response.text):
             return response
         if retries_left <= 0:
-            return response
+            return _sanitize_transient_codex_error_response(response, attempts=attempt)
 
         retries_left -= 1
         logger.warning(

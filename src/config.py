@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.26.0"
+VERSION: str = "0.26.1"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -101,6 +101,18 @@ SCOPE_SNAPSHOT_COMPLETED_HASHES_LIMIT: int = int(
     os.getenv("SCOPE_SNAPSHOT_COMPLETED_HASHES_LIMIT", "20")
 )
 PROGRESS_DEBOUNCE_SECONDS: float = float(os.getenv("PROGRESS_DEBOUNCE_SECONDS", "3.0"))
+VOICE_TRANSCRIPTION_MAX_CONCURRENCY: int = max(
+    1,
+    int(os.getenv("VOICE_TRANSCRIPTION_MAX_CONCURRENCY", "1")),
+)
+_voice_transcription_default_threads = max(
+    1,
+    (os.cpu_count() or 1) // VOICE_TRANSCRIPTION_MAX_CONCURRENCY,
+)
+VOICE_TRANSCRIPTION_THREADS: int = max(
+    1,
+    int(os.getenv("VOICE_TRANSCRIPTION_THREADS", str(_voice_transcription_default_threads))),
+)
 METRICS_PORT: int = int(os.getenv("METRICS_PORT", "9101"))
 EMBEDDED_SCHEDULER_ENABLED: bool = (
     os.getenv("EMBEDDED_SCHEDULER_ENABLED", "1").strip().lower() not in {"0", "false", "no"}

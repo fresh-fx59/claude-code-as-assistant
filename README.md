@@ -214,6 +214,8 @@ All settings are in the `.env` file. Edit it anytime and restart the bot.
 | `CLAUDE_WORKING_DIR` | No | — | Working directory for Claude |
 | `IDLE_TIMEOUT` | No | `120` | Seconds without output before timeout |
 | `PROGRESS_DEBOUNCE_SECONDS` | No | `3.0` | Min seconds between progress updates |
+| `VOICE_TRANSCRIPTION_MAX_CONCURRENCY` | No | `1` | Max number of concurrent whisper transcription jobs |
+| `VOICE_TRANSCRIPTION_THREADS` | No | `cpu_count / max_concurrency` | Threads passed to each `whisper-cli` process |
 | `METRICS_PORT` | No | `9101` | Prometheus metrics port (0 to disable) |
 | `MEMORY_DIR` | No | `memory/` | Directory for persistent memory storage |
 | `TOOLS_DIR` | No | `tools/` | Directory for custom tool definitions |
