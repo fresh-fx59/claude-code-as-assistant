@@ -292,6 +292,27 @@ python3 -m src.telegram_digest_tool collect
 python3 -m src.telegram_digest_tool render
 ```
 
+One-command channel onboarding after the proxy is already configured:
+
+```bash
+venv/bin/python scripts/add_telegram_digest_channel.py --channel https://t.me/ai_engineer_helper
+```
+
+This helper:
+- resolves the channel through the proxy;
+- appends the channel id to `TELEGRAM_PROXY_ALLOWED_CHANNEL_IDS`;
+- appends the linked discussion chat id to `TELEGRAM_PROXY_ALLOWED_CHAT_IDS` when present;
+- restarts `telegram-proxy.service`;
+- runs one immediate native collect pass and prints a JSON summary.
+
+If the current shell cannot run `sudo`, you can still stage the allowlist change without restarting:
+
+```bash
+venv/bin/python scripts/add_telegram_digest_channel.py --channel https://t.me/ai_engineer_helper --no-restart --no-collect
+sudo systemctl restart telegram-proxy.service
+venv/bin/python -m src.telegram_digest_tool collect
+```
+
 Install both recurring schedules into `memory/schedules.db`:
 
 ```bash

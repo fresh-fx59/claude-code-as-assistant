@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import asdict, dataclass
 from datetime import timezone
@@ -29,6 +30,10 @@ class ProxyChannelRecord:
     linked_chat_username: str | None
 
 
+def _json_safe(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
 def _message_payload(message: Any, entity_username: str | None) -> dict[str, Any]:
     replies = None
     reply_info = getattr(message, "replies", None)
@@ -48,7 +53,7 @@ def _message_payload(message: Any, entity_username: str | None) -> dict[str, Any
         "replies": replies,
         "link": f"https://t.me/{entity_username}/{message.id}" if entity_username else None,
         "text": (getattr(message, "message", None) or "").strip(),
-        "raw_json": message.to_dict(),
+        "raw_json": _json_safe(message.to_dict()),
     }
 
 
@@ -100,8 +105,9 @@ class TelegramProxy:
             raise RuntimeError("Telegram proxy client is not started.")
         return self._client
 
-    async def list_channels(self, *, limit: int) -> list[ProxyChannelRecord]:
+    async def list_channels(self, *, limit: int, lookup: str | None = None) -> list[ProxyChannelRecord]:
         client = self._require_client()
+        lookup_value = lookup.strip().lower() if lookup else None
         async with self._lock:
             dialogs = [dialog async for dialog in client.iter_dialogs(limit=limit)]
             entity_by_id: dict[int, Any] = {}
@@ -112,8 +118,12 @@ class TelegramProxy:
                     continue
                 entity_by_id[int(entity.id)] = entity
                 if getattr(entity, "broadcast", False):
-                    if self._allowed_channel_ids and int(entity.id) not in self._allowed_channel_ids:
-                        continue
+                    if lookup_value:
+                        entity_id = str(int(entity.id))
+                        username = (getattr(entity, "username", None) or "").strip().lower()
+                        title = (getattr(entity, "title", None) or "").strip().lower()
+                        if lookup_value not in {entity_id, username, title}:
+                            continue
                     channels.append(entity)
 
             records: list[ProxyChannelRecord] = []
@@ -128,12 +138,9 @@ class TelegramProxy:
                         linked_entity = entity_by_id.get(int(linked_chat_id))
                         if linked_entity is None:
                             linked_entity = await client.get_entity(int(linked_chat_id))
-                        if self._allowed_chat_ids and int(linked_chat_id) not in self._allowed_chat_ids:
-                            linked_chat_id = None
-                        else:
-                            linked_chat_title = getattr(linked_entity, "title", None)
-                            linked_chat_username = getattr(linked_entity, "username", None)
-                            self._entity_cache[("linked_chat", int(linked_chat_id))] = linked_entity
+                        linked_chat_title = getattr(linked_entity, "title", None)
+                        linked_chat_username = getattr(linked_entity, "username", None)
+                        self._entity_cache[("linked_chat", int(linked_chat_id))] = linked_entity
                 except Exception:
                     logger.debug(
                         "Could not resolve linked chat for channel=%s",
@@ -223,7 +230,8 @@ async def _list_channels(request: web.Request) -> web.Response:
     _check_auth(request)
     proxy: TelegramProxy = request.app["proxy"]
     limit = max(1, min(500, int(request.query.get("limit", "200"))))
-    records = await proxy.list_channels(limit=limit)
+    lookup = request.query.get("lookup", "").strip() or None
+    records = await proxy.list_channels(limit=limit, lookup=lookup)
     return web.json_response({"channels": [asdict(record) for record in records]})
 
 
