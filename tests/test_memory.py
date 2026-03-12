@@ -339,10 +339,22 @@ def test_worklog_tool_records_summary_and_commit(tmp_path: Path, capsys) -> None
     assert "tracked.txt" in listed
 
 
-def test_worklog_tool_auto_records_latest_active_session(capsys) -> None:
+def test_worklog_tool_auto_records_latest_active_session(capsys, monkeypatch) -> None:
     work_dir = Path.cwd()
     memory_dir = work_dir / "memory"
     repo_dir = work_dir / "repo"
+    for key in (
+        "ILA_WORKLOG_SCOPE_KEY",
+        "ILA_WORKLOG_CHAT_ID",
+        "ILA_WORKLOG_SESSION_ID",
+        "ILA_WORKLOG_SESSION_TYPE",
+        "ILA_WORKLOG_PROVIDER",
+        "ILA_WORKLOG_LAST_ACTIVITY_AT",
+        "ILA_WORKLOG_MESSAGE_THREAD_ID",
+        "ILA_WORKLOG_TOPIC_LABEL",
+        "ILA_WORKLOG_TOPIC_STARTED_AT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     repo_dir.mkdir()
     subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test User"], check=True)

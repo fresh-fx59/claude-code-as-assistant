@@ -7,9 +7,11 @@ and message handling. These are observable user-facing behaviors.
 import asyncio
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiogram.types import FSInputFile
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 
 from src.bot import (
@@ -1160,6 +1162,37 @@ class TestAudioProgress:
         final_text = mock_message.bot.edit_message_text.await_args_list[-1].kwargs["text"]
         assert "Audio reply sent" in final_text
         assert "Conversion time:" in final_text
+
+    async def test_send_media_reply_snapshots_local_audio_before_voice_send(
+        self,
+        mock_message,
+        monkeypatch,
+        tmp_path,
+    ):
+        audio_path = tmp_path / "reply.ogg"
+        audio_path.write_bytes(b"voice-bytes")
+        sent_paths: list[Path] = []
+
+        async def fake_keep_chat_action(message, action):
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                return
+
+        async def fake_answer_voice(media_input):
+            assert isinstance(media_input, FSInputFile)
+            sent_path = Path(media_input.path)
+            sent_paths.append(sent_path)
+            assert sent_path != audio_path
+            assert sent_path.exists()
+
+        monkeypatch.setattr("src.bot._keep_chat_action", fake_keep_chat_action)
+        mock_message.answer_voice.side_effect = fake_answer_voice
+
+        await _send_media_reply(mock_message, str(audio_path), audio_as_voice=True)
+
+        assert sent_paths
+        assert not sent_paths[0].exists()
 
 
 # ── Contract 8: Chat state management ───────────────────────────

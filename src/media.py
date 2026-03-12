@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import re
+import os
+import shutil
+import tempfile
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -45,6 +49,39 @@ def resolve_media_input(media_ref: str):
     return raw
 
 
+@asynccontextmanager
+async def prepared_media_input(media_ref: str):
+    """Yield a stable media handle for Telegram sends.
+
+    Snapshot local files before sending so concurrent conversions that reuse the
+    same output path cannot overwrite the bytes while Telegram is opening them.
+    """
+    raw = media_ref.strip().strip("`").strip("\"'")
+    parsed = urlparse(raw)
+    if parsed.scheme in {"http", "https"}:
+        yield raw
+        return
+
+    path = Path(raw).expanduser()
+    if not path.exists() or not path.is_file():
+        yield raw
+        return
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".telegram-send-{path.stem}-",
+        suffix=path.suffix,
+        dir=str(path.parent),
+    )
+    temp_path = Path(temp_name)
+    try:
+        os.close(fd)
+        shutil.copyfile(path, temp_path)
+        yield FSInputFile(temp_path, filename=path.name)
+    finally:
+        with suppress(FileNotFoundError):
+            temp_path.unlink()
+
+
 def extract_media_directives(text: str) -> tuple[str, list[str], bool]:
     if not text:
         return "", [], False
@@ -73,14 +110,14 @@ def strip_tool_directive_lines(text: str) -> str:
 
 
 async def send_media(bot: Bot, chat_id: int, message_thread_id: int | None, media_ref: str, *, audio_as_voice: bool) -> None:
-    media_input = resolve_media_input(media_ref)
-    kwargs = {"chat_id": chat_id}
-    if message_thread_id is not None:
-        kwargs["message_thread_id"] = message_thread_id
-    if audio_as_voice and is_voice_compatible_media(media_ref):
-        await bot.send_voice(voice=media_input, **kwargs)
-        return
-    if is_audio_media(media_ref):
-        await bot.send_audio(audio=media_input, **kwargs)
-        return
-    await bot.send_document(document=media_input, **kwargs)
+    async with prepared_media_input(media_ref) as media_input:
+        kwargs = {"chat_id": chat_id}
+        if message_thread_id is not None:
+            kwargs["message_thread_id"] = message_thread_id
+        if audio_as_voice and is_voice_compatible_media(media_ref):
+            await bot.send_voice(voice=media_input, **kwargs)
+            return
+        if is_audio_media(media_ref):
+            await bot.send_audio(audio=media_input, **kwargs)
+            return
+        await bot.send_document(document=media_input, **kwargs)

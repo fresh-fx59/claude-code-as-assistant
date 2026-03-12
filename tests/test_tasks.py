@@ -1,12 +1,15 @@
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram.types import FSInputFile
 
 from src.tasks import BackgroundTask, TaskManager, TaskNotificationMode, TaskStatus
 from src import bridge
 from src.tasks import ToolTimeoutPolicy
+from src.media import send_media
 
 
 @pytest.mark.asyncio
@@ -443,3 +446,26 @@ async def test_deliver_response_mode_falls_back_to_text_when_media_send_fails(mo
     assert kwargs["message_thread_id"] == 77
     assert "Daily digest" in kwargs["text"]
     assert "Could not send some media attachments" in kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_media_snapshots_local_voice_file_before_send(tmp_path) -> None:
+    audio_path = tmp_path / "digest.ogg"
+    audio_path.write_bytes(b"voice-bytes")
+
+    bot = AsyncMock()
+    sent_paths: list[Path] = []
+
+    async def fake_send_voice(*, voice, **kwargs):
+        assert isinstance(voice, FSInputFile)
+        sent_path = Path(voice.path)
+        sent_paths.append(sent_path)
+        assert sent_path != audio_path
+        assert sent_path.exists()
+
+    bot.send_voice.side_effect = fake_send_voice
+
+    await send_media(bot, 123, 77, str(audio_path), audio_as_voice=True)
+
+    assert sent_paths
+    assert not sent_paths[0].exists()

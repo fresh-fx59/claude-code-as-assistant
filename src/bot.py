@@ -31,6 +31,7 @@ from .media import (
     extract_media_directives,
     is_audio_media,
     is_voice_compatible_media,
+    prepared_media_input,
     resolve_media_input,
     strip_tool_directive_lines,
 )
@@ -2810,14 +2811,14 @@ async def _send_chat_action_once(message: Message, action: ChatAction) -> None:
 
 
 async def _send_media_reply(message: Message, media_ref: str, *, audio_as_voice: bool) -> None:
-    media_input = _resolve_media_input(media_ref)
-    if audio_as_voice and _is_voice_compatible_media(media_ref):
-        await _send_audio_with_progress(message, media_input, as_voice=True)
-        return
-    if _is_audio_media(media_ref):
-        await _send_audio_with_progress(message, media_input, as_voice=False)
-        return
-    await message.answer_document(media_input)
+    async with prepared_media_input(media_ref) as media_input:
+        if audio_as_voice and _is_voice_compatible_media(media_ref):
+            await _send_audio_with_progress(message, media_input, as_voice=True)
+            return
+        if _is_audio_media(media_ref):
+            await _send_audio_with_progress(message, media_input, as_voice=False)
+            return
+        await message.answer_document(media_input)
 
 
 async def _send_audio_with_progress(message: Message, media_input, *, as_voice: bool) -> None:
