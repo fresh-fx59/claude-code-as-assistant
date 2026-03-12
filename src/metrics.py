@@ -123,6 +123,20 @@ COST_INTEL_TAXONOMY_TOTAL = Counter(
     ["category", "provider", "model", "mode"],
 )
 
+# F08: monitor-only governance observability (no response-path enforcement)
+F08_GOVERNANCE_EVENTS_TOTAL = Counter(
+    "telegrambot_f08_governance_events_total",
+    "Governance lifecycle events for F08 monitor-only rollout",
+    ["mode", "scope", "event", "status", "decision"],
+)
+
+F08_GOVERNANCE_EVENT_DURATION_MS = Histogram(
+    "telegrambot_f08_governance_event_duration_ms",
+    "Duration of F08 governance events in milliseconds",
+    ["mode", "scope", "event", "status"],
+    buckets=[1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000],
+)
+
 _CORE_TOOL_NAMES = frozenset({
     "read",
     "write",
@@ -329,3 +343,35 @@ def observe_cost_intelligence_turn(
         ",".join(categories) if categories else "-",
     )
     return categories
+
+
+def observe_f08_governance_event(
+    *,
+    mode: str,
+    scope: str,
+    event: str,
+    status: str,
+    decision: str = "advisory",
+    duration_ms: float | None = None,
+) -> None:
+    mode_label = (mode or "shadow").strip().lower()
+    scope_label = (scope or "unknown").strip().lower()
+    event_label = (event or "unknown").strip().lower()
+    status_label = (status or "unknown").strip().lower()
+    decision_label = (decision or "advisory").strip().lower()
+
+    F08_GOVERNANCE_EVENTS_TOTAL.labels(
+        mode=mode_label,
+        scope=scope_label,
+        event=event_label,
+        status=status_label,
+        decision=decision_label,
+    ).inc()
+
+    if duration_ms is not None:
+        F08_GOVERNANCE_EVENT_DURATION_MS.labels(
+            mode=mode_label,
+            scope=scope_label,
+            event=event_label,
+            status=status_label,
+        ).observe(max(0.0, duration_ms))

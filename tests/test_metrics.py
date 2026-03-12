@@ -1,6 +1,11 @@
 from unittest.mock import Mock
 
-from src.metrics import observe_cost_intelligence_turn, start_metrics_server
+from src.metrics import (
+    F08_GOVERNANCE_EVENTS_TOTAL,
+    observe_cost_intelligence_turn,
+    observe_f08_governance_event,
+    start_metrics_server,
+)
 
 
 def test_metrics_server_disabled_when_port_zero(monkeypatch):
@@ -96,3 +101,31 @@ def test_cost_intel_classifies_scope_hotspot_after_repeated_success():
         )
 
     assert "scope_hotspot" in categories
+
+
+def test_f08_governance_observe_records_event():
+    before = F08_GOVERNANCE_EVENTS_TOTAL.labels(
+        mode="shadow",
+        scope="self_mod_only",
+        event="apply_candidate",
+        status="success",
+        decision="allow",
+    )._value.get()
+
+    observe_f08_governance_event(
+        mode="shadow",
+        scope="self_mod_only",
+        event="apply_candidate",
+        status="success",
+        decision="allow",
+        duration_ms=42.0,
+    )
+
+    after = F08_GOVERNANCE_EVENTS_TOTAL.labels(
+        mode="shadow",
+        scope="self_mod_only",
+        event="apply_candidate",
+        status="success",
+        decision="allow",
+    )._value.get()
+    assert after == before + 1

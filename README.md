@@ -217,6 +217,8 @@ All settings are in the `.env` file. Edit it anytime and restart the bot.
 | `VOICE_TRANSCRIPTION_MAX_CONCURRENCY` | No | `1` | Max number of concurrent whisper transcription jobs |
 | `VOICE_TRANSCRIPTION_THREADS` | No | `cpu_count / max_concurrency` | Threads passed to each `whisper-cli` process |
 | `METRICS_PORT` | No | `9101` | Prometheus metrics port (0 to disable) |
+| `F08_GOVERNANCE_MODE` | No | `shadow` | F08 rollout mode: `shadow`, `enforce_limited`, `enforce_scoped`, `enforce_full` |
+| `F08_ENFORCEMENT_SCOPE` | No | `self_mod_only` | Logical scope label for F08 governance metrics |
 | `MEMORY_DIR` | No | `memory/` | Directory for persistent memory storage |
 | `TOOLS_DIR` | No | `tools/` | Directory for custom tool definitions |
 
@@ -224,7 +226,7 @@ All settings are in the `.env` file. Edit it anytime and restart the bot.
 
 The bot exposes Prometheus metrics at `http://localhost:9101/metrics` — useful if you run Grafana or similar.
 
-Tracked metrics include message counts, response times, API costs, active sessions, and monitor-only F18 cost intelligence telemetry (taxonomy counters, tool-mix buckets, message-size buckets, and per-mode/provider/model cost and duration histograms).
+Tracked metrics include message counts, response times, API costs, active sessions, monitor-only F18 cost intelligence telemetry (taxonomy counters, tool-mix buckets, message-size buckets, and per-mode/provider/model cost and duration histograms), and monitor-only F08 governance telemetry (`telegrambot_f08_governance_events_total` + duration histogram).
 
 ### F18 Attention Validator (Monitor-Only)
 
@@ -248,6 +250,28 @@ Write a short operator-facing alert only when the validator reports a new issue,
 ```
 
 The native command must return JSON with `status`, `should_alert`, `change_type`, and `summary`. When `should_alert=false`, the scheduler stores the run result and stays silent. When `should_alert=true`, the scheduler submits a background LLM task with the validator JSON as escalation context.
+
+### F08 Governance Validator (Monitor-Only)
+
+Use this validator during rollout to ensure F08 remains in non-interfering mode while baseline data accumulates:
+
+```bash
+./scripts/validate_f08_observability.py --format text
+```
+
+It checks:
+- Prometheus scrape health for `telegram_bot_metrics`
+- Presence of F08 metric series (`telegrambot_f08_governance_events_total`)
+- Whether non-shadow F08 events appear unexpectedly
+- 24h `apply_candidate` failure ratio and rollback-success count
+
+Scheduler-friendly native mode:
+
+```text
+[[SCHEDULE_NATIVE]]
+command: /home/claude-developer/iron-lady-assistant/scripts/validate_f08_observability.py --format json --alert-on-change --state-file /home/claude-developer/iron-lady-assistant/work-dir/f08_observability_validator.state.json
+Write a short operator-facing alert only when the validator reports a new issue, changed issue, or recovery.
+```
 
 ### External Scheduler Daemon
 

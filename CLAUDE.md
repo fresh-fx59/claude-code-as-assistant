@@ -286,6 +286,8 @@ The bot exposes metrics on port `9101` (configurable via `METRICS_PORT`).
 | `telegrambot_cost_intel_step_plan_active_total` | Counter | `provider`, `model`, `mode` | Turns observed while step-plan mode was active |
 | `telegrambot_cost_intel_steering_event_count` | Histogram | `provider`, `model`, `mode` | Steering events per turn (F17 correlation) |
 | `telegrambot_cost_intel_taxonomy_total` | Counter | `category`, `provider`, `model`, `mode` | Taxonomy counts (`high_cost_success`, `cost_with_error`, `cost_with_empty`, `retry_amplified_cost`, `tool_driven_cost_inflation`, `scope_hotspot`) |
+| `telegrambot_f08_governance_events_total` | Counter | `mode`, `scope`, `event`, `status`, `decision` | F08 monitor-only governance lifecycle events |
+| `telegrambot_f08_governance_event_duration_ms` | Histogram | `mode`, `scope`, `event`, `status` | F08 governance event duration distribution |
 | `telegrambot_active_sessions` | Gauge | — | Active chat sessions |
 | `telegrambot_bg_tasks_active` | Gauge | — | Total active background tasks (queued + running) |
 | `telegrambot_bg_tasks_queued` | Gauge | — | Queued background tasks |

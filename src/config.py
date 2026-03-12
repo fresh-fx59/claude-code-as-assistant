@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.26.1"
+VERSION: str = "0.27.0"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -130,6 +130,15 @@ AUTONOMY_ENABLED: bool = os.getenv("AUTONOMY_ENABLED", "1").strip().lower() not 
 AUTONOMY_FAILURE_THRESHOLD: int = int(os.getenv("AUTONOMY_FAILURE_THRESHOLD", "3"))
 AUTONOMY_FAILURE_WINDOW_MINUTES: int = int(os.getenv("AUTONOMY_FAILURE_WINDOW_MINUTES", "60"))
 AUTONOMY_ALERT_COOLDOWN_MINUTES: int = int(os.getenv("AUTONOMY_ALERT_COOLDOWN_MINUTES", "30"))
+_f08_mode = os.getenv("F08_GOVERNANCE_MODE", "shadow").strip().lower()
+F08_GOVERNANCE_MODE: str = (
+    _f08_mode
+    if _f08_mode in {"shadow", "enforce_limited", "enforce_scoped", "enforce_full"}
+    else "shadow"
+)
+F08_ENFORCEMENT_SCOPE: str = (
+    os.getenv("F08_ENFORCEMENT_SCOPE", "self_mod_only").strip().lower() or "self_mod_only"
+)
 STEP_PLAN_AUTO_TRIGGER_ENABLED: bool = os.getenv(
     "STEP_PLAN_AUTO_TRIGGER_ENABLED", "1"
 ).strip().lower() not in {"0", "false", "no"}

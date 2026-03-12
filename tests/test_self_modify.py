@@ -17,9 +17,11 @@ def test_stage_and_promote_plugin(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path)
     manager = SelfModificationManager(repo)
 
-    staged = manager.stage_plugin("tools/sample_plugin.py", "VALUE = 1\n")
+    with patch("src.self_modify.metrics.observe_f08_governance_event") as observe_mock:
+        staged = manager.stage_plugin("tools/sample_plugin.py", "VALUE = 1\n")
     assert staged.exists()
     assert staged.read_text(encoding="utf-8") == "VALUE = 1\n"
+    observe_mock.assert_called()
 
     promoted = manager.promote_plugin("tools/sample_plugin.py")
     assert promoted == repo / "src" / "plugins" / "tools" / "sample_plugin.py"
