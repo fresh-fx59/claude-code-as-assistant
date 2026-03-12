@@ -273,14 +273,11 @@ Generate the encrypted Telegram credential blob with the repo-local helper:
 ```bash
 venv/bin/python scripts/create_telethon_string_session.py
 python3 -m src.telegram_proxy_crypto_tool generate-key
-python3 -m src.telegram_proxy_crypto_tool encrypt \
-  --key <fernet_key> \
-  --api-id <telegram_api_id> \
-  --api-hash <telegram_api_hash> \
-  --session-string <telethon_string_session>
+python3 -m src.telegram_proxy_crypto_tool encrypt
 ```
 
 The session helper prompts for `api_id`, `api_hash`, and `phone`, then walks through the Telegram login and prints the `StringSession`.
+The encrypt helper prompts interactively for the Fernet key, `api_id`, `api_hash`, and `StringSession` so these values do not need to appear in shell history.
 
 Keep the generated Fernet key out of `.env`; load it into the proxy service via `LoadCredentialEncrypted=` in `telegram-proxy.service`.
 

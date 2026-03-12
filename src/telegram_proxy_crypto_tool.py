@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 
@@ -13,15 +14,22 @@ def _cmd_generate_key(_: argparse.Namespace) -> int:
 
 
 def _cmd_encrypt(args: argparse.Namespace) -> int:
+    key = args.key or getpass.getpass("Fernet key: ").strip()
+    api_id = args.api_id
+    if api_id is None:
+        api_id = int(input("Telegram api_id: ").strip())
+    api_hash = args.api_hash or getpass.getpass("Telegram api_hash: ").strip()
+    session_string = args.session_string or getpass.getpass("Telethon StringSession: ").strip()
+
     payload = {
-        "api_id": args.api_id,
-        "api_hash": args.api_hash,
+        "api_id": api_id,
+        "api_hash": api_hash,
     }
-    if args.session_string:
-        payload["session_string"] = args.session_string
+    if session_string:
+        payload["session_string"] = session_string
     if args.session_path:
         payload["session_path"] = args.session_path
-    token = Fernet(args.key.encode("utf-8")).encrypt(
+    token = Fernet(key.encode("utf-8")).encrypt(
         json.dumps(payload, separators=(",", ":")).encode("utf-8")
     )
     print(token.decode("utf-8"))
@@ -36,9 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
     generate_key.set_defaults(func=_cmd_generate_key)
 
     encrypt = sub.add_parser("encrypt")
-    encrypt.add_argument("--key", required=True)
-    encrypt.add_argument("--api-id", type=int, required=True)
-    encrypt.add_argument("--api-hash", required=True)
+    encrypt.add_argument("--key")
+    encrypt.add_argument("--api-id", type=int)
+    encrypt.add_argument("--api-hash")
     encrypt.add_argument("--session-string", default="")
     encrypt.add_argument("--session-path", default="")
     encrypt.set_defaults(func=_cmd_encrypt)
