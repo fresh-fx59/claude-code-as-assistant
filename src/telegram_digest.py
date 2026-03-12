@@ -374,11 +374,13 @@ async def _collect_proxy_messages_for_peer(
     last_message_id = store.last_message_id(peer_key)
     latest_seen = last_message_id
     inserted_count = 0
+    recent_first = last_message_id == 0
     messages = await client.read_messages(
         kind=kind,
         entity_id=entity_id,
         min_id=last_message_id,
         limit=collect_limit,
+        recent_first=recent_first,
     )
     for message in messages:
         posted_at_raw = message.get("posted_at")

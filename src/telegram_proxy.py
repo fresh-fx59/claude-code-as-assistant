@@ -168,18 +168,20 @@ class TelegramProxy:
         entity_id: int,
         min_id: int,
         limit: int,
+        recent_first: bool = False,
     ) -> list[dict[str, Any]]:
         client = self._require_client()
         entity = await self._resolve_entity(kind=kind, entity_id=entity_id)
         username = getattr(entity, "username", None)
         items: list[dict[str, Any]] = []
+        iter_kwargs: dict[str, Any] = {
+            "limit": limit,
+            "reverse": not recent_first,
+        }
+        if min_id > 0:
+            iter_kwargs["min_id"] = min_id
         async with self._lock:
-            async for message in client.iter_messages(
-                entity,
-                min_id=min_id,
-                reverse=True,
-                limit=limit,
-            ):
+            async for message in client.iter_messages(entity, **iter_kwargs):
                 payload = _message_payload(message, username)
                 if payload["text"]:
                     items.append(payload)
@@ -242,7 +244,14 @@ async def _read_messages(request: web.Request) -> web.Response:
     entity_id = int(request.match_info["entity_id"])
     min_id = max(0, int(request.query.get("min_id", "0")))
     limit = max(1, min(500, int(request.query.get("limit", "200"))))
-    messages = await proxy.read_messages(kind=kind, entity_id=entity_id, min_id=min_id, limit=limit)
+    recent_first = request.query.get("recent_first", "0").strip().lower() in {"1", "true", "yes", "on"}
+    messages = await proxy.read_messages(
+        kind=kind,
+        entity_id=entity_id,
+        min_id=min_id,
+        limit=limit,
+        recent_first=recent_first,
+    )
     return web.json_response({"messages": messages})
 
 

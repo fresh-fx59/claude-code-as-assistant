@@ -41,10 +41,15 @@ class TelegramProxyClient:
         entity_id: int,
         min_id: int,
         limit: int,
+        recent_first: bool = False,
     ) -> list[dict[str, Any]]:
         payload = await self._get(
             f"/v1/messages/{kind}/{entity_id}",
-            params={"min_id": str(min_id), "limit": str(limit)},
+            params={
+                "min_id": str(min_id),
+                "limit": str(limit),
+                "recent_first": "1" if recent_first else "0",
+            },
         )
         return list(payload.get("messages", []))
 
@@ -59,4 +64,3 @@ class TelegramProxyClient:
             async with session.get(f"{self._base_url}{path}", params=params) as response:
                 response.raise_for_status()
                 return await response.json()
-
