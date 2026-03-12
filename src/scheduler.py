@@ -30,6 +30,9 @@ _SCHEDULE_DELIVER_MARKER = "[[SCHEDULE_DELIVER]]"
 @dataclass(frozen=True)
 class NativeScheduleSpec:
     command: list[str]
+    diagnose_command: list[str] | None = None
+    remediate_command: list[str] | None = None
+    auto_remediate: bool = False
     escalation_context: str | None = None
 
 
@@ -41,6 +44,15 @@ class NativeScheduleResult:
     summary: str
     payload: dict[str, Any]
     raw_output: str
+
+
+@dataclass(frozen=True)
+class IncidentActionReport:
+    diagnostics: tuple[str, ...] = ()
+    remediation_output: str | None = None
+    remediation_error: str | None = None
+    verification_result: NativeScheduleResult | None = None
+    verification_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -556,11 +568,13 @@ class ScheduleManager:
         try:
             native_result = await asyncio.to_thread(self._execute_native_schedule, native_spec)
             if native_result.should_alert:
+                incident_report = await self._prepare_incident_report(schedule, native_spec, native_result)
                 await self._submit_native_escalation(
                     schedule,
                     run_id,
                     planned_for,
                     native_result,
+                    incident_report,
                     submitted_at,
                 )
                 return
@@ -624,10 +638,11 @@ class ScheduleManager:
         run_id: str,
         planned_for: datetime,
         native_result: NativeScheduleResult,
+        incident_report: IncidentActionReport,
         submitted_at: datetime,
     ) -> None:
         background_task_id = str(uuid.uuid4())
-        prompt = self._build_native_escalation_prompt(schedule, native_result)
+        prompt = self._build_native_escalation_prompt(schedule, native_result, incident_report)
         try:
             await asyncio.to_thread(self._mark_run_submitted, schedule.id, run_id, background_task_id)
             background_task_id = await self._task_manager.submit(
@@ -672,6 +687,44 @@ class ScheduleManager:
                     f"<b>Target:</b> {self._format_schedule_target(schedule.chat_id, schedule.message_thread_id)}"
                 ),
             )
+
+    async def _prepare_incident_report(
+        self,
+        schedule: ScheduledTask,
+        native_spec: NativeScheduleSpec,
+        native_result: NativeScheduleResult,
+    ) -> IncidentActionReport:
+        if native_result.change_type == "recovery" or native_result.status not in {"warn", "critical"}:
+            return IncidentActionReport()
+
+        diagnostics = await asyncio.to_thread(self._collect_incident_diagnostics, schedule, native_spec, native_result)
+        remediation_output: str | None = None
+        remediation_error: str | None = None
+        verification_result: NativeScheduleResult | None = None
+        verification_error: str | None = None
+
+        if native_spec.auto_remediate and native_spec.remediate_command:
+            try:
+                remediation_output = await asyncio.to_thread(
+                    self._run_auxiliary_command,
+                    native_spec.remediate_command,
+                    "remediation",
+                )
+            except Exception as exc:
+                remediation_error = str(exc)
+
+            try:
+                verification_result = await asyncio.to_thread(self._execute_native_schedule, native_spec)
+            except Exception as exc:
+                verification_error = str(exc)
+
+        return IncidentActionReport(
+            diagnostics=tuple(diagnostics),
+            remediation_output=remediation_output,
+            remediation_error=remediation_error,
+            verification_result=verification_result,
+            verification_error=verification_error,
+        )
 
     def _recover_stale_runs(self, recovered_at: str) -> None:
         with self._connect() as con:
@@ -1226,6 +1279,9 @@ class ScheduleManager:
         if not lines or lines[0].strip() != _NATIVE_SCHEDULE_HEADER:
             return None
         command: list[str] | None = None
+        diagnose_command: list[str] | None = None
+        remediate_command: list[str] | None = None
+        auto_remediate = False
         context_lines: list[str] = []
         for line in lines[1:]:
             if command is None and line.startswith("command:"):
@@ -1234,26 +1290,36 @@ class ScheduleManager:
                     raise ValueError("Native schedule is missing command text")
                 command = shlex.split(command_text)
                 continue
+            if line.startswith("diagnose_command:"):
+                command_text = line.partition(":")[2].strip()
+                if not command_text:
+                    raise ValueError("Native schedule diagnose_command is empty")
+                diagnose_command = shlex.split(command_text)
+                continue
+            if line.startswith("remediate_command:"):
+                command_text = line.partition(":")[2].strip()
+                if not command_text:
+                    raise ValueError("Native schedule remediate_command is empty")
+                remediate_command = shlex.split(command_text)
+                continue
+            if line.startswith("auto_remediate:"):
+                auto_remediate = ScheduleManager._parse_bool_flag(line.partition(":")[2].strip())
+                continue
             context_lines.append(line)
         if not command:
             raise ValueError("Native schedule is missing command")
         escalation_context = "\n".join(context_lines).strip() or None
-        return NativeScheduleSpec(command=command, escalation_context=escalation_context)
+        return NativeScheduleSpec(
+            command=command,
+            diagnose_command=diagnose_command,
+            remediate_command=remediate_command,
+            auto_remediate=auto_remediate,
+            escalation_context=escalation_context,
+        )
 
     @staticmethod
     def _execute_native_schedule(spec: NativeScheduleSpec) -> NativeScheduleResult:
-        completed = subprocess.run(
-            spec.command,
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).resolve().parent.parent,
-        )
-        stdout = (completed.stdout or "").strip()
-        stderr = (completed.stderr or "").strip()
-        if completed.returncode != 0:
-            detail = stderr or stdout or f"Native command failed with exit code {completed.returncode}"
-            raise RuntimeError(detail)
+        stdout = ScheduleManager._run_auxiliary_command(spec.command, "native schedule")
         try:
             payload = json.loads(stdout)
         except json.JSONDecodeError as exc:
@@ -1275,7 +1341,82 @@ class ScheduleManager:
         )
 
     @staticmethod
-    def _build_native_escalation_prompt(schedule: ScheduledTask, result: NativeScheduleResult) -> str:
+    def _run_auxiliary_command(command: list[str], label: str, require_success: bool = True) -> str:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parent.parent,
+        )
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+        if require_success and completed.returncode != 0:
+            detail = stderr or stdout or f"{label} failed with exit code {completed.returncode}"
+            raise RuntimeError(detail)
+        detail = stdout or stderr or f"{label} exited with code {completed.returncode}"
+        if completed.returncode == 0:
+            return detail
+        return f"{label} exited with code {completed.returncode}\n{detail}"
+
+    @classmethod
+    def _collect_incident_diagnostics(
+        cls,
+        schedule: ScheduledTask,
+        native_spec: NativeScheduleSpec,
+        result: NativeScheduleResult,
+    ) -> list[str]:
+        diagnostics: list[str] = []
+        if native_spec.diagnose_command:
+            try:
+                output = cls._run_auxiliary_command(native_spec.diagnose_command, "diagnose command", require_success=False)
+            except Exception as exc:
+                output = f"diagnose command failed: {exc}"
+            diagnostics.append(f"Custom diagnostics:\n{cls._preview_text(output, 1600) or output}")
+
+        for title, command in cls._default_diagnostic_commands(result):
+            try:
+                output = cls._run_auxiliary_command(command, title, require_success=False)
+            except Exception as exc:
+                output = f"{title} failed: {exc}"
+            diagnostics.append(f"{title}:\n{cls._preview_text(output, 1600) or output}")
+        return diagnostics
+
+    @staticmethod
+    def _default_diagnostic_commands(result: NativeScheduleResult) -> list[tuple[str, list[str]]]:
+        payload_checks = result.payload.get("checks")
+        if not isinstance(payload_checks, list):
+            return []
+        check_names = {
+            str(item.get("name"))
+            for item in payload_checks
+            if isinstance(item, dict) and str(item.get("status")) in {"warn", "critical"}
+        }
+        if not ({"scrape_up", "series_presence", "f08_series_presence"} & check_names):
+            return []
+        return [
+            ("telegram-bot.service status", ["systemctl", "status", "telegram-bot.service", "--no-pager"]),
+            (
+                "metrics endpoint presence",
+                [
+                    "/bin/bash",
+                    "-lc",
+                    "curl -fsS http://127.0.0.1:9101/metrics | rg -n 'telegrambot_messages_total|telegrambot_f08_governance_events_total' || true",
+                ],
+            ),
+            ("telegram-bot.service journal", ["journalctl", "-u", "telegram-bot.service", "-n", "40", "--no-pager"]),
+        ]
+
+    @staticmethod
+    def _parse_bool_flag(value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _build_native_escalation_prompt(
+        schedule: ScheduledTask,
+        result: NativeScheduleResult,
+        incident_report: IncidentActionReport,
+    ) -> str:
         prompt = (
             "A native scheduled validator detected an alert-worthy state change.\n"
             f"Schedule ID: {schedule.id}\n"
@@ -1288,6 +1429,27 @@ class ScheduleManager:
             "Validator JSON:\n"
             f"```json\n{json.dumps(result.payload, ensure_ascii=True, indent=2)}\n```"
         )
+        if incident_report.diagnostics:
+            prompt += "\n\nDiagnostics collected automatically:\n"
+            for item in incident_report.diagnostics:
+                prompt += f"\n{item}\n"
+        if incident_report.remediation_output or incident_report.remediation_error:
+            prompt += "\n\nAutomatic remediation attempt:\n"
+            if incident_report.remediation_output:
+                prompt += f"\nOutput:\n{incident_report.remediation_output}\n"
+            if incident_report.remediation_error:
+                prompt += f"\nError:\n{incident_report.remediation_error}\n"
+        if incident_report.verification_result:
+            prompt += (
+                "\n\nPost-remediation verification:\n"
+                f"- status: `{incident_report.verification_result.status}`\n"
+                f"- change_type: `{incident_report.verification_result.change_type}`\n"
+                f"- summary: {incident_report.verification_result.summary}\n"
+                "Verification JSON:\n"
+                f"```json\n{json.dumps(incident_report.verification_result.payload, ensure_ascii=True, indent=2)}\n```"
+            )
+        elif incident_report.verification_error:
+            prompt += f"\n\nPost-remediation verification failed:\n{incident_report.verification_error}\n"
         if schedule.prompt:
             native_spec = ScheduleManager._parse_native_schedule(schedule.prompt)
             if native_spec and native_spec.escalation_context:

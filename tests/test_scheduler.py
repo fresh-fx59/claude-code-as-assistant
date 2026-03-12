@@ -220,6 +220,73 @@ async def test_native_schedule_escalates_with_llm_on_alertworthy_change(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_native_schedule_collects_custom_diagnostics_for_alert(tmp_path) -> None:
+    stub = _StubTaskManager()
+    manager = ScheduleManager(stub, tmp_path / "schedules.db")
+    prompt = (
+        "[[SCHEDULE_NATIVE]]\n"
+        f"command: {sys.executable} -c \"import json; print(json.dumps("
+        "{'status': 'critical', 'should_alert': True, 'change_type': 'new_issue', "
+        "'summary': 'Metrics missing.', 'checks': [{'name': 'series_presence', 'status': 'critical'}]}))\"\n"
+        f"diagnose_command: {sys.executable} -c \"print('metrics endpoint unreachable')\"\n"
+        "Investigate automatically before reporting."
+    )
+    sid = await manager.create_every(
+        chat_id=23,
+        user_id=36,
+        prompt=prompt,
+        interval_minutes=1,
+        model="opus",
+    )
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
+
+    await manager._run_due_once()  # noqa: SLF001
+
+    assert len(stub.submissions) == 1
+    assert "Diagnostics collected automatically" in stub.submissions[0]["prompt"]
+    assert "metrics endpoint unreachable" in stub.submissions[0]["prompt"]
+    assert "Investigate automatically before reporting." in stub.submissions[0]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_native_schedule_can_attempt_remediation_and_include_verification(tmp_path) -> None:
+    stub = _StubTaskManager()
+    manager = ScheduleManager(stub, tmp_path / "schedules.db")
+    state_file = tmp_path / "incident-state.txt"
+    prompt = (
+        "[[SCHEDULE_NATIVE]]\n"
+        f"command: {sys.executable} -c \"from pathlib import Path; import json; "
+        f"path = Path(r'{state_file}'); "
+        "status = path.read_text().strip() if path.exists() else 'bad'; "
+        "payload = {'status': 'critical', 'should_alert': True, 'change_type': 'new_issue', 'summary': 'Issue persists.'} "
+        "if status != 'good' else {'status': 'ok', 'should_alert': False, 'change_type': 'recovery', 'summary': 'Recovered.'}; "
+        "print(json.dumps(payload))\"\n"
+        f"remediate_command: {sys.executable} -c \"from pathlib import Path; Path(r'{state_file}').write_text('good')\"\n"
+        "auto_remediate: true\n"
+        "Try the safe remediation before reporting."
+    )
+    sid = await manager.create_every(
+        chat_id=24,
+        user_id=37,
+        prompt=prompt,
+        interval_minutes=1,
+        model="opus",
+    )
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
+
+    await manager._run_due_once()  # noqa: SLF001
+
+    assert len(stub.submissions) == 1
+    assert "Automatic remediation attempt" in stub.submissions[0]["prompt"]
+    assert "Post-remediation verification" in stub.submissions[0]["prompt"]
+    assert "summary: Recovered." in stub.submissions[0]["prompt"]
+    run = (await manager.list_runs_for_chat(24, schedule_id=sid))[0]
+    assert run.status == "submitted"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_notifications_post_to_configured_topic(tmp_path) -> None:
     stub = _StubTaskManager()
     notifier = AsyncMock()

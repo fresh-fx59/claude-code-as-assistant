@@ -262,6 +262,22 @@ Operational policy for validator-backed schedules:
 - treat `recovery` as a correlation/report event unless it still leaves an actionable problem
 - keep repeated unchanged incidents quiet inside a dedup/cooldown window
 
+Optional native schedule hooks:
+
+```text
+[[SCHEDULE_NATIVE]]
+command: /path/to/validator --format json --alert-on-change
+diagnose_command: /path/to/diagnose_incident
+remediate_command: /path/to/safe_fix
+auto_remediate: true
+Write a short operator-facing alert only when the validator reports a new issue, changed issue, or recovery.
+```
+
+- `diagnose_command` runs automatically before escalation on `warn`/`critical` issue states
+- `remediate_command` runs only when `auto_remediate: true`
+- after remediation, the scheduler reruns the main validator command and includes post-remediation verification in the final escalation context
+- when no custom diagnostics are configured, the scheduler still runs built-in safe diagnostics for known metric-presence incidents
+
 ### Telegram Channel Daily Digest
 
 For Telegram channel monitoring, keep ingestion native and keep the final digest as a normal scheduled LLM task:
