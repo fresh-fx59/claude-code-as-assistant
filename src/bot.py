@@ -40,6 +40,7 @@ from .progress import ProgressReporter
 from .providers import ProviderManager
 from .scheduler import ScheduleManager
 from .plugins.tools_plugin import ToolRegistry
+from .ocr_local import extract_ocr_text
 from .self_modify import SelfModificationManager
 from .tasks import TaskManager, TaskStatus
 
@@ -517,11 +518,18 @@ async def _compose_incoming_prompt(message: Message, override_text: str | None =
     image_path = await _download_photo_attachment(message)
     if not image_path:
         return base_text
+    ocr_text = await asyncio.to_thread(extract_ocr_text, image_path)
     attachment_block = (
         "User attached an image.\n"
         f"Local image path: {image_path}\n"
         "Inspect this image when answering."
     )
+    if ocr_text:
+        attachment_block += (
+            "\n"
+            "Local OCR text (best-effort; low-quality images may include misreads):\n"
+            f"{ocr_text}"
+        )
     if base_text:
         return f"{base_text}\n\n{attachment_block}"
     return attachment_block

@@ -122,6 +122,8 @@ Just send any text message and the bot will respond using the currently selected
 
 For voice messages, the bot now shows live transcription progress immediately after upload, replaces that transient progress with a persistent final transcription-time summary in chat before the LLM `Working...` phase starts, retries progress delivery if Telegram returns `retry after`, only switches the live progress message into audio-conversion mode for actual TTS-style audio generation commands, keeps that conversion timer pinned instead of reverting to generic `Working...`, falls back to a fresh progress message if Telegram rate-limits edits, keeps a final conversion-time message in chat after the audio is sent, and snapshots local audio attachments to a per-send temp file so parallel voice replies cannot overwrite each other mid-delivery.
 
+For photo messages, the bot runs best-effort local OCR (Tesseract) only when an image is uploaded and appends extracted text to the prompt when available; text-only turns never run OCR.
+
 Incoming Telegram `text`, `voice`, and `photo` updates are also logged with delivery metadata only (`chat/thread/message/user/content_type/length`, plus voice duration or photo count) so missed-message incidents can be diagnosed from `journalctl` without storing message contents in logs.
 
 ## Codex Instance Helper
