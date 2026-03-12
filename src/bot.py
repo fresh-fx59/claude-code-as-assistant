@@ -28,6 +28,7 @@ from .core.context_plugins import ContextPluginRegistry
 from .sessions import ChatSession, SessionManager, make_scope_key
 from .formatter import markdown_to_html, split_message, strip_html
 from .features.state_store import ResumeStateStore, SteeringEvent, SteeringLedgerStore
+from .f08_governance import F08GovernanceAdvisory
 from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
@@ -51,6 +52,7 @@ tool_registry = ToolRegistry(
 )
 context_plugins = ContextPluginRegistry([tool_registry])
 self_mod_manager = SelfModificationManager(Path(__file__).resolve().parent.parent)
+f08_advisory = F08GovernanceAdvisory()
 task_manager: TaskManager | None = None  # Set in main()
 schedule_manager: ScheduleManager | None = None  # Set in main()
 
@@ -1440,6 +1442,11 @@ async def cmd_selfmod_apply(message: Message, command: CommandObject | None = No
     parts = args.split(maxsplit=1)
     relative_path = parts[0].strip()
     test_target = parts[1].strip() if len(parts) > 1 else "tests/test_context_plugins.py"
+    f08_advisory.submit_selfmod_apply(
+        scope_key=_scope_key_from_message(message),
+        relative_path=relative_path,
+        test_target=test_target,
+    )
 
     await message.answer(
         f"Applying sandbox candidate <code>{relative_path}</code>\n"
@@ -2350,6 +2357,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
     thread_id = _thread_id(message)
     scope_key = _scope_key(chat_id, thread_id)
     raw_prompt = await _compose_incoming_prompt(message, override_text)
+    f08_advisory.submit_chat_turn(scope_key=scope_key, prompt=raw_prompt)
     state = _get_state(scope_key)
     logger.info(
         "Starting message processing: scope=%s override=%s prompt_len=%d",

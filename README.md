@@ -265,6 +265,9 @@ It checks:
 - Whether non-shadow F08 events appear unexpectedly
 - 24h `apply_candidate` failure ratio and rollback-success count
 
+Phase 1 note:
+- The bot now emits shadow-only advisory F08 events for chat turns (`chat_turn_advisory`) and self-mod apply reviews (`selfmod_apply_advisory`) without blocking response-path execution.
+
 Scheduler-friendly native mode:
 
 ```text
