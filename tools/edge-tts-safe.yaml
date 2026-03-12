@@ -1,0 +1,56 @@
+name: edge-tts-safe
+description: Reliable Edge TTS wrapper that waits for completion and validates audio before returning.
+tier: extended
+triggers:
+- edge-tts
+- edge tts
+- microsoft tts
+- voice reply
+- voice note
+instructions: |
+  # edge-tts-safe
+
+  Use this tool when you need local, reliable `edge-tts` synthesis without exposing partially written files.
+
+  It wraps `edge-tts`, writes into a temporary file first, waits for the process to exit, validates the result, and only then atomically moves the file to the requested output path.
+
+  ## Install
+
+  Prefer the repo-local environment:
+
+  ```bash
+  ./venv/bin/pip install edge-tts
+  ```
+
+  ## Usage
+
+  Inline text:
+
+  ```bash
+  OUT="$(mktemp /tmp/voice-reply-XXXXXX.mp3)"
+  ./venv/bin/python -m src.edge_tts_tool speak \
+    --voice ru-RU-SvetlanaNeural \
+    --rate -12% \
+    --output "$OUT" \
+    --text "Привет. Это готовый голосовой ответ."
+  ```
+
+  Text file:
+
+  ```bash
+  OUT="$(mktemp /tmp/voice-reply-XXXXXX.mp3)"
+  ./venv/bin/python -m src.edge_tts_tool speak \
+    --voice ru-RU-SvetlanaNeural \
+    --rate -12% \
+    --output "$OUT" \
+    --file /tmp/reply.txt
+  ```
+
+  The command prints JSON metadata with the final path, size, and duration when `ffprobe` is available.
+
+  For chat voice replies, use a unique output path per run and return:
+
+  ```text
+  MEDIA:$OUT
+  ```
+setup: 'Install in repo venv: ./venv/bin/pip install edge-tts'

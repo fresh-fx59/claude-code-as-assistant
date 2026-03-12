@@ -3,3 +3,5 @@ python-dotenv
 prometheus-client
 pyyaml
 watchdog
+telethon
+edge-tts

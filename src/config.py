@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.28.2"
+VERSION: str = "0.29.0"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -143,6 +143,16 @@ STEP_PLAN_AUTO_TRIGGER_ENABLED: bool = os.getenv(
     "STEP_PLAN_AUTO_TRIGGER_ENABLED", "1"
 ).strip().lower() not in {"0", "false", "no"}
 STEP_PLAN_DEFAULT_FOLDER: str = os.getenv("STEP_PLAN_DEFAULT_FOLDER", "").strip()
+TELEGRAM_USER_API_ID: int = int(os.getenv("TELEGRAM_USER_API_ID", "0"))
+TELEGRAM_USER_API_HASH: str = os.getenv("TELEGRAM_USER_API_HASH", "").strip()
+TELEGRAM_USER_SESSION: str = os.getenv("TELEGRAM_USER_SESSION", "").strip()
+TELEGRAM_DIGEST_COLLECT_LIMIT: int = max(10, int(os.getenv("TELEGRAM_DIGEST_COLLECT_LIMIT", "200")))
+TELEGRAM_DIGEST_SOURCE_LIMIT: int = max(1, int(os.getenv("TELEGRAM_DIGEST_SOURCE_LIMIT", "200")))
+TELEGRAM_DIGEST_COLLECT_INTERVAL_MINUTES: int = max(
+    30,
+    int(os.getenv("TELEGRAM_DIGEST_COLLECT_INTERVAL_MINUTES", "180")),
+)
+TELEGRAM_DIGEST_WINDOW_HOURS: int = max(1, int(os.getenv("TELEGRAM_DIGEST_WINDOW_HOURS", "24")))
 
 # ── Memory system ─────────────────────────────────────────
 _raw_memory_dir = os.getenv("MEMORY_DIR") or None
@@ -150,6 +160,9 @@ MEMORY_DIR: Path = Path(
     os.path.expanduser(_raw_memory_dir) if _raw_memory_dir else "memory"
 )
 os.makedirs(MEMORY_DIR, exist_ok=True)
+TELEGRAM_DIGEST_DB_PATH: Path = MEMORY_DIR / "telegram_digest.db"
+TELEGRAM_DIGEST_BRIEF_PATH: Path = MEMORY_DIR / "telegram_digest_brief.md"
+TELEGRAM_USER_SESSION_PATH: Path = MEMORY_DIR / "telethon_user"
 
 # ── Tool system ───────────────────────────────────────────
 _raw_tools_dir = os.getenv("TOOLS_DIR") or None

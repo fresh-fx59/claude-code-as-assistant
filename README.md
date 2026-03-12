@@ -251,6 +251,47 @@ Write a short operator-facing alert only when the validator reports a new issue,
 
 The native command must return JSON with `status`, `should_alert`, `change_type`, and `summary`. When `should_alert=false`, the scheduler stores the run result and stays silent. When `should_alert=true`, the scheduler submits a background LLM task with the validator JSON as escalation context.
 
+### Telegram Channel Daily Digest
+
+For Telegram channel monitoring, keep ingestion native and keep the final digest as a normal scheduled LLM task:
+
+- use a Telethon user session to collect messages from subscribed channels and linked discussion chats
+- refresh a local briefing file during the day
+- deliver one daily digest back into the target Telegram topic
+
+Required `.env` values:
+
+```bash
+TELEGRAM_USER_API_ID=...
+TELEGRAM_USER_API_HASH=...
+# optional if you prefer a StringSession; otherwise a local session file is used under memory/
+TELEGRAM_USER_SESSION=...
+```
+
+Collector run:
+
+```bash
+python3 -m src.telegram_digest_tool collect
+python3 -m src.telegram_digest_tool render
+```
+
+Install both recurring schedules into `memory/schedules.db`:
+
+```bash
+python3 -m src.telegram_digest_tool install \
+  --chat-id <telegram_chat_id> \
+  --message-thread-id <topic_id> \
+  --user-id <telegram_user_id> \
+  --daily-time 08:00 \
+  --timezone-name Europe/Moscow
+```
+
+The installer creates:
+
+- an interval native collector schedule (`[[SCHEDULE_NATIVE]]`) that updates `memory/telegram_digest.db` and `memory/telegram_digest_brief.md`
+- a daily delivery schedule (`[[SCHEDULE_DELIVER]]`) that reads the briefing, writes a Russian executive summary, and can attach a voice-note audio reply via the existing `MEDIA:` / `[[audio_as_voice]]` contract
+- the daily delivery prompt uses `USE_TOOL: edge-tts-safe` (repo-local edge-tts wrapper), not `sag`
+
 ### F08 Governance Validator (Monitor-Only)
 
 Use this validator during rollout to ensure F08 remains in non-interfering mode while baseline data accumulates:

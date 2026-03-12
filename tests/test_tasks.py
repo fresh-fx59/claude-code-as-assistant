@@ -366,3 +366,80 @@ async def test_silent_notification_mode_suppresses_completion_and_failure_messag
     await manager._notify_failure(failed)  # noqa: SLF001
 
     bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deliver_response_mode_sends_voice_and_text(monkeypatch, tmp_path) -> None:
+    audio_path = tmp_path / "digest.ogg"
+    audio_path.write_bytes(b"fake-audio")
+
+    bot = AsyncMock()
+    manager = TaskManager(bot)
+    task = BackgroundTask(
+        id="task-deliver-response",
+        chat_id=123,
+        message_thread_id=77,
+        user_id=123,
+        prompt="x",
+        model="sonnet",
+        session_id=None,
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(),
+        notification_mode=TaskNotificationMode.DELIVER_RESPONSE,
+        response=(
+            "USE_TOOL: sag\n"
+            "## Daily digest\n"
+            "- Item one\n"
+            "[[audio_as_voice]]\n"
+            f"MEDIA:{audio_path}\n"
+        ),
+    )
+
+    await manager._notify_completion(task)  # noqa: SLF001
+
+    bot.send_voice.assert_awaited_once()
+    bot.send_audio.assert_not_called()
+    bot.send_document.assert_not_called()
+    bot.send_message.assert_awaited_once()
+    kwargs = bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == 123
+    assert kwargs["message_thread_id"] == 77
+    assert "Daily digest" in kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_response_mode_falls_back_to_text_when_media_send_fails(monkeypatch) -> None:
+    bot = AsyncMock()
+    manager = TaskManager(bot)
+    task = BackgroundTask(
+        id="task-deliver-fallback",
+        chat_id=123,
+        message_thread_id=77,
+        user_id=123,
+        prompt="x",
+        model="sonnet",
+        session_id=None,
+        status=TaskStatus.COMPLETED,
+        created_at=datetime.now(),
+        notification_mode=TaskNotificationMode.DELIVER_RESPONSE,
+        response=(
+            "## Daily digest\n"
+            "Summary text\n"
+            "[[audio_as_voice]]\n"
+            "MEDIA:/tmp/missing.ogg\n"
+        ),
+    )
+
+    async def _raise_send_media(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("media send failed")
+
+    monkeypatch.setattr("src.tasks.send_media", _raise_send_media)
+
+    await manager._notify_completion(task)  # noqa: SLF001
+
+    bot.send_message.assert_awaited_once()
+    kwargs = bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == 123
+    assert kwargs["message_thread_id"] == 77
+    assert "Daily digest" in kwargs["text"]
+    assert "Could not send some media attachments" in kwargs["text"]

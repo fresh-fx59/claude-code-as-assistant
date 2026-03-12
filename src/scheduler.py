@@ -24,6 +24,7 @@ from .tasks import BackgroundTask, TaskManager, TaskNotificationMode
 logger = logging.getLogger(__name__)
 _RESPONSE_STATUS_RE = re.compile(r"overall status:\s*[`']?(ok|warn|critical|error|failed)[`']?", re.IGNORECASE)
 _NATIVE_SCHEDULE_HEADER = "[[SCHEDULE_NATIVE]]"
+_SCHEDULE_DELIVER_MARKER = "[[SCHEDULE_DELIVER]]"
 
 
 @dataclass(frozen=True)
@@ -498,12 +499,12 @@ class ScheduleManager:
                     chat_id=schedule.chat_id,
                     message_thread_id=schedule.message_thread_id,
                     user_id=schedule.user_id,
-                    prompt=schedule.prompt,
+                    prompt=self._strip_delivery_marker(schedule.prompt),
                     model=schedule.model,
                     session_id=schedule.session_id,
                     provider_cli=schedule.provider_cli,
                     resume_arg=schedule.resume_arg,
-                    notification_mode=TaskNotificationMode.SILENT,
+                    notification_mode=self._notification_mode_for_prompt(schedule.prompt),
                     live_feedback=False,
                     feedback_title=self._build_schedule_feedback_title(schedule, planned_for),
                     task_id=background_task_id,
@@ -1204,6 +1205,20 @@ class ScheduleManager:
             f"<b>Schedule:</b> <code>{schedule.id[:8]}</code>\n"
             f"<b>Planned:</b> {planned_for.astimezone().strftime('%Y-%m-%d %H:%M:%S')}"
         )
+
+    @staticmethod
+    def _notification_mode_for_prompt(prompt: str) -> TaskNotificationMode:
+        if _SCHEDULE_DELIVER_MARKER in (prompt or ""):
+            return TaskNotificationMode.DELIVER_RESPONSE
+        return TaskNotificationMode.SILENT
+
+    @staticmethod
+    def _strip_delivery_marker(prompt: str) -> str:
+        if not prompt:
+            return prompt
+        return "\n".join(
+            line for line in prompt.splitlines() if line.strip() != _SCHEDULE_DELIVER_MARKER
+        ).strip()
 
     @staticmethod
     def _parse_native_schedule(prompt: str) -> NativeScheduleSpec | None:

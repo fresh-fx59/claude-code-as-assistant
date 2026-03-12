@@ -25,7 +25,11 @@ _HEARTBEAT_MESSAGES = [
 _HEARTBEAT_INTERVAL = 5.0  # Update every 5 seconds during heartbeat
 _AUDIO_PROGRESS_INTERVAL = 1.0
 _AUDIO_MEDIA_EXTENSIONS = (".mp3", ".ogg", ".opus", ".wav", ".m4a", ".aac", ".flac")
-_AUDIO_TTS_COMMAND_RE = re.compile(r"(^|[/\\])(sag|sherpa-onnx(?:-tts)?|say)(\s|$)")
+_AUDIO_TTS_COMMAND_RE = re.compile(
+    r"(?<![a-z0-9_.-])"
+    r"(sag|sherpa-onnx(?:-tts)?|say|edge-tts|edge_tts|edge_tts_tool|src\.edge_tts_tool)"
+    r"(?![a-z0-9_.-])"
+)
 
 
 class ProgressReporter:

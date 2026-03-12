@@ -359,6 +359,29 @@ class TestProgressReportingLifecycle:
 
         await reporter.finish()
 
+    async def test_progress_enters_audio_conversion_mode_during_edge_tts_tool(
+        self,
+        mock_message,
+        monkeypatch,
+    ):
+        """The repo-local edge_tts wrapper should be treated as audio generation."""
+        from src.progress import ProgressReporter
+
+        monkeypatch.setattr("src.progress._AUDIO_PROGRESS_INTERVAL", 0.01)
+        reporter = ProgressReporter(mock_message, debounce_seconds=0)
+
+        await reporter.show_working()
+        await reporter.report_tool(
+            "Bash",
+            './venv/bin/python -m src.edge_tts_tool speak --output /tmp/voice-reply.mp3 --text "hello"',
+        )
+        await asyncio.sleep(0.03)
+
+        texts = [call.kwargs["text"] for call in mock_message.bot.edit_message_text.await_args_list]
+        assert any("Converting audio reply" in text for text in texts)
+
+        await reporter.finish()
+
     async def test_progress_keeps_audio_conversion_mode_after_followup_tool_events(
         self,
         mock_message,

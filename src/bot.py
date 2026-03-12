@@ -13,12 +13,10 @@ from time import monotonic
 from uuid import uuid4
 from datetime import datetime, timezone as tz
 from pathlib import Path
-from urllib.parse import urlparse
-
 import yaml
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import Message, CallbackQuery, ErrorEvent, FSInputFile
+from aiogram.types import Message, CallbackQuery, ErrorEvent
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
@@ -29,6 +27,13 @@ from .sessions import ChatSession, SessionManager, make_scope_key
 from .formatter import markdown_to_html, split_message, strip_html
 from .features.state_store import ResumeStateStore, SteeringEvent, SteeringLedgerStore
 from .f08_governance import F08GovernanceAdvisory
+from .media import (
+    extract_media_directives,
+    is_audio_media,
+    is_voice_compatible_media,
+    resolve_media_input,
+    strip_tool_directive_lines,
+)
 from .memory import MemoryManager
 from .progress import ProgressReporter
 from .providers import ProviderManager
@@ -83,11 +88,6 @@ _CODEX_TRANSIENT_ERROR_PATTERNS = (
     re.compile(r"\breconnecting\.\.\.\s*\d+/\d+", re.IGNORECASE),
     re.compile(r"\b(etimedout|econnreset|connection reset)\b", re.IGNORECASE),
 )
-_AUDIO_AS_VOICE_TAG_RE = re.compile(r"\[\[\s*audio_as_voice\s*\]\]", re.IGNORECASE)
-_MEDIA_LINE_RE = re.compile(r"^\s*MEDIA:\s*(.+?)\s*$", re.IGNORECASE)
-_USE_TOOL_LINE_RE = re.compile(r"^\s*USE_TOOL:\s*[A-Za-z0-9_.-]+\s*$", re.IGNORECASE | re.MULTILINE)
-_VOICE_COMPATIBLE_EXTENSIONS = {".ogg", ".opus", ".mp3", ".m4a"}
-_AUDIO_EXTENSIONS = _VOICE_COMPATIBLE_EXTENSIONS | {".wav", ".aac", ".flac"}
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 _INCOMING_MEDIA_DIR = config.MEMORY_DIR / "incoming_media"
 _EMPTY_RESPONSE_FALLBACK_TEXT = (
@@ -576,60 +576,24 @@ def _sanitize_transient_codex_error_response(
     )
 
 
-def _media_extension(media_ref: str) -> str:
-    raw = media_ref.strip().strip("`").strip("\"'")
-    if not raw:
-        return ""
-    parsed = urlparse(raw)
-    if parsed.scheme in {"http", "https"}:
-        return Path(parsed.path).suffix.lower()
-    return Path(raw).suffix.lower()
-
-
 def _is_voice_compatible_media(media_ref: str) -> bool:
-    return _media_extension(media_ref) in _VOICE_COMPATIBLE_EXTENSIONS
+    return is_voice_compatible_media(media_ref)
 
 
 def _is_audio_media(media_ref: str) -> bool:
-    return _media_extension(media_ref) in _AUDIO_EXTENSIONS
+    return is_audio_media(media_ref)
 
 
 def _resolve_media_input(media_ref: str):
-    raw = media_ref.strip().strip("`").strip("\"'")
-    parsed = urlparse(raw)
-    if parsed.scheme in {"http", "https"}:
-        return raw
-    path = Path(raw).expanduser()
-    if path.exists() and path.is_file():
-        return FSInputFile(path)
-    return raw
+    return resolve_media_input(media_ref)
 
 
 def _extract_media_directives(text: str) -> tuple[str, list[str], bool]:
-    if not text:
-        return "", [], False
-
-    audio_as_voice = bool(_AUDIO_AS_VOICE_TAG_RE.search(text))
-    without_tag = _AUDIO_AS_VOICE_TAG_RE.sub("", text)
-
-    media_refs: list[str] = []
-    text_lines: list[str] = []
-    for line in without_tag.splitlines():
-        match = _MEDIA_LINE_RE.match(line)
-        if match:
-            media = match.group(1).strip().strip("`").strip("\"'")
-            if media:
-                media_refs.append(media)
-            continue
-        text_lines.append(line)
-
-    cleaned_text = "\n".join(text_lines).strip()
-    return cleaned_text, media_refs, audio_as_voice
+    return extract_media_directives(text)
 
 
 def _strip_tool_directive_lines(text: str) -> str:
-    stripped = _USE_TOOL_LINE_RE.sub("", text or "")
-    return "\n".join(line for line in (ln.strip() for ln in stripped.splitlines()) if line).strip()
+    return strip_tool_directive_lines(text)
 def _default_timezone_name() -> str:
     profile_path = config.MEMORY_DIR / "user_profile.yaml"
     try:

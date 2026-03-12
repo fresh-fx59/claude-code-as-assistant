@@ -1,0 +1,27 @@
+name: tool-manifest
+description: Scaffold and validate local `tools/*.yaml` manifests for this assistant.
+tier: extended
+triggers:
+  - create tool
+  - new tool manifest
+  - validate tool yaml
+  - tool manifest
+instructions: |
+  # Tool Manifest
+
+  Use this tool when you need to add a new YAML tool definition or verify that an existing manifest follows repo conventions.
+
+  Commands:
+  - Scaffold a starter manifest:
+    `python -m src.tool_manifest_tool scaffold <tool-name> --description "..." --tier extended --trigger "..." --output-dir tools`
+  - Validate an existing manifest:
+    `python -m src.tool_manifest_tool validate tools/<tool-name>.yaml --format json`
+
+  Validation checks:
+  - required fields: `name`, `description`, `tier`, `instructions`
+  - `tier` must be `core` or `extended`
+  - `triggers` must be a YAML list of non-empty strings
+  - warns on duplicate triggers and filename/name mismatch
+
+  Prefer this over ad hoc manual YAML drafting when creating or reviewing tool manifests.
+setup: "Ensure python module is available: python -m src.tool_manifest_tool --help"

@@ -110,6 +110,29 @@ async def test_due_schedule_submits_background_task(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_due_schedule_with_deliver_marker_submits_delivery_mode(tmp_path) -> None:
+    stub = _StubTaskManager()
+    manager = ScheduleManager(stub, tmp_path / "schedules.db")
+    sid = await manager.create_every(
+        chat_id=10,
+        user_id=20,
+        prompt="[[SCHEDULE_DELIVER]]\ndeliver scheduled digest",
+        interval_minutes=1,
+        model="opus",
+        session_id="sess-1",
+    )
+
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
+
+    await manager._run_due_once()  # noqa: SLF001
+
+    assert len(stub.submissions) == 1
+    assert stub.submissions[0]["notification_mode"] == "deliver_response"
+    assert "[[SCHEDULE_DELIVER]]" not in stub.submissions[0]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_due_schedule_preserves_provider_runtime(tmp_path) -> None:
     stub = _StubTaskManager()
     manager = ScheduleManager(stub, tmp_path / "schedules.db")

@@ -189,3 +189,12 @@ def test_summary_inspector_manifest_points_to_single_command() -> None:
     assert manifest["tier"] == "core"
     assert "last summarization" in manifest["triggers"]
     assert "python -m src.summary_inspector_tool latest --format json" in manifest["instructions"]
+
+
+def test_edge_tts_safe_manifest_uses_repo_local_wrapper() -> None:
+    manifest_path = Path(__file__).resolve().parents[1] / "tools" / "edge-tts-safe.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+
+    assert manifest["tier"] == "extended"
+    assert "voice reply" in manifest["triggers"]
+    assert "./venv/bin/python -m src.edge_tts_tool speak" in manifest["instructions"]

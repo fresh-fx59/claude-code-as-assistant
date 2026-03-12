@@ -12,6 +12,8 @@ from typing import AsyncIterator, Final, Protocol, Sequence
 from aiogram import Bot
 
 from . import bridge, config, metrics
+from .formatter import markdown_to_html, split_message, strip_html
+from .media import extract_media_directives, send_media, strip_tool_directive_lines
 from .sessions import make_scope_key
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ class TaskNotificationMode(str, Enum):
     FULL = "full"
     FAILURES_ONLY = "failures_only"
     SILENT = "silent"
+    DELIVER_RESPONSE = "deliver_response"
 
 
 @dataclass
@@ -666,9 +669,12 @@ class TaskManager:
 
     async def _notify_completion(self, task: BackgroundTask) -> None:
         """Send notification when a task completes."""
-        if task.notification_mode != TaskNotificationMode.FULL:
+        if task.notification_mode == TaskNotificationMode.SILENT:
             return
         try:
+            if task.notification_mode == TaskNotificationMode.DELIVER_RESPONSE:
+                await self._deliver_response(task)
+                return
             # Build status message
             lines = [
                 f"✅ <b>Background task completed</b>",
@@ -697,6 +703,47 @@ class TaskManager:
 
         except Exception as e:
             logger.warning("Failed to notify completion for task %s: %s", task.id, e)
+
+    async def _deliver_response(self, task: BackgroundTask) -> None:
+        clean_text, media_refs, audio_as_voice = extract_media_directives(task.response or "")
+        clean_text = strip_tool_directive_lines(clean_text)
+        failed_media_refs: list[str] = []
+
+        for media_ref in media_refs:
+            try:
+                await send_media(
+                    self.bot,
+                    task.chat_id,
+                    task.message_thread_id,
+                    media_ref,
+                    audio_as_voice=audio_as_voice,
+                )
+            except Exception:
+                logger.warning("Failed to send scheduled media response: %s", media_ref, exc_info=True)
+                failed_media_refs.append(media_ref)
+
+        if failed_media_refs:
+            failure_note = "\n".join(f"- {ref}" for ref in failed_media_refs)
+            clean_text = (
+                f"{clean_text}\n\n⚠️ Could not send some media attachments:\n{failure_note}".strip()
+            )
+
+        html_chunks: list[str] = []
+        if clean_text.strip():
+            html_chunks = split_message(markdown_to_html(clean_text))
+
+        if not html_chunks and not media_refs:
+            html_chunks = ["I received an empty response from the provider."]
+
+        for chunk in html_chunks:
+            if not strip_html(chunk).strip():
+                continue
+            await self.bot.send_message(
+                chat_id=task.chat_id,
+                message_thread_id=task.message_thread_id,
+                text=chunk,
+                parse_mode="HTML",
+            )
 
     async def _notify_failure(self, task: BackgroundTask) -> None:
         """Send notification when a task fails."""
