@@ -192,8 +192,9 @@ GitHub Actions deploys can restart services independently via repo variables:
 
 - `RESTART_MAIN_APP_ON_PUSH=true` — restart `telegram-bot.service`
 - `RESTART_SCHEDULER_ON_PUSH=true` — restart `telegram-scheduler.service`
+- `RESTART_PROXY_ON_PUSH=true` — restart `telegram-proxy.service`
 
-If both are unset or false, pushes still deploy code to disk but do not restart either service.
+If all three are unset or false, pushes still deploy code to disk but do not restart any service.
 
 ### Option B: Run in a terminal
 

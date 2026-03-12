@@ -25,6 +25,7 @@ START_TIMES="$DEPLOY_DIR/start_times"
 HEALTH_TIMEOUT=30  # seconds to wait for healthy bot
 RESTART_MAIN_APP="${RESTART_MAIN_APP:-0}"
 RESTART_SCHEDULER="${RESTART_SCHEDULER:-0}"
+RESTART_PROXY="${RESTART_PROXY:-0}"
 
 mkdir -p "$DEPLOY_DIR"
 
@@ -67,6 +68,9 @@ if is_truthy "$RESTART_MAIN_APP"; then
 fi
 if is_truthy "$RESTART_SCHEDULER"; then
     restart_targets+=("telegram-scheduler.service")
+fi
+if is_truthy "$RESTART_PROXY"; then
+    restart_targets+=("telegram-proxy.service")
 fi
 
 # ── 1. Save rollback target ──────────────────────────────────
@@ -150,6 +154,12 @@ for i in $(seq 1 "$HEALTH_TIMEOUT"); do
     if is_truthy "$RESTART_SCHEDULER"; then
         if ! systemctl is-active --quiet telegram-scheduler.service; then
             deploy_log "telegram-scheduler.service is not active yet (attempt $i/${HEALTH_TIMEOUT})"
+            continue
+        fi
+    fi
+    if is_truthy "$RESTART_PROXY"; then
+        if ! systemctl is-active --quiet telegram-proxy.service; then
+            deploy_log "telegram-proxy.service is not active yet (attempt $i/${HEALTH_TIMEOUT})"
             continue
         fi
     fi

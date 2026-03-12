@@ -31,4 +31,5 @@ jobs:
             # Run protected deploy with independently-controlled restart flags.
             export RESTART_MAIN_APP="${{ vars.RESTART_MAIN_APP_ON_PUSH }}"
             export RESTART_SCHEDULER="${{ vars.RESTART_SCHEDULER_ON_PUSH }}"
+            export RESTART_PROXY="${{ vars.RESTART_PROXY_ON_PUSH }}"
             bash ./deploy.sh

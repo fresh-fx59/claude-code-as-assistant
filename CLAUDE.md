@@ -1,6 +1,6 @@
 # Claude Code as Telegram Assistant
 
-**Current version: `0.31.1`** — defined in `src/config.py` as `VERSION`.
+**Current version: `0.32.0`** — defined in `src/config.py` as `VERSION`.
 
 Telegram bot that bridges messages to Claude Code's `--print` mode via subprocess, providing a conversational AI assistant through Telegram.
 
@@ -215,8 +215,8 @@ Push to `main` branch triggers `deploy.sh` via GitHub Actions SSH. The script:
 2. Pulls new code (`git fetch origin main && git reset --hard origin/main`)
 3. Installs deps and runs **smoke test** (`from src.config import VERSION`)
 4. If smoke test fails → **rollback immediately**, service not restarted, admin notified
-5. Restarts only the services enabled by GitHub Actions flags (`RESTART_MAIN_APP_ON_PUSH`, `RESTART_SCHEDULER_ON_PUSH`)
-6. **Health check**: if the main app restart flag is on, polls for up to 30s waiting for `good_commit` to match the new commit; if the scheduler flag is on, verifies `telegram-scheduler.service` is active
+5. Restarts only the services enabled by GitHub Actions flags (`RESTART_MAIN_APP_ON_PUSH`, `RESTART_SCHEDULER_ON_PUSH`, `RESTART_PROXY_ON_PUSH`)
+6. **Health check**: if the main app restart flag is on, polls for up to 30s waiting for `good_commit` to match the new commit; if the scheduler flag is on, verifies `telegram-scheduler.service` is active; if the proxy flag is on, verifies `telegram-proxy.service` is active
 7. If health check fails → **rollback + restart selected services**, admin notified via Telegram
 8. If healthy, or if no restart flags are enabled, deploy succeeds
 
@@ -231,6 +231,7 @@ Required secrets in GitHub repo:
 Optional GitHub repo variables:
 - `RESTART_MAIN_APP_ON_PUSH` - truthy value to restart `telegram-bot.service`
 - `RESTART_SCHEDULER_ON_PUSH` - truthy value to restart `telegram-scheduler.service`
+- `RESTART_PROXY_ON_PUSH` - truthy value to restart `telegram-proxy.service`
 
 **Setup SSH key for passwordless deploy:**
 ```bash
