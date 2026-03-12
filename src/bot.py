@@ -2611,7 +2611,11 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                     scope_key,
                     message.from_user and message.from_user.id,
                 )
-                await message.answer(error_text, reply_markup=reply_markup)
+                await _answer_text_with_retry(
+                    message,
+                    error_text,
+                    reply_markup=reply_markup,
+                )
                 await progress.finish()
             else:
                 resume_state_store.record_success(
@@ -2662,7 +2666,11 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                         logger.info("Chat %s: suppressed duplicate outgoing chunk", scope_key)
                         continue
                     try:
-                        await message.answer(chunk, parse_mode="HTML")
+                        await _answer_text_with_retry(
+                            message,
+                            chunk,
+                            parse_mode="HTML",
+                        )
                         _remember_outbound(scope_key, plain_preview)
                     except Exception:
                         plain = strip_html(chunk)
@@ -2672,7 +2680,7 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                             if _has_recent_outbound(scope_key, plain_chunk):
                                 logger.info("Chat %s: suppressed duplicate plain outgoing chunk", scope_key)
                                 continue
-                            await message.answer(plain_chunk)
+                            await _answer_text_with_retry(message, plain_chunk)
                             _remember_outbound(scope_key, plain_chunk)
 
                 await progress.finish()
@@ -2683,7 +2691,8 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
                 scope_key,
                 message.from_user and message.from_user.id,
             )
-            await message.answer(
+            await _answer_text_with_retry(
+                message,
                 "An internal error occurred while processing your request.",
                 reply_markup=reply_markup,
             )
@@ -2818,7 +2827,65 @@ async def _send_media_reply(message: Message, media_ref: str, *, audio_as_voice:
         if _is_audio_media(media_ref):
             await _send_audio_with_progress(message, media_input, as_voice=False)
             return
-        await message.answer_document(media_input)
+        await _answer_document_with_retry(message, media_input)
+
+
+async def _answer_with_retry(
+    send_callable,
+    *args,
+    floodwait_prefix: str,
+    **kwargs,
+):
+    while True:
+        try:
+            return await send_callable(*args, **kwargs)
+        except TelegramRetryAfter as e:
+            logger.warning("%s rate-limited, retry in %ss", floodwait_prefix, e.retry_after)
+            await asyncio.sleep(max(0, e.retry_after))
+
+
+async def _answer_text_with_retry(
+    message: Message,
+    text: str,
+    *,
+    parse_mode: str | None = None,
+    reply_markup=None,
+):
+    kwargs = {}
+    if parse_mode is not None:
+        kwargs["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
+    return await _answer_with_retry(
+        message.answer,
+        text,
+        floodwait_prefix="Text reply",
+        **kwargs,
+    )
+
+
+async def _answer_voice_with_retry(message: Message, media_input):
+    return await _answer_with_retry(
+        message.answer_voice,
+        media_input,
+        floodwait_prefix="Voice reply",
+    )
+
+
+async def _answer_audio_with_retry(message: Message, media_input):
+    return await _answer_with_retry(
+        message.answer_audio,
+        media_input,
+        floodwait_prefix="Audio reply",
+    )
+
+
+async def _answer_document_with_retry(message: Message, media_input):
+    return await _answer_with_retry(
+        message.answer_document,
+        media_input,
+        floodwait_prefix="Document reply",
+    )
 
 
 async def _send_audio_with_progress(message: Message, media_input, *, as_voice: bool) -> None:
@@ -2845,9 +2912,9 @@ async def _send_audio_with_progress(message: Message, media_input, *, as_voice: 
             logger.debug("Audio conversion progress message failed: %s", e)
 
         if as_voice:
-            await message.answer_voice(media_input)
+            await _answer_voice_with_retry(message, media_input)
         else:
-            await message.answer_audio(media_input)
+            await _answer_audio_with_retry(message, media_input)
         completed = True
     finally:
         elapsed_seconds = monotonic() - started_at
@@ -3038,7 +3105,7 @@ async def _publish_voice_transcription_result(
         return
 
     try:
-        await message.answer(text, parse_mode="HTML")
+        await _answer_text_with_retry(message, text, parse_mode="HTML")
     except TelegramAPIError as e:
         logger.debug("Could not send voice transcription summary message: %s", e)
 

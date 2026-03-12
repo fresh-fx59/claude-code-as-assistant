@@ -40,6 +40,7 @@ from src.bot import (
     _send_media_reply,
     _worklog_subprocess_env,
     VALID_MODELS,
+    _answer_text_with_retry,
 )
 
 
@@ -1193,6 +1194,51 @@ class TestAudioProgress:
 
         assert sent_paths
         assert not sent_paths[0].exists()
+
+    async def test_send_media_reply_retries_voice_send_after_retry_after(
+        self,
+        mock_message,
+        monkeypatch,
+    ):
+        async def fake_keep_chat_action(message, action):
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                return
+
+        monkeypatch.setattr("src.bot._keep_chat_action", fake_keep_chat_action)
+        mock_message.answer_voice.side_effect = [
+            TelegramRetryAfter(AsyncMock(), "retry later", 0),
+            None,
+        ]
+
+        await _send_media_reply(mock_message, "/tmp/reply.ogg", audio_as_voice=True)
+
+        assert mock_message.answer_voice.await_count == 2
+        final_text = mock_message.bot.edit_message_text.await_args_list[-1].kwargs["text"]
+        assert "Audio reply sent" in final_text
+        assert "Conversion time:" in final_text
+
+
+@pytest.mark.asyncio
+class TestTelegramRetryAfterRecovery:
+    async def test_answer_text_with_retry_waits_and_recovers(self, mock_message, monkeypatch):
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        monkeypatch.setattr("src.bot.asyncio.sleep", fake_sleep)
+        mock_message.answer.side_effect = [
+            TelegramRetryAfter(AsyncMock(), "retry later", 0),
+            None,
+        ]
+
+        await _answer_text_with_retry(mock_message, "Recovered reply", parse_mode="HTML")
+
+        assert mock_message.answer.await_count == 2
+        assert sleep_calls == [0]
+        mock_message.answer.assert_awaited_with("Recovered reply", parse_mode="HTML")
 
 
 # ── Contract 8: Chat state management ───────────────────────────
