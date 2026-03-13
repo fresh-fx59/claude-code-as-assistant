@@ -1899,21 +1899,8 @@ async def _run_claude(
     """Run a single Claude subprocess attempt. Returns the response or None."""
     state.process_handle = {}
 
-    # Build memory and tool-augmented prompt
     raw_prompt = _as_text(override_text) or _as_text(getattr(message, "text", None))
-    memory_context = memory_manager.build_context(raw_prompt)
-    tool_context = context_plugins.build_context(raw_prompt)
-    memory_instructions = memory_manager.build_instructions()
-
-    # Assemble prompt with all context layers
-    prompt_parts = []
-    if isinstance(memory_context, str) and memory_context:
-        prompt_parts.append(memory_context)
-    if isinstance(tool_context, str) and tool_context:
-        prompt_parts.append(tool_context)
-    prompt_parts.append(raw_prompt + memory_instructions)
-
-    prompt = "\n\n".join(prompt_parts)
+    prompt = _build_augmented_prompt(raw_prompt)
 
     stream = bridge.stream_message(
         prompt=prompt,
@@ -1978,20 +1965,8 @@ async def _run_codex(
     """Run a single Codex CLI subprocess attempt. Returns the response or None."""
     state.process_handle = {}
 
-    # Build memory and tool-augmented prompt
     raw_prompt = _as_text(override_text) or _as_text(getattr(message, "text", None))
-    memory_context = memory_manager.build_context(raw_prompt)
-    tool_context = context_plugins.build_context(raw_prompt)
-    memory_instructions = memory_manager.build_instructions()
-
-    prompt_parts = []
-    if isinstance(memory_context, str) and memory_context:
-        prompt_parts.append(memory_context)
-    if isinstance(tool_context, str) and tool_context:
-        prompt_parts.append(tool_context)
-    prompt_parts.append(raw_prompt + memory_instructions)
-
-    prompt = "\n\n".join(prompt_parts)
+    prompt = _build_augmented_prompt(raw_prompt)
 
     stream = bridge.stream_codex_message(
         prompt=prompt,
