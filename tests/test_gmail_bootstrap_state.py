@@ -49,9 +49,13 @@ def test_bootstrap_state_progresses_through_key_phases(tmp_path) -> None:
     assert uploaded is not None
     assert uploaded.phase == "credentials_uploaded"
 
-    started = store.record_gmail_auth_started(session_id=session.session_id)
+    started = store.record_gmail_auth_started_for_account(
+        session_id=session.session_id,
+        gmail_account_email="alex@gmail.com",
+    )
     assert started is not None
     assert started.phase == "gmail_auth_pending"
+    assert started.gmail_account_email == "alex@gmail.com"
 
     completed = store.record_completed(
         session_id=session.session_id,

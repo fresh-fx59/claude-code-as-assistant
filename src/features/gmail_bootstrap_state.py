@@ -167,6 +167,26 @@ class GmailBootstrapStateStore:
             session = sessions.get(session_id)
             if session is None:
                 return None
+            if session.gmail_account_email is None:
+                session.gmail_account_email = ""
+            session.phase = "gmail_auth_pending"
+            session.updated_at = _now_iso()
+            sessions[session_id] = session
+            self._save_all_unlocked(sessions)
+            return session
+
+    def record_gmail_auth_started_for_account(
+        self,
+        *,
+        session_id: str,
+        gmail_account_email: str,
+    ) -> GmailBootstrapSession | None:
+        with self._lock:
+            sessions = self._load_all_unlocked()
+            session = sessions.get(session_id)
+            if session is None:
+                return None
+            session.gmail_account_email = gmail_account_email
             session.phase = "gmail_auth_pending"
             session.updated_at = _now_iso()
             sessions[session_id] = session

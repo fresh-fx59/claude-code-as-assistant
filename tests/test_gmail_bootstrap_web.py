@@ -3,7 +3,12 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlparse
 
 from src.features.gmail_bootstrap_state import GmailBootstrapSession
-from src.gmail_bootstrap_web import build_google_auth_url, build_session_urls
+from src.gmail_bootstrap_web import (
+    _extract_first_url,
+    _validate_credentials_json,
+    build_google_auth_url,
+    build_session_urls,
+)
 
 
 def test_build_session_urls_trims_trailing_slash() -> None:
@@ -62,3 +67,13 @@ def test_build_google_auth_url_contains_expected_redirect_and_state(monkeypatch)
     assert query["client_id"] == ["client-123"]
     assert query["state"] == ["sess-1"]
     assert query["redirect_uri"] == ["https://bot.example.com/gmail/bootstrap/google/callback"]
+
+
+def test_extract_first_url_returns_first_http_match() -> None:
+    text = 'open https://accounts.google.com/o/oauth2/v2/auth?x=1 and ignore the rest'
+    assert _extract_first_url(text) == "https://accounts.google.com/o/oauth2/v2/auth?x=1"
+
+
+def test_validate_credentials_json_accepts_installed_payload() -> None:
+    payload = _validate_credentials_json('{"installed":{"client_id":"abc"}}')
+    assert payload["installed"]["client_id"] == "abc"

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import shutil
+import subprocess
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,10 @@ from .gmail_gcp_bootstrap import bootstrap_gcp_project
 
 def _default_state_path() -> Path:
     return config.MEMORY_DIR / "gmail_bootstrap_sessions.json"
+
+
+def _artifact_root() -> Path:
+    return config.MEMORY_DIR / "gmail_bootstrap_artifacts"
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -39,6 +46,16 @@ def _session_payload(base_url: str, session: GmailBootstrapSession) -> dict[str,
             client_id=config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID,
         )
     return payload
+
+
+def _find_gog_binary() -> str | None:
+    found = shutil.which("gog")
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / "gog"
+    if fallback.exists():
+        return str(fallback)
+    return None
 
 
 def _oauth_ready() -> bool:
@@ -99,6 +116,8 @@ def _render_session_html(base_url: str, session: GmailBootstrapSession) -> str:
         )
     if session.failure_reason:
         lines.append(f"<p><strong>Failure:</strong> {session.failure_reason}</p>")
+    if session.phase == "completed" and session.gmail_account_email:
+        lines.append(f"<p><strong>Connected Gmail:</strong> <code>{session.gmail_account_email}</code></p>")
     lines.append(
         "<p>Current slice stores browser-first bootstrap state. Google callback is now wired when bootstrap OAuth config is present; project automation attaches next.</p>"
     )
@@ -109,6 +128,17 @@ def _render_session_html(base_url: str, session: GmailBootstrapSession) -> str:
         )
         lines.append(
             f"<p><strong>Next action:</strong> <a href='{auth_url}'>Continue with Google login</a></p>"
+        )
+    if session.phase == "oauth_manual_pending":
+        lines.extend(
+            [
+                "<h2>Finish Gmail OAuth</h2>",
+                f"<form method='post' enctype='multipart/form-data' action='{base_url}/gmail/bootstrap/session/{session.session_id}/credentials/upload'>",
+                "<label>Gmail account email<input name='gmail_account_email' required placeholder='you@gmail.com'></label>",
+                "<label>client_secret.json<input type='file' name='credentials_file' accept='.json,application/json' required></label>",
+                "<button type='submit'>Upload Credentials and Continue</button>",
+                "</form>",
+            ]
         )
     lines.append("</div>")
     return _html_page("Gmail Connect Session", "".join(lines))
@@ -243,6 +273,160 @@ async def _google_callback(request: web.Request) -> web.Response:
     raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
 
 
+def _session_artifact_dir(session_id: str) -> Path:
+    path = _artifact_root() / session_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _validate_credentials_json(raw_text: str) -> dict[str, Any]:
+    payload = json.loads(raw_text)
+    if not isinstance(payload, dict):
+        raise ValueError("Top-level credentials payload must be a JSON object.")
+    if "installed" not in payload and "web" not in payload:
+        raise ValueError("Credentials JSON must contain `installed` or `web` section.")
+    return payload
+
+
+def _run_gog_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def _extract_first_url(text: str) -> str | None:
+    match = re.search(r"https?://[^\s\"']+", text)
+    return match.group(0) if match else None
+
+
+def _import_gog_credentials(credentials_path: Path) -> None:
+    gog_path = _find_gog_binary()
+    if not gog_path:
+        raise RuntimeError("gog binary not found.")
+    result = _run_gog_command([gog_path, "auth", "credentials", "set", str(credentials_path)])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "gog auth credentials set failed")
+
+
+def _start_gog_remote_auth(*, gmail_account_email: str, redirect_uri: str) -> str:
+    gog_path = _find_gog_binary()
+    if not gog_path:
+        raise RuntimeError("gog binary not found.")
+    result = _run_gog_command(
+        [
+            gog_path,
+            "auth",
+            "add",
+            gmail_account_email,
+            "--services",
+            "gmail",
+            "--remote",
+            "--step",
+            "1",
+            "--redirect-uri",
+            redirect_uri,
+            "-j",
+            "--results-only",
+        ]
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "gog auth add step 1 failed")
+    url = _extract_first_url("\n".join(part for part in (result.stdout, result.stderr) if part))
+    if not url:
+        raise RuntimeError("Could not extract Google auth URL from gog output.")
+    return url
+
+
+def _finish_gog_remote_auth(*, gmail_account_email: str, redirect_uri: str, auth_url: str) -> None:
+    gog_path = _find_gog_binary()
+    if not gog_path:
+        raise RuntimeError("gog binary not found.")
+    result = _run_gog_command(
+        [
+            gog_path,
+            "auth",
+            "add",
+            gmail_account_email,
+            "--services",
+            "gmail",
+            "--remote",
+            "--step",
+            "2",
+            "--redirect-uri",
+            redirect_uri,
+            "--auth-url",
+            auth_url,
+        ]
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "gog auth add step 2 failed")
+
+
+async def _upload_credentials(request: web.Request) -> web.Response:
+    store: GmailBootstrapStateStore = request.app["gmail_bootstrap_store"]
+    session_id = request.match_info["session_id"]
+    session = store.get(session_id)
+    if session is None:
+        raise web.HTTPNotFound(text="Unknown bootstrap session.")
+    post = await request.post()
+    gmail_account_email = str(post.get("gmail_account_email", "")).strip()
+    if not gmail_account_email:
+        raise web.HTTPBadRequest(text="gmail_account_email is required.")
+    file_field = post.get("credentials_file")
+    if file_field is None or not hasattr(file_field, "file"):
+        raise web.HTTPBadRequest(text="credentials_file is required.")
+    raw_bytes = file_field.file.read()
+    raw_text = raw_bytes.decode("utf-8")
+    _validate_credentials_json(raw_text)
+    artifact_dir = _session_artifact_dir(session_id)
+    credentials_path = artifact_dir / "client_secret.json"
+    credentials_path.write_text(raw_text, encoding="utf-8")
+    store.record_credentials_uploaded(session_id=session_id, credentials_path=str(credentials_path))
+    try:
+        _import_gog_credentials(credentials_path)
+        gog_redirect_uri = f"{session.callback_base_url}/gmail/bootstrap/gog/callback/{session_id}"
+        auth_url = _start_gog_remote_auth(
+            gmail_account_email=gmail_account_email,
+            redirect_uri=gog_redirect_uri,
+        )
+        store.record_gmail_auth_started_for_account(
+            session_id=session_id,
+            gmail_account_email=gmail_account_email,
+        )
+    except Exception as exc:
+        store.record_failed(session_id=session_id, reason=f"gog_remote_start_failed:{exc}")
+        raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
+    raise web.HTTPFound(location=auth_url)
+
+
+async def _gog_callback(request: web.Request) -> web.Response:
+    store: GmailBootstrapStateStore = request.app["gmail_bootstrap_store"]
+    session_id = request.match_info["session_id"]
+    session = store.get(session_id)
+    if session is None:
+        raise web.HTTPNotFound(text="Unknown bootstrap session.")
+    if not session.gmail_account_email:
+        store.record_failed(session_id=session_id, reason="missing_gmail_account_email")
+        raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
+    error = request.query.get("error", "").strip()
+    if error:
+        store.record_failed(session_id=session_id, reason=f"gmail_auth_error:{error}")
+        raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
+    auth_url = f"{request.scheme}://{request.host}{request.path_qs}"
+    try:
+        _finish_gog_remote_auth(
+            gmail_account_email=session.gmail_account_email,
+            redirect_uri=f"{session.callback_base_url}/gmail/bootstrap/gog/callback/{session_id}",
+            auth_url=auth_url,
+        )
+    except Exception as exc:
+        store.record_failed(session_id=session_id, reason=f"gog_remote_finish_failed:{exc}")
+    else:
+        store.record_completed(
+            session_id=session_id,
+            gmail_account_email=session.gmail_account_email,
+        )
+    raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
+
+
 async def _session_status(request: web.Request) -> web.Response:
     store: GmailBootstrapStateStore = request.app["gmail_bootstrap_store"]
     session_id = request.match_info["session_id"]
@@ -275,6 +459,8 @@ def create_app(*, state_path: Path | None = None) -> web.Application:
             web.get("/gmail/connect", _landing),
             web.post("/gmail/bootstrap/start", _start_session),
             web.get("/gmail/bootstrap/google/callback", _google_callback),
+            web.post("/gmail/bootstrap/session/{session_id}/credentials/upload", _upload_credentials),
+            web.get("/gmail/bootstrap/gog/callback/{session_id}", _gog_callback),
             web.get("/gmail/bootstrap/session/{session_id}", _session_page),
             web.get("/gmail/bootstrap/api/session/{session_id}", _session_status),
         ]
