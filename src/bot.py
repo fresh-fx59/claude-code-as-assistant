@@ -9,7 +9,6 @@ import os
 import re
 import shutil
 import subprocess
-from time import monotonic
 from uuid import uuid4
 from datetime import datetime, timezone as tz
 from pathlib import Path
@@ -51,6 +50,7 @@ from .features import lifecycle_ops_command_handlers as _lifecycle_ops_command_h
 from .features import background_schedule_handlers as _background_schedule_handlers
 from .features import rollback_selfmod_handlers as _rollback_selfmod_handlers
 from .features import message_media_handlers as _message_media_handlers
+from .features import media_reply_pipeline as _media_reply_pipeline
 from .f08_governance import F08GovernanceAdvisory
 from .media import (
     extract_media_directives,
@@ -1950,14 +1950,16 @@ async def _send_chat_action_once(message: Message, action: ChatAction) -> None:
 
 
 async def _send_media_reply(message: Message, media_ref: str, *, audio_as_voice: bool) -> None:
-    async with prepared_media_input(media_ref) as media_input:
-        if audio_as_voice and _is_voice_compatible_media(media_ref):
-            await _send_audio_with_progress(message, media_input, as_voice=True)
-            return
-        if _is_audio_media(media_ref):
-            await _send_audio_with_progress(message, media_input, as_voice=False)
-            return
-        await _answer_document_with_retry(message, media_input)
+    await _media_reply_pipeline.send_media_reply(
+        message,
+        media_ref,
+        audio_as_voice=audio_as_voice,
+        prepared_media_input_fn=prepared_media_input,
+        is_voice_compatible_media_fn=_is_voice_compatible_media,
+        is_audio_media_fn=_is_audio_media,
+        send_audio_with_progress_fn=_send_audio_with_progress,
+        answer_document_with_retry_fn=_answer_document_with_retry,
+    )
 
 
 async def _answer_with_retry(
@@ -1966,12 +1968,14 @@ async def _answer_with_retry(
     floodwait_prefix: str,
     **kwargs,
 ):
-    while True:
-        try:
-            return await send_callable(*args, **kwargs)
-        except TelegramRetryAfter as e:
-            logger.warning("%s rate-limited, retry in %ss", floodwait_prefix, e.retry_after)
-            await asyncio.sleep(max(0, e.retry_after))
+    return await _media_reply_pipeline.answer_with_retry(
+        send_callable,
+        *args,
+        floodwait_prefix=floodwait_prefix,
+        telegram_retry_after_class=TelegramRetryAfter,
+        logger=logger,
+        **kwargs,
+    )
 
 
 async def _answer_text_with_retry(
@@ -1981,138 +1985,81 @@ async def _answer_text_with_retry(
     parse_mode: str | None = None,
     reply_markup=None,
 ):
-    kwargs = {}
-    if parse_mode is not None:
-        kwargs["parse_mode"] = parse_mode
-    if reply_markup is not None:
-        kwargs["reply_markup"] = reply_markup
-    return await _answer_with_retry(
-        message.answer,
+    return await _media_reply_pipeline.answer_text_with_retry(
+        message,
         text,
-        floodwait_prefix="Text reply",
-        **kwargs,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
+        answer_with_retry_fn=_answer_with_retry,
     )
 
 
 async def _answer_voice_with_retry(message: Message, media_input):
-    return await _answer_with_retry(
-        message.answer_voice,
+    return await _media_reply_pipeline.answer_voice_with_retry(
+        message,
         media_input,
-        floodwait_prefix="Voice reply",
+        answer_with_retry_fn=_answer_with_retry,
     )
 
 
 async def _answer_audio_with_retry(message: Message, media_input):
-    return await _answer_with_retry(
-        message.answer_audio,
+    return await _media_reply_pipeline.answer_audio_with_retry(
+        message,
         media_input,
-        floodwait_prefix="Audio reply",
+        answer_with_retry_fn=_answer_with_retry,
     )
 
 
 async def _answer_document_with_retry(message: Message, media_input):
-    return await _answer_with_retry(
-        message.answer_document,
+    return await _media_reply_pipeline.answer_document_with_retry(
+        message,
         media_input,
-        floodwait_prefix="Document reply",
+        answer_with_retry_fn=_answer_with_retry,
     )
 
 
 async def _send_audio_with_progress(message: Message, media_input, *, as_voice: bool) -> None:
-    progress_message_id: int | None = None
-    progress_task: asyncio.Task | None = None
-    started_at = monotonic()
-    completed = False
-    typing_task = asyncio.create_task(_keep_chat_action(message, ChatAction.TYPING))
-
-    try:
-        await asyncio.sleep(0)
-        try:
-            progress_message = await message.bot.send_message(
-                chat_id=message.chat.id,
-                message_thread_id=_thread_id(message),
-                text=_format_audio_conversion_progress(monotonic() - started_at),
-                parse_mode="HTML",
-            )
-            progress_message_id = progress_message.message_id
-            progress_task = asyncio.create_task(
-                _update_audio_conversion_progress(message, progress_message_id, started_at)
-            )
-        except TelegramAPIError as e:
-            logger.debug("Audio conversion progress message failed: %s", e)
-
-        if as_voice:
-            await _answer_voice_with_retry(message, media_input)
-        else:
-            await _answer_audio_with_retry(message, media_input)
-        completed = True
-    finally:
-        elapsed_seconds = monotonic() - started_at
-        typing_task.cancel()
-        if progress_task is not None:
-            progress_task.cancel()
-        try:
-            await typing_task
-        except asyncio.CancelledError:
-            pass
-        if progress_task is not None:
-            try:
-                await progress_task
-            except asyncio.CancelledError:
-                pass
-        if progress_message_id is not None:
-            final_text = (
-                _format_audio_conversion_complete(elapsed_seconds)
-                if completed
-                else _format_audio_conversion_failed(elapsed_seconds)
-            )
-            await _finalize_audio_conversion_progress(
-                message,
-                progress_message_id,
-                final_text,
-            )
+    await _media_reply_pipeline.send_audio_with_progress(
+        message,
+        media_input,
+        as_voice=as_voice,
+        thread_id_fn=_thread_id,
+        keep_chat_action_fn=_keep_chat_action,
+        chat_action_typing=ChatAction.TYPING,
+        format_audio_conversion_progress_fn=_format_audio_conversion_progress,
+        update_audio_conversion_progress_fn=_update_audio_conversion_progress,
+        answer_voice_with_retry_fn=_answer_voice_with_retry,
+        answer_audio_with_retry_fn=_answer_audio_with_retry,
+        format_audio_conversion_complete_fn=_format_audio_conversion_complete,
+        format_audio_conversion_failed_fn=_format_audio_conversion_failed,
+        finalize_audio_conversion_progress_fn=_finalize_audio_conversion_progress,
+        telegram_api_error_class=TelegramAPIError,
+        logger=logger,
+    )
 
 
 def _format_audio_conversion_progress(elapsed_seconds: float) -> str:
-    return (
-        "🎙️ <b>Converting audio reply...</b>\n"
-        f"Elapsed: <code>{elapsed_seconds:.1f}s</code>"
-    )
+    return _media_reply_pipeline.format_audio_conversion_progress(elapsed_seconds)
 
 
 def _format_voice_transcription_progress(elapsed_seconds: float) -> str:
-    return (
-        "🎤 <b>Transcribing voice message...</b>\n"
-        f"Elapsed: <code>{elapsed_seconds:.1f}s</code>"
-    )
+    return _media_reply_pipeline.format_voice_transcription_progress(elapsed_seconds)
 
 
 def _format_voice_transcription_complete(elapsed_seconds: float) -> str:
-    return (
-        "✅ <b>Voice message transcribed</b>\n"
-        f"Transcription time: <code>{elapsed_seconds:.1f}s</code>"
-    )
+    return _media_reply_pipeline.format_voice_transcription_complete(elapsed_seconds)
 
 
 def _format_voice_transcription_failed(elapsed_seconds: float) -> str:
-    return (
-        "❌ <b>Voice transcription failed</b>\n"
-        f"Elapsed before failure: <code>{elapsed_seconds:.1f}s</code>"
-    )
+    return _media_reply_pipeline.format_voice_transcription_failed(elapsed_seconds)
 
 
 def _format_audio_conversion_complete(elapsed_seconds: float) -> str:
-    return (
-        "✅ <b>Audio reply sent</b>\n"
-        f"Conversion time: <code>{elapsed_seconds:.1f}s</code>"
-    )
+    return _media_reply_pipeline.format_audio_conversion_complete(elapsed_seconds)
 
 
 def _format_audio_conversion_failed(elapsed_seconds: float) -> str:
-    return (
-        "❌ <b>Audio reply failed</b>\n"
-        f"Elapsed before failure: <code>{elapsed_seconds:.1f}s</code>"
-    )
+    return _media_reply_pipeline.format_audio_conversion_failed(elapsed_seconds)
 
 
 async def _update_audio_conversion_progress(
@@ -2120,25 +2067,16 @@ async def _update_audio_conversion_progress(
     progress_message_id: int,
     started_at: float,
 ) -> None:
-    try:
-        while True:
-            await asyncio.sleep(_AUDIO_PROGRESS_UPDATE_INTERVAL)
-            try:
-                await message.bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=progress_message_id,
-                    text=_format_audio_conversion_progress(monotonic() - started_at),
-                    parse_mode="HTML",
-                )
-            except TelegramRetryAfter as e:
-                logger.debug("Audio conversion progress rate-limited, retry in %ss", e.retry_after)
-                await asyncio.sleep(max(0, e.retry_after))
-            except TelegramAPIError as e:
-                if "message is not modified" not in str(e).lower():
-                    logger.debug("Audio conversion progress update failed: %s", e)
-                    return
-    except asyncio.CancelledError:
-        return
+    await _media_reply_pipeline.update_audio_conversion_progress(
+        message,
+        progress_message_id,
+        started_at,
+        audio_progress_update_interval=_AUDIO_PROGRESS_UPDATE_INTERVAL,
+        format_audio_conversion_progress_fn=_format_audio_conversion_progress,
+        telegram_retry_after_class=TelegramRetryAfter,
+        telegram_api_error_class=TelegramAPIError,
+        logger=logger,
+    )
 
 
 async def _finalize_audio_conversion_progress(
@@ -2146,47 +2084,29 @@ async def _finalize_audio_conversion_progress(
     progress_message_id: int,
     text: str,
 ) -> None:
-    try:
-        while True:
-            try:
-                await message.bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=progress_message_id,
-                    text=text,
-                    parse_mode="HTML",
-                )
-                return
-            except TelegramRetryAfter as e:
-                logger.debug(
-                    "Audio conversion finalization rate-limited, retry in %ss",
-                    e.retry_after,
-                )
-                await asyncio.sleep(max(0, e.retry_after))
-            except TelegramAPIError as e:
-                logger.debug("Could not finalize audio conversion progress message: %s", e)
-                return
-    except asyncio.CancelledError:
-        return
+    await _media_reply_pipeline.finalize_audio_conversion_progress(
+        message,
+        progress_message_id,
+        text,
+        telegram_retry_after_class=TelegramRetryAfter,
+        telegram_api_error_class=TelegramAPIError,
+        logger=logger,
+    )
 
 
 async def _send_voice_transcription_progress_message(
     message: Message,
     elapsed_seconds: float,
 ) -> tuple[int | None, int | None]:
-    try:
-        progress_message = await message.bot.send_message(
-            chat_id=message.chat.id,
-            message_thread_id=_thread_id(message),
-            text=_format_voice_transcription_progress(elapsed_seconds),
-            parse_mode="HTML",
-        )
-        return progress_message.message_id, None
-    except TelegramRetryAfter as e:
-        logger.debug("Voice transcription progress rate-limited, retry in %ss", e.retry_after)
-        return None, e.retry_after
-    except TelegramAPIError as e:
-        logger.debug("Voice transcription progress message failed: %s", e)
-        return None, None
+    return await _media_reply_pipeline.send_voice_transcription_progress_message(
+        message,
+        elapsed_seconds,
+        thread_id_fn=_thread_id,
+        format_voice_transcription_progress_fn=_format_voice_transcription_progress,
+        telegram_retry_after_class=TelegramRetryAfter,
+        telegram_api_error_class=TelegramAPIError,
+        logger=logger,
+    )
 
 
 async def _update_voice_transcription_progress(
@@ -2194,25 +2114,16 @@ async def _update_voice_transcription_progress(
     progress_message_id: int,
     started_at: float,
 ) -> None:
-    try:
-        while True:
-            await asyncio.sleep(_VOICE_TRANSCRIPTION_PROGRESS_INTERVAL)
-            try:
-                await message.bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=progress_message_id,
-                    text=_format_voice_transcription_progress(monotonic() - started_at),
-                    parse_mode="HTML",
-                )
-            except TelegramRetryAfter as e:
-                logger.debug("Voice transcription progress rate-limited, retry in %ss", e.retry_after)
-                await asyncio.sleep(max(0, e.retry_after))
-            except TelegramAPIError as e:
-                if "message is not modified" not in str(e).lower():
-                    logger.debug("Voice transcription progress update failed: %s", e)
-                    return
-    except asyncio.CancelledError:
-        return
+    await _media_reply_pipeline.update_voice_transcription_progress(
+        message,
+        progress_message_id,
+        started_at,
+        voice_transcription_progress_interval=_VOICE_TRANSCRIPTION_PROGRESS_INTERVAL,
+        format_voice_transcription_progress_fn=_format_voice_transcription_progress,
+        telegram_retry_after_class=TelegramRetryAfter,
+        telegram_api_error_class=TelegramAPIError,
+        logger=logger,
+    )
 
 
 async def _publish_voice_transcription_result(
@@ -2222,22 +2133,15 @@ async def _publish_voice_transcription_result(
     text: str,
     send_summary: bool,
 ) -> None:
-    if progress_message_id is not None:
-        try:
-            await message.bot.delete_message(
-                chat_id=message.chat.id,
-                message_id=progress_message_id,
-            )
-        except TelegramAPIError as e:
-            logger.debug("Could not delete voice transcription progress message: %s", e)
-
-    if not send_summary:
-        return
-
-    try:
-        await _answer_text_with_retry(message, text, parse_mode="HTML")
-    except TelegramAPIError as e:
-        logger.debug("Could not send voice transcription summary message: %s", e)
+    await _media_reply_pipeline.publish_voice_transcription_result(
+        message,
+        progress_message_id=progress_message_id,
+        text=text,
+        send_summary=send_summary,
+        answer_text_with_retry_fn=_answer_text_with_retry,
+        telegram_api_error_class=TelegramAPIError,
+        logger=logger,
+    )
 
 
 async def _retry_voice_transcription_progress_message(
@@ -2246,22 +2150,11 @@ async def _retry_voice_transcription_progress_message(
     started_at: float,
     retry_after: int,
 ) -> None:
-    try:
-        await asyncio.sleep(max(0, retry_after))
-        progress_message_id, next_retry_after = await _send_voice_transcription_progress_message(
-            message,
-            monotonic() - started_at,
-        )
-        if progress_message_id is not None:
-            transcription_status_ref["message_id"] = progress_message_id
-            await _update_voice_transcription_progress(message, progress_message_id, started_at)
-            return
-        if next_retry_after is not None:
-            await _retry_voice_transcription_progress_message(
-                message,
-                transcription_status_ref,
-                started_at,
-                next_retry_after,
-            )
-    except asyncio.CancelledError:
-        return
+    await _media_reply_pipeline.retry_voice_transcription_progress_message(
+        message,
+        transcription_status_ref,
+        started_at,
+        retry_after,
+        send_voice_transcription_progress_message_fn=_send_voice_transcription_progress_message,
+        update_voice_transcription_progress_fn=_update_voice_transcription_progress,
+    )
