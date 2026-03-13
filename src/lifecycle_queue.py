@@ -189,24 +189,33 @@ class LifecycleQueueStore:
             existing = con.execute(
                 """
                 SELECT id FROM lifecycle_operations
-                WHERE kind = 'deploy_main' AND status IN ('draining', 'restarting')
+                WHERE kind = 'deploy_main' AND requested_commit = ? AND status IN ('queued', 'draining', 'restarting')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """
+                ,
+                (requested_commit,),
             ).fetchone()
             if existing:
-                self._upsert_state_unlocked(con, "barrier_phase", "draining")
                 return str(existing["id"])
 
+            pending = con.execute(
+                """
+                SELECT 1 FROM lifecycle_operations
+                WHERE kind = 'deploy_main' AND status IN ('queued', 'draining', 'restarting')
+                LIMIT 1
+                """
+            ).fetchone()
             operation_id = str(uuid.uuid4())
             now = _utc_now()
+            initial_status = "queued" if pending else "draining"
             con.execute(
                 """
                 INSERT INTO lifecycle_operations(
                     id, kind, requested_commit, requested_by_scope, requested_by_chat_id,
                     requested_by_thread_id, status, payload_json, created_at, updated_at, started_at
                 )
-                VALUES(?, 'deploy_main', ?, ?, ?, ?, 'draining', ?, ?, ?, ?)
+                VALUES(?, 'deploy_main', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     operation_id,
@@ -214,15 +223,64 @@ class LifecycleQueueStore:
                     requested_by_scope,
                     requested_by_chat_id,
                     requested_by_thread_id,
+                    initial_status,
                     json.dumps(payload or {}, ensure_ascii=False),
                     now,
                     now,
-                    now,
+                    now if initial_status == "draining" else None,
                 ),
+            )
+            if initial_status == "draining":
+                self._upsert_state_unlocked(con, "barrier_phase", "draining")
+                self._upsert_state_unlocked(con, "active_operation_id", operation_id)
+            return operation_id
+
+    def activate_deploy_if_ready(self, operation_id: str) -> str:
+        with self._lock, self._connect() as con:
+            row = con.execute(
+                """
+                SELECT id, status, created_at
+                FROM lifecycle_operations
+                WHERE id = ? AND kind = 'deploy_main'
+                """,
+                (operation_id,),
+            ).fetchone()
+            if not row:
+                return "missing"
+
+            status = str(row["status"])
+            if status != "queued":
+                return status
+
+            blockers = con.execute(
+                """
+                SELECT 1
+                FROM lifecycle_operations
+                WHERE kind = 'deploy_main'
+                  AND status IN ('queued', 'draining', 'restarting')
+                  AND (
+                    created_at < ?
+                    OR (created_at = ? AND id < ?)
+                  )
+                LIMIT 1
+                """,
+                (row["created_at"], row["created_at"], operation_id),
+            ).fetchone()
+            if blockers:
+                return "queued"
+
+            now = _utc_now()
+            con.execute(
+                """
+                UPDATE lifecycle_operations
+                SET status = 'draining', updated_at = ?, started_at = COALESCE(started_at, ?)
+                WHERE id = ?
+                """,
+                (now, now, operation_id),
             )
             self._upsert_state_unlocked(con, "barrier_phase", "draining")
             self._upsert_state_unlocked(con, "active_operation_id", operation_id)
-            return operation_id
+            return "draining"
 
     def mark_restarting(self, operation_id: str) -> None:
         with self._lock, self._connect() as con:
@@ -275,6 +333,7 @@ class LifecycleQueueStore:
                 (now, now, operation_id),
             )
             self._upsert_state_unlocked(con, "barrier_phase", "open")
+            self._upsert_state_unlocked(con, "active_operation_id", "")
 
     def mark_operation_failed(self, operation_id: str | None, error_text: str) -> None:
         with self._lock, self._connect() as con:
@@ -289,6 +348,7 @@ class LifecycleQueueStore:
                     (now, now, error_text[:4000], operation_id),
                 )
             self._upsert_state_unlocked(con, "barrier_phase", "open")
+            self._upsert_state_unlocked(con, "active_operation_id", "")
 
     def upsert_active_scope(
         self,

@@ -93,3 +93,19 @@ def test_enqueue_background_task_deduplicates_and_claims(tmp_path) -> None:
     assert len(claimed) == 1
     assert claimed[0].task_id == "task-1"
     assert claimed[0].status == "replaying"
+
+
+def test_begin_deploy_queues_later_operations_until_prior_one_completes(tmp_path) -> None:
+    store = LifecycleQueueStore(tmp_path / "lifecycle.db")
+
+    first = store.begin_deploy(requested_commit="commit-1")
+    second = store.begin_deploy(requested_commit="commit-2")
+
+    assert store.activate_deploy_if_ready(first) == "draining"
+    assert store.activate_deploy_if_ready(second) == "queued"
+
+    store.mark_restarting(first)
+    store.mark_operation_completed(first)
+
+    assert store.activate_deploy_if_ready(second) == "draining"
+    assert store.barrier_phase() == "draining"

@@ -22,6 +22,11 @@ def _build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--timeout", type=int, default=300)
     wait.add_argument("--poll-seconds", type=float, default=1.0)
 
+    ready = sub.add_parser("wait-until-ready")
+    ready.add_argument("--operation-id", required=True)
+    ready.add_argument("--timeout", type=int, default=600)
+    ready.add_argument("--poll-seconds", type=float, default=1.0)
+
     restarting = sub.add_parser("mark-restarting")
     restarting.add_argument("--operation-id", required=True)
 
@@ -61,6 +66,20 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             time.sleep(max(0.1, args.poll_seconds))
         print(f"timeout active={store.active_scope_count()}", file=sys.stderr)
+        return 1
+
+    if args.command == "wait-until-ready":
+        deadline = time.monotonic() + max(1, args.timeout)
+        while time.monotonic() < deadline:
+            status = store.activate_deploy_if_ready(args.operation_id)
+            if status == "draining":
+                print("draining")
+                return 0
+            if status in {"completed", "failed", "cancelled", "missing"}:
+                print(f"operation_status={status}", file=sys.stderr)
+                return 1
+            time.sleep(max(0.1, args.poll_seconds))
+        print(f"timeout operation_id={args.operation_id}", file=sys.stderr)
         return 1
 
     if args.command == "mark-restarting":

@@ -143,7 +143,19 @@ if is_truthy "$RESTART_MAIN_APP"; then
         notify_admin "❌ *Deploy failed* (drain setup)
 
 Commit \`$NEW_SHORT\` could not request deploy drain state.
-Check \`.deploy/deploy.log\` for details."
+        Check \`.deploy/deploy.log\` for details."
+        exit 1
+    fi
+    if ! venv/bin/python3 -m src.lifecycle_tool wait-until-ready --operation-id "$deploy_operation_id" --timeout "$DEPLOY_IDLE_TIMEOUT" 2>>"$DEPLOY_LOG"; then
+        deploy_log "Timed out waiting for deploy queue turn"
+        venv/bin/python3 -m src.lifecycle_tool mark-failed \
+            --operation-id "$deploy_operation_id" \
+            --error "Timed out waiting for deploy queue turn" \
+            2>>"$DEPLOY_LOG" || true
+        notify_admin "❌ *Deploy aborted* (queue timeout)
+
+Commit \`$NEW_SHORT\` did not reach the head of the deploy queue within ${DEPLOY_IDLE_TIMEOUT}s.
+Old process kept running; restart was skipped."
         exit 1
     fi
     if ! venv/bin/python3 -m src.lifecycle_tool wait-for-idle --timeout "$DEPLOY_IDLE_TIMEOUT" 2>>"$DEPLOY_LOG"; then
