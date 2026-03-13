@@ -479,3 +479,23 @@ async def test_send_media_snapshots_local_voice_file_before_send(tmp_path) -> No
 
     assert sent_paths
     assert not sent_paths[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_submit_rejects_new_background_task_while_lifecycle_draining() -> None:
+    bot = AsyncMock()
+
+    class StoreStub:
+        @staticmethod
+        def is_draining() -> bool:
+            return True
+
+    manager = TaskManager(bot, lifecycle_store=StoreStub())
+
+    with pytest.raises(RuntimeError, match="Deploy drain in progress"):
+        await manager.submit(
+            chat_id=123,
+            user_id=123,
+            prompt="x",
+            model="sonnet",
+        )

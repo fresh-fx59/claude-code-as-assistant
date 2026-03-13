@@ -23,6 +23,7 @@ DEPLOY_LOG="$DEPLOY_DIR/deploy.log"
 GOOD_COMMIT_FILE="$DEPLOY_DIR/good_commit"
 START_TIMES="$DEPLOY_DIR/start_times"
 HEALTH_TIMEOUT=30  # seconds to wait for healthy bot
+DEPLOY_IDLE_TIMEOUT="${DEPLOY_IDLE_TIMEOUT:-300}"
 RESTART_MAIN_APP="${RESTART_MAIN_APP:-0}"
 RESTART_SCHEDULER="${RESTART_SCHEDULER:-0}"
 RESTART_PROXY="${RESTART_PROXY:-0}"
@@ -134,6 +135,32 @@ if is_truthy "$RESTART_MAIN_APP"; then
     : > "$START_TIMES"
 fi
 
+deploy_operation_id=""
+if is_truthy "$RESTART_MAIN_APP"; then
+    deploy_log "Requesting lifecycle drain before restart"
+    if ! deploy_operation_id=$(venv/bin/python3 -m src.lifecycle_tool begin-deploy --commit "$NEW_COMMIT" 2>>"$DEPLOY_LOG"); then
+        deploy_log "Failed to request lifecycle drain"
+        notify_admin "❌ *Deploy failed* (drain setup)
+
+Commit \`$NEW_SHORT\` could not request deploy drain state.
+Check \`.deploy/deploy.log\` for details."
+        exit 1
+    fi
+    if ! venv/bin/python3 -m src.lifecycle_tool wait-for-idle --timeout "$DEPLOY_IDLE_TIMEOUT" 2>>"$DEPLOY_LOG"; then
+        deploy_log "Timed out waiting for active work to drain before restart"
+        venv/bin/python3 -m src.lifecycle_tool mark-failed \
+            --operation-id "$deploy_operation_id" \
+            --error "Timed out waiting for active work to drain before restart" \
+            2>>"$DEPLOY_LOG" || true
+        notify_admin "❌ *Deploy aborted* (drain timeout)
+
+Commit \`$NEW_SHORT\` was ready, but active work did not drain within ${DEPLOY_IDLE_TIMEOUT}s.
+Old process kept running; restart was skipped."
+        exit 1
+    fi
+    venv/bin/python3 -m src.lifecycle_tool mark-restarting --operation-id "$deploy_operation_id" 2>>"$DEPLOY_LOG" || true
+fi
+
 deploy_log "Smoke test passed. Restarting: ${restart_targets[*]}"
 sudo systemctl daemon-reload
 sudo systemctl restart "${restart_targets[@]}"
@@ -169,6 +196,9 @@ for i in $(seq 1 "$HEALTH_TIMEOUT"); do
             CURRENT_GOOD=$(cat "$GOOD_COMMIT_FILE")
             if [ "$CURRENT_GOOD" = "$NEW_COMMIT" ]; then
                 deploy_log "Deploy successful! Selected services healthy at $NEW_SHORT (${i}s)"
+                if [ -n "$deploy_operation_id" ]; then
+                    venv/bin/python3 -m src.lifecycle_tool mark-completed --operation-id "$deploy_operation_id" 2>>"$DEPLOY_LOG" || true
+                fi
                 echo ""
                 echo "Current commit:"
                 git log -1 --oneline
@@ -179,6 +209,9 @@ for i in $(seq 1 "$HEALTH_TIMEOUT"); do
     fi
 
     deploy_log "Deploy successful! Selected services healthy at $NEW_SHORT (${i}s)"
+    if [ -n "$deploy_operation_id" ]; then
+        venv/bin/python3 -m src.lifecycle_tool mark-completed --operation-id "$deploy_operation_id" 2>>"$DEPLOY_LOG" || true
+    fi
     echo ""
     echo "Current commit:"
     git log -1 --oneline
@@ -209,6 +242,13 @@ else
 
 Commit \`$NEW_SHORT\` did not become healthy within ${HEALTH_TIMEOUT}s.
 Check \`.deploy/deploy.log\` for details."
+fi
+
+if [ -n "$deploy_operation_id" ]; then
+    venv/bin/python3 -m src.lifecycle_tool mark-failed \
+        --operation-id "$deploy_operation_id" \
+        --error "Deploy health check failed for $NEW_SHORT" \
+        2>>"$DEPLOY_LOG" || true
 fi
 
 exit 1

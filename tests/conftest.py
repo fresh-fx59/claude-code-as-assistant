@@ -59,7 +59,7 @@ def reset_session_manager():
         bot._error_counts.clear()
         bot._recent_outbound_by_scope.clear()
 
-        for path in (bot.resume_state_store._path, bot.steering_ledger_store._path):
+        for path in (bot.resume_state_store._path, bot.steering_ledger_store._path, bot.lifecycle_store._path):
             if path.exists():
                 path.unlink()
     except Exception:

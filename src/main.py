@@ -27,8 +27,10 @@ from .config import (
 from . import bot as bot_module
 from .bot import router, provider_manager, task_manager, schedule_manager
 from .metrics import start_metrics_server
+from .tasks import TaskNotificationMode
 
 _startup_notice_sent_at: dict[tuple[int, int | None], datetime] = {}
+_lifecycle_replay_task: asyncio.Task | None = None
 
 
 def mark_good_commit() -> None:
@@ -177,6 +179,62 @@ async def send_ready_notification(bot: Bot) -> None:
         logging.warning("Could not send ready notification: %s", e)
 
 
+async def replay_queued_turns_once(bot: Bot) -> int:
+    global task_manager
+
+    if task_manager is None:
+        return 0
+    if bot_module.lifecycle_store.is_draining():  # noqa: SLF001
+        return 0
+
+    queued_turns = await asyncio.to_thread(bot_module.lifecycle_store.claim_queued_turns, limit=10)  # noqa: SLF001
+    submitted = 0
+    for turn in queued_turns:
+        try:
+            scope_key = bot_module._scope_key(turn.chat_id, turn.message_thread_id)  # noqa: SLF001
+            provider = bot_module.provider_manager.get_provider(scope_key)
+            session = bot_module.session_manager.get(turn.chat_id, turn.message_thread_id)
+            model, session_id, provider_cli, resume_arg = bot_module._scheduled_task_backend(  # noqa: SLF001
+                session,
+                provider,
+            )
+            notify_kwargs = {
+                "chat_id": turn.chat_id,
+                "text": "🔁 Resuming queued request after deploy.",
+            }
+            if turn.message_thread_id is not None:
+                notify_kwargs["message_thread_id"] = turn.message_thread_id
+            await bot.send_message(**notify_kwargs)
+            task_id = await task_manager.submit(
+                chat_id=turn.chat_id,
+                user_id=turn.user_id,
+                message_thread_id=turn.message_thread_id,
+                prompt=turn.prompt,
+                model=model,
+                session_id=session_id,
+                provider_cli=provider_cli,
+                resume_arg=resume_arg,
+                notification_mode=TaskNotificationMode.DELIVER_RESPONSE,
+            )
+            await asyncio.to_thread(bot_module.lifecycle_store.mark_turn_submitted, turn.id, task_id)  # noqa: SLF001
+            submitted += 1
+        except Exception:
+            logging.exception("Failed to replay queued turn id=%s", turn.id)
+            await asyncio.to_thread(bot_module.lifecycle_store.requeue_turn, turn.id)  # noqa: SLF001
+    return submitted
+
+
+async def lifecycle_replay_loop(bot: Bot) -> None:
+    while True:
+        try:
+            await replay_queued_turns_once(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Lifecycle replay loop iteration failed")
+        await asyncio.sleep(2)
+
+
 async def auto_resume_step_plan_after_restart(bot: Bot) -> bool:
     """Auto-queue the next step-plan continuation turn after restart."""
     global task_manager
@@ -286,11 +344,12 @@ async def auto_resume_step_plan_after_restart(bot: Bot) -> bool:
 
 
 async def initialize_runtime(bot: Bot) -> tuple[object, object]:
-    global task_manager, schedule_manager
+    global task_manager, schedule_manager, _lifecycle_replay_task
     from .tasks import TaskManager
     from .scheduler import ScheduleManager
 
-    task_manager = TaskManager(bot)
+    bot_module.lifecycle_store.acknowledge_process_restart()  # noqa: SLF001
+    task_manager = TaskManager(bot, lifecycle_store=bot_module.lifecycle_store)
     schedule_manager = ScheduleManager(
         task_manager,
         MEMORY_DIR / "schedules.db",
@@ -300,6 +359,8 @@ async def initialize_runtime(bot: Bot) -> tuple[object, object]:
     bot_module.task_manager = task_manager
     bot_module.schedule_manager = schedule_manager
     await task_manager.start()
+    if _lifecycle_replay_task is None:
+        _lifecycle_replay_task = asyncio.create_task(lifecycle_replay_loop(bot))
     if EMBEDDED_SCHEDULER_ENABLED:
         task_manager.add_observer(schedule_manager)
         await schedule_manager.start()
@@ -309,6 +370,7 @@ async def initialize_runtime(bot: Bot) -> tuple[object, object]:
 
 
 async def main() -> None:
+    global _lifecycle_replay_task
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -368,6 +430,13 @@ async def main() -> None:
             ),
         )
     finally:
+        if _lifecycle_replay_task:
+            _lifecycle_replay_task.cancel()
+            try:
+                await _lifecycle_replay_task
+            except asyncio.CancelledError:
+                pass
+            _lifecycle_replay_task = None
         if schedule_manager:
             await schedule_manager.stop()
         if task_manager:

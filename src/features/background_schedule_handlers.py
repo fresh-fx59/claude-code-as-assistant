@@ -39,16 +39,20 @@ async def cmd_bg(
     task_model, session_id, provider_cli, resume_arg = task_backend_fn(session, provider)
     full_prompt = build_augmented_prompt_fn(prompt)
 
-    task_id = await task_manager.submit(
-        chat_id=chat_id,
-        message_thread_id=thread_id,
-        user_id=actor_id_fn(message),
-        prompt=full_prompt,
-        model=task_model,
-        session_id=session_id,
-        provider_cli=provider_cli,
-        resume_arg=resume_arg,
-    )
+    try:
+        task_id = await task_manager.submit(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            user_id=actor_id_fn(message),
+            prompt=full_prompt,
+            model=task_model,
+            session_id=session_id,
+            provider_cli=provider_cli,
+            resume_arg=resume_arg,
+        )
+    except RuntimeError as exc:
+        await message.answer(str(exc))
+        return
 
     lines = [
         "✅ <b>Task queued</b>",

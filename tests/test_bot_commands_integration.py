@@ -90,6 +90,34 @@ class TestAuthorizationChecking:
         assert _is_authorized(None, -1001234567890) is True
 
 
+@pytest.mark.asyncio
+async def test_handle_message_queues_request_while_lifecycle_is_draining(mock_message, monkeypatch) -> None:
+    queued: list[dict[str, object]] = []
+
+    async def fake_compose(_message, _override_text=None):
+        return "queued raw prompt"
+
+    store = type(
+        "LifecycleStoreStub",
+        (),
+        {
+            "is_draining": staticmethod(lambda: True),
+            "enqueue_turn": staticmethod(lambda **kwargs: queued.append(kwargs) or 1),
+        },
+    )()
+
+    monkeypatch.setattr("src.bot.lifecycle_store", store)
+    monkeypatch.setattr("src.bot._compose_incoming_prompt", fake_compose)
+    monkeypatch.setattr("src.bot._build_augmented_prompt", lambda prompt: f"aug::{prompt}")
+
+    await handle_message(mock_message)
+
+    mock_message.answer.assert_awaited_once()
+    assert "queued" in mock_message.answer.await_args.args[0].lower()
+    assert queued[0]["scope_key"] == "123456789:main"
+    assert queued[0]["prompt"] == "aug::queued raw prompt"
+
+
 # ── Contract 2: /start command ────────────────────────────────────
 @pytest.mark.asyncio
 class TestStartCommand:

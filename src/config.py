@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.36.0"
+VERSION: str = "0.37.0"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -188,6 +188,7 @@ MEMORY_DIR: Path = Path(
     os.path.expanduser(_raw_memory_dir) if _raw_memory_dir else "memory"
 )
 os.makedirs(MEMORY_DIR, exist_ok=True)
+LIFECYCLE_DB_PATH: Path = MEMORY_DIR / "lifecycle.db"
 TELEGRAM_DIGEST_DB_PATH: Path = MEMORY_DIR / "telegram_digest.db"
 TELEGRAM_DIGEST_BRIEF_PATH: Path = MEMORY_DIR / "telegram_digest_brief.md"
 TELEGRAM_PROXY_SESSION_PATH: Path = MEMORY_DIR / "telethon_user_proxy"

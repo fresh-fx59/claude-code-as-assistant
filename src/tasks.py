@@ -117,9 +117,10 @@ class TaskManager:
         "codex process was interrupted by service restart",
     )
 
-    def __init__(self, bot: Bot, observers: Sequence[TaskObserver] | None = None):
+    def __init__(self, bot: Bot, observers: Sequence[TaskObserver] | None = None, lifecycle_store: object | None = None):
         self.bot = bot
         self._observers = list(observers or [])
+        self._lifecycle_store = lifecycle_store
         self.tasks: dict[str, BackgroundTask] = {}
         self._queue: list[BackgroundTask] = []
         self._running_tasks: set[str] = set()
@@ -174,6 +175,9 @@ class TaskManager:
         task_id: str | None = None,
     ) -> str:
         """Submit a task for background execution. Returns task ID."""
+        if self._lifecycle_store and getattr(self._lifecycle_store, "is_draining", None):
+            if self._lifecycle_store.is_draining():
+                raise RuntimeError("Deploy drain in progress; new background work is temporarily blocked.")
         task = BackgroundTask(
             id=task_id or str(uuid.uuid4()),
             chat_id=chat_id,
@@ -452,8 +456,18 @@ class TaskManager:
     async def _execute_task(self, task: BackgroundTask) -> None:
         """Execute a single background task."""
         typing_task: asyncio.Task | None = None
+        lifecycle_scope_key = f"bg:{task.id}"
         try:
             start_time = datetime.now()
+            if self._lifecycle_store and getattr(self._lifecycle_store, "upsert_active_scope", None):
+                self._lifecycle_store.upsert_active_scope(
+                    scope_key=lifecycle_scope_key,
+                    chat_id=task.chat_id,
+                    message_thread_id=task.message_thread_id,
+                    user_id=task.user_id,
+                    kind="background_task",
+                    prompt_preview=task.prompt,
+                )
             response = None
             if task.live_feedback:
                 await self._notify_started(task)
@@ -557,7 +571,6 @@ class TaskManager:
             metrics.CLAUDE_REQUESTS_TOTAL.labels(model=task.model, status="timeout").inc()
             metrics.BG_TASKS_TOTAL.labels(status="timeout").inc()
             await self._notify_failure(task)
-
         except asyncio.CancelledError:
             # Task was cancelled, already handled in cancel()
             task.status = TaskStatus.CANCELLED
@@ -576,6 +589,8 @@ class TaskManager:
             await self._notify_failure(task)
 
         finally:
+            if self._lifecycle_store and getattr(self._lifecycle_store, "clear_active_scope", None):
+                self._lifecycle_store.clear_active_scope(lifecycle_scope_key)
             metrics.observe_cost_intelligence_turn(
                 scope_key=make_scope_key(task.chat_id, task.message_thread_id),
                 provider=task.provider_cli,

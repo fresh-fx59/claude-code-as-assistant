@@ -64,6 +64,7 @@ from .media import (
     strip_tool_directive_lines,
 )
 from .memory import MemoryManager
+from .lifecycle_queue import LifecycleQueueStore
 from .progress import ProgressReporter
 from .providers import ProviderManager
 from .scheduler import ScheduleManager
@@ -80,6 +81,7 @@ provider_manager = ProviderManager()
 memory_manager = MemoryManager(config.MEMORY_DIR)
 resume_state_store = ResumeStateStore(config.MEMORY_DIR / "resume_envelopes.json")
 steering_ledger_store = SteeringLedgerStore(config.MEMORY_DIR / "steering_ledger.json")
+lifecycle_store = LifecycleQueueStore(config.LIFECYCLE_DB_PATH)
 tool_registry = ToolRegistry(
     config.TOOLS_DIR,
     denylist=config.TOOL_DENYLIST,
@@ -1520,6 +1522,21 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         len(raw_prompt),
     )
 
+    if lifecycle_store.is_draining():
+        queued_prompt = _build_augmented_prompt(raw_prompt)
+        lifecycle_store.enqueue_turn(
+            scope_key=scope_key,
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            user_id=_actor_id(message),
+            prompt=queued_prompt,
+            source_message_id=getattr(message, "message_id", None),
+        )
+        await message.answer(
+            "A deploy restart is draining active work. I queued this request and will resume it automatically after restart."
+        )
+        return
+
     if state.lock.locked():
         metrics.MESSAGES_TOTAL.labels(status="busy").inc()
         if state.reset_requested:
@@ -1546,105 +1563,116 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
         # A newly-started foreground run supersedes any prior reset request.
         state.cancel_requested = False
         state.reset_requested = False
-
-        session = session_manager.get(chat_id, thread_id)
-        progress = ProgressReporter(message)
-        typing_task = asyncio.create_task(_keep_typing(message))
-        await progress.show_working()
-
-        final_response: bridge.ClaudeResponse | None = None
-        provider = provider_manager.get_provider(scope_key)
-        observed_tools: list[str] = []
-        provider_attempts = 0
-        steering_events_applied = 0
-        final_provider_name = provider.name
-        final_model_name = _current_model_label(session, provider)
-        step_plan_active = _step_plan_active_flag() or bool(_STEP_PLAN_AUTO_TRIGGER_RE.search(raw_prompt))
-        response_has_user_content = False
-        output_size_out = 0
-
-        execution = await _turn_provider_execution.run_provider_execution_loop(
-            message=message,
-            state=state,
-            session=session,
-            progress=progress,
-            typing_task=typing_task,
+        lifecycle_store.upsert_active_scope(
             scope_key=scope_key,
             chat_id=chat_id,
-            thread_id=thread_id,
-            raw_prompt=raw_prompt,
-            override_text=override_text,
-            provider_manager=provider_manager,
-            session_manager=session_manager,
-            resume_state_store=resume_state_store,
-            steering_ledger_store=steering_ledger_store,
-            logger=logger,
-            current_model_label_fn=_current_model_label,
-            is_codex_family_cli_fn=_is_codex_family_cli,
-            find_provider_cli_fn=_find_provider_cli,
-            as_text_fn=_as_text,
-            worklog_subprocess_env_fn=_worklog_subprocess_env,
-            codex_model_arg_fn=_codex_model_arg,
-            run_codex_with_retries_fn=_run_codex_with_retries,
-            run_claude_fn=_run_claude,
-            extract_requested_tools_fn=ToolRegistry.extract_requested_tools,
-            inject_tool_request_fn=_inject_tool_request,
-            build_steering_patch_fn=_build_steering_patch,
-            has_high_risk_conflict_fn=_has_high_risk_conflict,
-        )
-        final_response = execution.final_response
-        provider = execution.provider
-        observed_tools = execution.observed_tools
-        provider_attempts = execution.provider_attempts
-        steering_events_applied = execution.steering_events_applied
-        final_provider_name = execution.final_provider_name
-        final_model_name = execution.final_model_name
-
-        response_has_user_content, output_size_out = await _turn_response_dispatch.dispatch_turn_response(
-            message=message,
-            state=state,
-            final_response=final_response,
-            progress=progress,
-            scope_key=scope_key,
-            provider=provider,
-            resume_state_store=resume_state_store,
-            record_error_fn=_record_error,
-            build_rollback_suggestion_markup_fn=_build_rollback_suggestion_markup,
-            answer_text_with_retry_fn=_answer_text_with_retry,
-            extract_media_directives_fn=_extract_media_directives,
-            strip_tool_directive_lines_fn=_strip_tool_directive_lines,
-            send_media_reply_fn=_send_media_reply,
-            markdown_to_html_fn=markdown_to_html,
-            split_message_fn=split_message,
-            strip_html_fn=strip_html,
-            has_recent_outbound_fn=_has_recent_outbound,
-            remember_outbound_fn=_remember_outbound,
-            clear_errors_fn=_clear_errors,
-            empty_response_fallback_text=_EMPTY_RESPONSE_FALLBACK_TEXT,
-            logger=logger,
+            message_thread_id=thread_id,
+            user_id=_actor_id(message),
+            kind="interactive_turn",
+            prompt_preview=raw_prompt,
         )
 
-        _turn_finalize_metrics.finalize_turn_metrics_and_sessions(
-            final_response=final_response,
-            provider=provider,
-            session=session,
-            chat_id=chat_id,
-            thread_id=thread_id,
-            session_manager=session_manager,
-            is_codex_family_cli_fn=_is_codex_family_cli,
-            metrics=metrics,
-            scope_key=scope_key,
-            final_provider_name=final_provider_name,
-            final_model_name=final_model_name,
-            state=state,
-            response_has_user_content=response_has_user_content,
-            observed_tools=observed_tools,
-            raw_prompt=raw_prompt,
-            output_size_out=output_size_out,
-            step_plan_active=step_plan_active,
-            steering_events_applied=steering_events_applied,
-            provider_attempts=provider_attempts,
-        )
+        try:
+            session = session_manager.get(chat_id, thread_id)
+            progress = ProgressReporter(message)
+            typing_task = asyncio.create_task(_keep_typing(message))
+            await progress.show_working()
+
+            final_response: bridge.ClaudeResponse | None = None
+            provider = provider_manager.get_provider(scope_key)
+            observed_tools: list[str] = []
+            provider_attempts = 0
+            steering_events_applied = 0
+            final_provider_name = provider.name
+            final_model_name = _current_model_label(session, provider)
+            step_plan_active = _step_plan_active_flag() or bool(_STEP_PLAN_AUTO_TRIGGER_RE.search(raw_prompt))
+            response_has_user_content = False
+            output_size_out = 0
+
+            execution = await _turn_provider_execution.run_provider_execution_loop(
+                message=message,
+                state=state,
+                session=session,
+                progress=progress,
+                typing_task=typing_task,
+                scope_key=scope_key,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                raw_prompt=raw_prompt,
+                override_text=override_text,
+                provider_manager=provider_manager,
+                session_manager=session_manager,
+                resume_state_store=resume_state_store,
+                steering_ledger_store=steering_ledger_store,
+                logger=logger,
+                current_model_label_fn=_current_model_label,
+                is_codex_family_cli_fn=_is_codex_family_cli,
+                find_provider_cli_fn=_find_provider_cli,
+                as_text_fn=_as_text,
+                worklog_subprocess_env_fn=_worklog_subprocess_env,
+                codex_model_arg_fn=_codex_model_arg,
+                run_codex_with_retries_fn=_run_codex_with_retries,
+                run_claude_fn=_run_claude,
+                extract_requested_tools_fn=ToolRegistry.extract_requested_tools,
+                inject_tool_request_fn=_inject_tool_request,
+                build_steering_patch_fn=_build_steering_patch,
+                has_high_risk_conflict_fn=_has_high_risk_conflict,
+            )
+            final_response = execution.final_response
+            provider = execution.provider
+            observed_tools = execution.observed_tools
+            provider_attempts = execution.provider_attempts
+            steering_events_applied = execution.steering_events_applied
+            final_provider_name = execution.final_provider_name
+            final_model_name = execution.final_model_name
+
+            response_has_user_content, output_size_out = await _turn_response_dispatch.dispatch_turn_response(
+                message=message,
+                state=state,
+                final_response=final_response,
+                progress=progress,
+                scope_key=scope_key,
+                provider=provider,
+                resume_state_store=resume_state_store,
+                record_error_fn=_record_error,
+                build_rollback_suggestion_markup_fn=_build_rollback_suggestion_markup,
+                answer_text_with_retry_fn=_answer_text_with_retry,
+                extract_media_directives_fn=_extract_media_directives,
+                strip_tool_directive_lines_fn=_strip_tool_directive_lines,
+                send_media_reply_fn=_send_media_reply,
+                markdown_to_html_fn=markdown_to_html,
+                split_message_fn=split_message,
+                strip_html_fn=strip_html,
+                has_recent_outbound_fn=_has_recent_outbound,
+                remember_outbound_fn=_remember_outbound,
+                clear_errors_fn=_clear_errors,
+                empty_response_fallback_text=_EMPTY_RESPONSE_FALLBACK_TEXT,
+                logger=logger,
+            )
+
+            _turn_finalize_metrics.finalize_turn_metrics_and_sessions(
+                final_response=final_response,
+                provider=provider,
+                session=session,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                session_manager=session_manager,
+                is_codex_family_cli_fn=_is_codex_family_cli,
+                metrics=metrics,
+                scope_key=scope_key,
+                final_provider_name=final_provider_name,
+                final_model_name=final_model_name,
+                state=state,
+                response_has_user_content=response_has_user_content,
+                observed_tools=observed_tools,
+                raw_prompt=raw_prompt,
+                output_size_out=output_size_out,
+                step_plan_active=step_plan_active,
+                steering_events_applied=steering_events_applied,
+                provider_attempts=provider_attempts,
+            )
+        finally:
+            lifecycle_store.clear_active_scope(scope_key)
 
 
 @router.errors()

@@ -319,3 +319,66 @@ async def test_auto_resume_uses_persisted_next_action_prompt_when_present(monkey
     submit_kwargs = task_mgr.submit.await_args.kwargs
     assert submit_kwargs["prompt"] == persisted_prompt
     assert saved["next_action"]["prompt"] == persisted_prompt
+
+
+@pytest.mark.asyncio
+async def test_replay_queued_turns_once_submits_deliver_response_task(monkeypatch) -> None:
+    bot = AsyncMock()
+    task_mgr = AsyncMock()
+    task_mgr.submit = AsyncMock(return_value="queued-task-1")
+    monkeypatch.setattr(main, "task_manager", task_mgr, raising=False)
+
+    turn = type(
+        "QueuedTurnStub",
+        (),
+        {
+            "id": 1,
+            "chat_id": -100123,
+            "message_thread_id": 77,
+            "user_id": 12345,
+            "prompt": "queued prompt",
+        },
+    )()
+    marked: list[tuple[int, str]] = []
+
+    store = type(
+        "LifecycleStoreStub",
+        (),
+        {
+            "is_draining": staticmethod(lambda: False),
+            "claim_queued_turns": staticmethod(lambda limit=10: [turn]),
+            "mark_turn_submitted": staticmethod(lambda turn_id, task_id: marked.append((turn_id, task_id))),
+            "requeue_turn": staticmethod(lambda _turn_id: None),
+        },
+    )()
+    monkeypatch.setattr(main.bot_module, "lifecycle_store", store, raising=False)
+    monkeypatch.setattr(main.bot_module, "_scope_key", lambda c, t: f"{c}:{t}", raising=False)
+    monkeypatch.setattr(
+        main.bot_module,
+        "_scheduled_task_backend",
+        lambda _session, _provider: ("sonnet", "sess-1", "claude", None),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.bot_module,
+        "provider_manager",
+        type("ProviderMgrStub", (), {"get_provider": staticmethod(lambda _scope: object())})(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.bot_module,
+        "session_manager",
+        type("SessionMgrStub", (), {"get": staticmethod(lambda _chat, _thread: object())})(),
+        raising=False,
+    )
+
+    submitted = await main.replay_queued_turns_once(bot)
+
+    assert submitted == 1
+    bot.send_message.assert_awaited_once()
+    submit_kwargs = task_mgr.submit.await_args.kwargs
+    assert submit_kwargs["chat_id"] == -100123
+    assert submit_kwargs["message_thread_id"] == 77
+    assert submit_kwargs["prompt"] == "queued prompt"
+    assert submit_kwargs["notification_mode"] == main.TaskNotificationMode.DELIVER_RESPONSE
+    assert marked == [(1, "queued-task-1")]
