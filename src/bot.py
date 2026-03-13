@@ -47,6 +47,7 @@ from .features.provider_runtime_helpers import (
 )
 from .features import provider_runtime as _provider_runtime
 from .features import provider_command_handlers as _provider_command_handlers
+from .features import lifecycle_ops_command_handlers as _lifecycle_ops_command_handlers
 from .f08_governance import F08GovernanceAdvisory
 from .media import (
     extract_media_directives,
@@ -838,103 +839,27 @@ def _reflection_stream(session: object, provider: object, prompt: str):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-
-    # Get user timezone if set
-    user_tz = None
-    try:
-        data = yaml.safe_load((config.MEMORY_DIR / "user_profile.yaml"))
-        prefs = data.get("preferences", {})
-        user_tz = prefs.get("timezone")
-    except Exception:
-        pass
-
-    status_lines = [
-        f"Hello! I'm a Claude Code assistant. <b>v{config.VERSION}</b>",
-    ]
-    if user_tz:
-        try:
-            from datetime import datetime, timezone as tz
-            tz_obj = tz.timezone(user_tz)
-            now = datetime.now(tz.utc).astimezone(tz_obj)
-            time_str = now.strftime("%H:%M")
-            status_lines.append(f"<b>Time:</b> {time_str} ({user_tz})")
-        except Exception:
-            pass
-
-    status_lines.extend([
-        "",
-        "Send me any message and I'll respond using Claude.",
-        "",
-        "<b>Commands:</b>",
-        "/new — Start a fresh conversation",
-        "/model — Switch model",
-        "/provider — Switch LLM provider",
-        "/status — Show current session info",
-        "/threads — Show tracked forum topics/threads",
-        "/memory — Show what I remember",
-        "/tools — Show available tools",
-        "/rollback — Roll back to previous version (admin)",
-        "/selfmod_stage — Stage sandbox plugin (admin)",
-        "/selfmod_apply — Validate+promote sandbox plugin (admin)",
-        "/schedule_every <min> <task> — Schedule recurring task",
-        "/schedule_daily <HH:MM> <task> — Schedule daily recurring task",
-        "/schedule_weekly <day> <HH:MM> <task> — Schedule weekly task",
-        "/schedule_list — List recurring schedules",
-        "/schedule_cancel <id> — Cancel recurring schedule",
-        "/bg <task> — Run task in background",
-        "/bg_cancel <id> — Cancel background task",
-        "/cancel — Cancel current request",
-    ])
-
-    await message.answer("\n".join(status_lines), parse_mode="HTML")
+    await _lifecycle_ops_command_handlers.cmd_start(
+        message,
+        is_authorized=_is_authorized,
+        config=config,
+    )
 
 
 @router.message(Command("new"))
 async def cmd_new(message: Message) -> None:
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-    chat_id = message.chat.id
-    thread_id = _thread_id(message)
-    scope_key = _scope_key(chat_id, thread_id)
-    session = session_manager.get(chat_id, thread_id)
-    provider = provider_manager.get_provider(scope_key)
-    # Keep provider choice sticky per thread even when session ids are reset.
-    if session.provider and session.provider != provider.name:
-        restored_provider = provider_manager.set_provider(scope_key, session.provider)
-        if restored_provider:
-            provider = restored_provider
-        else:
-            session_manager.set_provider(chat_id, provider.name, thread_id)
-    elif not session.provider:
-        session_manager.set_provider(chat_id, provider.name, thread_id)
-    if (
-        os.getenv("DISABLE_REFLECTION") != "1"
-        and (session.claude_session_id or session.codex_session_id)
-    ):
-        reflection_session: ChatSession = replace(session)
-        asyncio.create_task(_reflect(chat_id, reflection_session, provider))
-    state = _get_state(scope_key)
-    if state.lock.locked():
-        state.cancel_requested = True
-        state.reset_requested = True
-        proc = state.process_handle.get("proc") if state.process_handle else None
-        if proc:
-            kill_result = proc.kill()
-            if inspect.isawaitable(kill_result):
-                await kill_result
-    session_manager.new_conversation(chat_id, thread_id)
-    session_manager.new_codex_conversation(chat_id, thread_id)
-    steering_ledger_store.clear(scope_key=scope_key)
-    _clear_errors(scope_key)
-    if state.lock.locked():
-        await message.answer(
-            "Conversation reset requested. If a request was running, it is being cancelled. "
-            "Send your next message in a moment."
-        )
-    else:
-        await message.answer("Conversation cleared. Send a message to start fresh.")
+    await _lifecycle_ops_command_handlers.cmd_new(
+        message,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+        scope_key_fn=_scope_key,
+        provider_manager=provider_manager,
+        session_manager=session_manager,
+        steering_ledger_store=steering_ledger_store,
+        clear_errors_fn=_clear_errors,
+        get_state_fn=_get_state,
+        reflect_fn=_reflect,
+    )
 
 
 def _parse_reflection_payload(text: str) -> dict[str, object]:
@@ -1060,103 +985,62 @@ async def cb_provider_switch(callback: CallbackQuery) -> None:
 
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-    chat_id = message.chat.id
-    thread_id = _thread_id(message)
-    scope_key = _scope_key(chat_id, thread_id)
-    session = session_manager.get(chat_id, thread_id)
-    provider = provider_manager.get_provider(scope_key)
-    if _is_codex_family_cli(provider.cli):
-        sid = session.codex_session_id or "none (new conversation)"
-    else:
-        sid = session.claude_session_id or "none (new conversation)"
-    current_model = _current_model_label(session, provider)
-    await message.answer(
-        f"<b>Version:</b> {config.VERSION}\n"
-        f"<b>Thread:</b> <code>{thread_id if thread_id is not None else 'main'}</code>\n"
-        f"<b>Session:</b> <code>{sid}</code>\n"
-        f"<b>Model:</b> {current_model}\n"
-        f"<b>Provider:</b> {provider.name} — {provider.description}",
-        parse_mode="HTML",
+    await _lifecycle_ops_command_handlers.cmd_status(
+        message,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+        scope_key_fn=_scope_key,
+        session_manager=session_manager,
+        provider_manager=provider_manager,
+        is_codex_family_cli_fn=_is_codex_family_cli,
+        current_model_label_fn=_current_model_label,
+        version=config.VERSION,
     )
 
 
 @router.message(Command("memory"))
 async def cmd_memory(message: Message) -> None:
-    """Show current memory state."""
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-    content = memory_manager.format_for_display()
-    for chunk in split_message(content):
-        try:
-            await message.answer(chunk, parse_mode="HTML")
-        except Exception:
-            await message.answer(strip_html(chunk))
+    await _lifecycle_ops_command_handlers.cmd_memory(
+        message,
+        is_authorized=_is_authorized,
+        memory_manager=memory_manager,
+        split_message_fn=split_message,
+        strip_html_fn=strip_html,
+    )
 
 
 @router.message(Command("threads"))
 async def cmd_threads(message: Message) -> None:
-    """List tracked topic/thread scopes for this chat."""
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-    rows = session_manager.list_tracked_threads(message.chat.id)
-    if not rows:
-        await message.answer("No tracked threads yet for this chat.")
-        return
-
-    lines = ["<b>Tracked threads</b>", ""]
-    for row in rows:
-        thread = row.get("message_thread_id")
-        topic = row.get("topic_label") or "(untitled)"
-        last_seen = row.get("last_activity_at") or "n/a"
-        lines.append(
-            f"• <code>{thread if thread is not None else 'main'}</code> — {html.escape(str(topic))}"
-        )
-        lines.append(f"  last: {html.escape(str(last_seen))}")
-
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await _lifecycle_ops_command_handlers.cmd_threads(
+        message,
+        is_authorized=_is_authorized,
+        session_manager=session_manager,
+    )
 
 
 @router.message(Command("tools"))
 async def cmd_tools(message: Message) -> None:
-    """List available tools."""
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-    content = tool_registry.format_for_display()
-    try:
-        await message.answer(content, parse_mode="HTML")
-    except Exception:
-        await message.answer(strip_html(content))
+    await _lifecycle_ops_command_handlers.cmd_tools(
+        message,
+        is_authorized=_is_authorized,
+        tool_registry=tool_registry,
+        strip_html_fn=strip_html,
+    )
 
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message) -> None:
-    """Cancel the current request if one is running."""
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-
-    chat_id = message.chat.id
-    thread_id = _thread_id(message)
-    scope_key = _scope_key(chat_id, thread_id)
-    state = _get_state(scope_key)
-
-    if not state.lock.locked() or not state.process_handle or not state.process_handle.get("proc"):
-        await message.answer("Nothing to cancel.")
-        return
-
-    # Kill the process
-    proc = state.process_handle["proc"]
-    kill_result = proc.kill()
-    if inspect.isawaitable(kill_result):
-        await kill_result
-    state.cancel_requested = True
-    session = session_manager.get(chat_id, thread_id)
-    provider = _current_provider(scope_key)
-    metrics.CLAUDE_REQUESTS_TOTAL.labels(
-        model=_current_model_label(session, provider),
-        status="cancelled",
-    ).inc()
+    await _lifecycle_ops_command_handlers.cmd_cancel(
+        message,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+        scope_key_fn=_scope_key,
+        get_state_fn=_get_state,
+        session_manager=session_manager,
+        current_provider_fn=_current_provider,
+        current_model_label_fn=_current_model_label,
+        metrics=metrics,
+    )
 
 
 @router.message(Command("rollback"))
