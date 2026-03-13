@@ -41,6 +41,10 @@ from .features.scope_helpers import (
     scope_key_from_message as _scope_key_from_message_impl,
     thread_id as _thread_id_impl,
 )
+from .features.provider_runtime_helpers import (
+    is_transient_codex_error as _is_transient_codex_error_impl,
+    sanitize_transient_codex_error_response as _sanitize_transient_codex_error_response_impl,
+)
 from .f08_governance import F08GovernanceAdvisory
 from .media import (
     extract_media_directives,
@@ -563,9 +567,7 @@ def _build_augmented_prompt(raw_prompt: str) -> str:
     prompt_parts.append(raw_prompt + memory_instructions)
     return "\n\n".join(prompt_parts)
 def _is_transient_codex_error(text: str | None) -> bool:
-    if not text:
-        return False
-    return any(pattern.search(text) for pattern in _CODEX_TRANSIENT_ERROR_PATTERNS)
+    return _is_transient_codex_error_impl(text, patterns=_CODEX_TRANSIENT_ERROR_PATTERNS)
 
 
 def _sanitize_transient_codex_error_response(
@@ -573,19 +575,7 @@ def _sanitize_transient_codex_error_response(
     *,
     attempts: int,
 ) -> bridge.ClaudeResponse:
-    return bridge.ClaudeResponse(
-        text=(
-            "The Codex stream disconnected repeatedly and did not recover after "
-            f"{attempts} attempt(s). Please retry."
-        ),
-        session_id=response.session_id,
-        is_error=True,
-        cost_usd=response.cost_usd,
-        duration_ms=response.duration_ms,
-        num_turns=response.num_turns,
-        cancelled=response.cancelled,
-        idle_timeout=response.idle_timeout,
-    )
+    return _sanitize_transient_codex_error_response_impl(response, attempts=attempts)
 
 
 def _is_voice_compatible_media(media_ref: str) -> bool:

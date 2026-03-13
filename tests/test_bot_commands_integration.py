@@ -1345,7 +1345,12 @@ class TestCodexTransientRetries:
             "num_turns": 0,
         })()
 
-        state = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
+        state = _ChatState(
+            lock=asyncio.Lock(),
+            process_handle=None,
+            cancel_requested=False,
+            reset_requested=False,
+        )
         with (
             patch("src.bot._run_codex", new=AsyncMock(side_effect=[response_error, response_ok])) as run_mock,
             patch("src.bot.config.CODEX_TRANSIENT_MAX_RETRIES", 1),
@@ -1380,7 +1385,12 @@ class TestCodexTransientRetries:
             "idle_timeout": False,
         })()
 
-        state = _ChatState(lock=asyncio.Lock(), process_handle=None, cancel_requested=False)
+        state = _ChatState(
+            lock=asyncio.Lock(),
+            process_handle=None,
+            cancel_requested=False,
+            reset_requested=False,
+        )
         with (
             patch("src.bot._run_codex", new=AsyncMock(return_value=response_error)) as run_mock,
             patch("src.bot.config.CODEX_TRANSIENT_MAX_RETRIES", 0),

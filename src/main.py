@@ -180,9 +180,19 @@ async def auto_resume_step_plan_after_restart(bot: Bot) -> bool:
     if not state.get("active") or not state.get("restart_between_steps"):
         return False
 
-    if state.get("current_task_id"):
-        logging.info("Skipping step-plan auto-resume; current_task_id is already set")
-        return False
+    current_task_id = str(state.get("current_task_id") or "").strip()
+    if current_task_id:
+        existing = await task_manager.get_status(current_task_id)
+        existing_status = str(getattr(existing, "status", "") or "").lower() if existing else ""
+        if existing_status in {"queued", "running"}:
+            logging.info(
+                "Skipping step-plan auto-resume; task %s is still %s",
+                current_task_id,
+                existing_status,
+            )
+            return False
+        # Stale task id after process restart: clear and continue auto-resume.
+        state["current_task_id"] = None
 
     blocked_until_raw = str(state.get("auto_resume_blocked_until") or "").strip()
     if blocked_until_raw:

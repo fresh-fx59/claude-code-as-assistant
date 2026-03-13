@@ -126,6 +126,7 @@ async def test_auto_resume_step_plan_after_restart_submits_next_step(monkeypatch
     bot = AsyncMock()
     task_mgr = AsyncMock()
     task_mgr.submit = AsyncMock(return_value="step-task-1")
+    task_mgr.get_status = AsyncMock(return_value=None)
     monkeypatch.setattr(main, "task_manager", task_mgr, raising=False)
     monkeypatch.setattr(main, "ALLOWED_USER_IDS", {12345})
 
@@ -137,7 +138,7 @@ async def test_auto_resume_step_plan_after_restart_submits_next_step(monkeypatch
         "user_id": 12345,
         "current_index": 1,
         "steps": ["/tmp/01.md", "/tmp/02.md"],
-        "current_task_id": None,
+        "current_task_id": "stale-task-id",
         "auto_resume_blocked_until": "",
     }
     saved = {}
@@ -168,6 +169,7 @@ async def test_auto_resume_step_plan_after_restart_submits_next_step(monkeypatch
     resumed = await main.auto_resume_step_plan_after_restart(bot)
 
     assert resumed is True
+    task_mgr.get_status.assert_awaited_once_with("stale-task-id")
     task_mgr.submit.assert_awaited_once()
     submit_kwargs = task_mgr.submit.await_args.kwargs
     assert submit_kwargs["chat_id"] == -100123
