@@ -79,8 +79,7 @@ For browser-based Ozon buying and order tracking, this repo now includes a dedic
 
 ```bash
 cd /home/claude-developer/iron-lady-assistant
-npm install
-npx agent-browser install
+./scripts/install_agent_browser_host.sh
 python3 -m src.ozon_browser login --headed
 python3 -m src.ozon_browser orders
 python3 -m src.ozon_browser prepare-buy "детский шампунь Johnson's" --max-price 700 --checkout
@@ -89,6 +88,7 @@ python3 -m src.ozon_browser place-order --confirm
 
 Notes:
 - Browser state is kept under `~/.local/state/iron-lady-assistant/ozon-browser/`
+- Host preparation helper: [`scripts/install_agent_browser_host.sh`](/home/claude-developer/iron-lady-assistant/scripts/install_agent_browser_host.sh)
 - `login --headed` is the intended one-time step for manual auth or challenge solving
 - If local Linux browser launch fails because of missing shared libraries, keep using the same wrapper but switch to a remote `agent-browser` provider such as `--provider browseruse`, `--provider kernel`, or `--provider browserbase`
 - The final purchase step is intentionally separate and requires `--confirm`
