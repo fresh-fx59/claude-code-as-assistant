@@ -116,6 +116,8 @@ async def test_initialize_runtime_skips_embedded_scheduler_when_disabled(monkeyp
 
     assert tm is task_manager
     assert sm is schedule_manager
+    assert main.bot_module.task_manager is task_manager
+    assert main.bot_module.schedule_manager is schedule_manager
     task_manager.start.assert_awaited_once()
     task_manager.add_observer.assert_not_called()
     schedule_manager.start.assert_not_called()

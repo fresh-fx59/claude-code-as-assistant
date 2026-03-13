@@ -276,6 +276,9 @@ async def initialize_runtime(bot: Bot) -> tuple[object, object]:
         MEMORY_DIR / "schedules.db",
         notify_level=SCHEDULER_NOTIFY_LEVEL,
     )
+    # Keep bot module globals in sync so command handlers use live managers after restart.
+    bot_module.task_manager = task_manager
+    bot_module.schedule_manager = schedule_manager
     await task_manager.start()
     if EMBEDDED_SCHEDULER_ENABLED:
         task_manager.add_observer(schedule_manager)
