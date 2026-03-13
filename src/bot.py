@@ -51,6 +51,7 @@ from .features import background_schedule_handlers as _background_schedule_handl
 from .features import rollback_selfmod_handlers as _rollback_selfmod_handlers
 from .features import message_media_handlers as _message_media_handlers
 from .features import media_reply_pipeline as _media_reply_pipeline
+from .features import turn_response_dispatch as _turn_response_dispatch
 from .f08_governance import F08GovernanceAdvisory
 from .media import (
     extract_media_directives,
@@ -1722,111 +1723,29 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             state.process_handle = None
             state.reset_requested = False
 
-        # ── Send response ─────────────────────────────────────
-        if state.cancel_requested:
-            await progress.finish()
-            _clear_errors(scope_key)
-        elif final_response:
-            if final_response.is_error:
-                resume_state_store.record_failure(scope_key=scope_key)
-                error_text = final_response.text or "(No response)"
-                logger.warning(
-                    "Chat %d: provider '%s' returned error response: %r",
-                    message.chat.id,
-                    provider.name,
-                    error_text[:500],
-                )
-                _record_error(scope_key)
-                reply_markup = _build_rollback_suggestion_markup(
-                    scope_key,
-                    message.from_user and message.from_user.id,
-                )
-                await _answer_text_with_retry(
-                    message,
-                    error_text,
-                    reply_markup=reply_markup,
-                )
-                await progress.finish()
-            else:
-                resume_state_store.record_success(
-                    scope_key=scope_key,
-                    output_text=final_response.text or "",
-                )
-                raw_response_text = final_response.text or ""
-                clean_text, media_refs, audio_as_voice = _extract_media_directives(raw_response_text)
-                clean_text = _strip_tool_directive_lines(clean_text)
-                response_has_user_content = bool(clean_text.strip() or media_refs)
-                output_size_out = len(clean_text)
-                for media_ref in media_refs:
-                    try:
-                        await _send_media_reply(
-                            message,
-                            media_ref,
-                            audio_as_voice=audio_as_voice,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Chat %d: failed to send media '%s'",
-                            message.chat.id,
-                            media_ref,
-                        )
-
-                chunks: list[str] = []
-                if clean_text.strip():
-                    html = markdown_to_html(clean_text)
-                    chunks = split_message(html)
-
-                if not chunks:
-                    if not media_refs:
-                        logger.warning(
-                            "Chat %d: Got empty response object - text='%s', is_error=%s, session_id=%s, cost=%.6f",
-                            message.chat.id,
-                            repr(final_response.text[:200]) if final_response.text else "None",
-                            final_response.is_error,
-                            final_response.session_id,
-                            final_response.cost_usd,
-                        )
-                        chunks = [_EMPTY_RESPONSE_FALLBACK_TEXT]
-
-                for chunk in chunks:
-                    if not chunk.strip():
-                        continue
-                    plain_preview = strip_html(chunk)
-                    if _has_recent_outbound(scope_key, plain_preview):
-                        logger.info("Chat %s: suppressed duplicate outgoing chunk", scope_key)
-                        continue
-                    try:
-                        await _answer_text_with_retry(
-                            message,
-                            chunk,
-                            parse_mode="HTML",
-                        )
-                        _remember_outbound(scope_key, plain_preview)
-                    except Exception:
-                        plain = strip_html(chunk)
-                        for plain_chunk in split_message(plain):
-                            if not plain_chunk.strip():
-                                continue
-                            if _has_recent_outbound(scope_key, plain_chunk):
-                                logger.info("Chat %s: suppressed duplicate plain outgoing chunk", scope_key)
-                                continue
-                            await _answer_text_with_retry(message, plain_chunk)
-                            _remember_outbound(scope_key, plain_chunk)
-
-                await progress.finish()
-                _clear_errors(scope_key)
-        else:
-            _record_error(scope_key)
-            reply_markup = _build_rollback_suggestion_markup(
-                scope_key,
-                message.from_user and message.from_user.id,
-            )
-            await _answer_text_with_retry(
-                message,
-                "An internal error occurred while processing your request.",
-                reply_markup=reply_markup,
-            )
-            await progress.finish()
+        response_has_user_content, output_size_out = await _turn_response_dispatch.dispatch_turn_response(
+            message=message,
+            state=state,
+            final_response=final_response,
+            progress=progress,
+            scope_key=scope_key,
+            provider=provider,
+            resume_state_store=resume_state_store,
+            record_error_fn=_record_error,
+            build_rollback_suggestion_markup_fn=_build_rollback_suggestion_markup,
+            answer_text_with_retry_fn=_answer_text_with_retry,
+            extract_media_directives_fn=_extract_media_directives,
+            strip_tool_directive_lines_fn=_strip_tool_directive_lines,
+            send_media_reply_fn=_send_media_reply,
+            markdown_to_html_fn=markdown_to_html,
+            split_message_fn=split_message,
+            strip_html_fn=strip_html,
+            has_recent_outbound_fn=_has_recent_outbound,
+            remember_outbound_fn=_remember_outbound,
+            clear_errors_fn=_clear_errors,
+            empty_response_fallback_text=_EMPTY_RESPONSE_FALLBACK_TEXT,
+            logger=logger,
+        )
 
         # Update session ID if we got one back
         if (
