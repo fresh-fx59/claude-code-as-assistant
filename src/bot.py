@@ -46,6 +46,7 @@ from .features.provider_runtime_helpers import (
     sanitize_transient_codex_error_response as _sanitize_transient_codex_error_response_impl,
 )
 from .features import provider_runtime as _provider_runtime
+from .features import provider_command_handlers as _provider_command_handlers
 from .f08_governance import F08GovernanceAdvisory
 from .media import (
     extract_media_directives,
@@ -999,157 +1000,62 @@ async def _reflect(chat_id: int, session: object, provider: object) -> None:
 
 @router.message(Command("model"))
 async def cmd_model(message: Message, command: CommandObject | None = None) -> None:
-    """Show model selection keyboard."""
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-    chat_id = message.chat.id
-    thread_id = _thread_id(message)
-    scope_key = _scope_key(chat_id, thread_id)
-    session = session_manager.get(chat_id, thread_id)
-    provider = _current_provider(scope_key)
-    current = _current_model_label(session, provider)
-
-    args = _command_args(message, command)
-    if args:
-        requested = args.split()[0]
-        options = _model_options(provider)
-        if requested not in options:
-            await message.answer(f"Invalid model: {requested}. Use /model to see options.")
-            return
-
-        if _is_codex_family_cli(provider.cli):
-            chosen = None if requested == "default" else requested
-            session_manager.set_codex_model(chat_id, chosen, thread_id)
-        else:
-            session_manager.set_model(chat_id, requested, thread_id)
-
-        current = _current_model_label(session_manager.get(chat_id, thread_id), provider)
-        await message.answer(f"Switched to {current}")
-        return
-
-    lines = [f"<b>Current model:</b> {current}\n"]
-    lines.append("<b>Select a model:</b>")
-
-    # Build inline keyboard with buttons
-    keyboard = InlineKeyboardBuilder()
-    for model in _model_options(provider):
-        button_text = f"{'✓ ' if model == current else ''}{model}"
-        keyboard.button(text=button_text, callback_data=f"model:{model}")
-    keyboard.adjust(2)  # 2 buttons per row
-
-    await message.answer("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await _provider_command_handlers.cmd_model(
+        message,
+        command,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+        scope_key_fn=_scope_key,
+        current_provider_fn=_current_provider,
+        current_model_label_fn=_current_model_label,
+        command_args_fn=_command_args,
+        model_options_fn=_model_options,
+        is_codex_family_cli_fn=_is_codex_family_cli,
+        session_manager=session_manager,
+    )
 
 
 @router.callback_query(F.data.startswith("model:"))
 async def cb_model_switch(callback: CallbackQuery) -> None:
-    """Handle model button click."""
-    if not callback.message:
-        return
-    if not _is_authorized(callback.from_user and callback.from_user.id, callback.message.chat.id):
-        return
-
-    chat_id = callback.message.chat.id
-    thread_id = _thread_id(callback.message)
-    scope_key = _scope_key(chat_id, thread_id)
-    model = callback.data.split(":", 1)[1]
-    logger.info("Chat %s: model selection 'model:%s'", scope_key, model)
-
-    provider = _current_provider(scope_key)
-    options = _model_options(provider)
-    if model not in options:
-        await callback.answer("Invalid model", show_alert=True)
-        return
-
-    if _is_codex_family_cli(provider.cli):
-        chosen = None if model == "default" else model
-        session_manager.set_codex_model(chat_id, chosen, thread_id)
-    else:
-        session_manager.set_model(chat_id, model, thread_id)
-
-    # Update keyboard state
-    current = _current_model_label(session_manager.get(chat_id, thread_id), provider)
-    lines = [f"<b>Current model:</b> {current}\n"]
-    lines.append("<b>Select a model:</b>")
-
-    keyboard = InlineKeyboardBuilder()
-    for m in options:
-        button_text = f"{'✓ ' if m == current else ''}{m}"
-        keyboard.button(text=button_text, callback_data=f"model:{m}")
-    keyboard.adjust(2)  # 2 buttons per row
-
-    await callback.message.edit_text("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    await callback.answer(f"Switched to {current}")
+    await _provider_command_handlers.cb_model_switch(
+        callback,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+        scope_key_fn=_scope_key,
+        current_provider_fn=_current_provider,
+        model_options_fn=_model_options,
+        is_codex_family_cli_fn=_is_codex_family_cli,
+        current_model_label_fn=_current_model_label,
+        session_manager=session_manager,
+        logger=logger,
+    )
 
 
 @router.message(Command("provider"))
 async def cmd_provider(message: Message, command: CommandObject | None = None) -> None:
-    """Show provider selection keyboard or switch provider by argument."""
-    if not _is_authorized(message.from_user and message.from_user.id, message.chat.id):
-        return
-
-    chat_id = message.chat.id
-    thread_id = _thread_id(message)
-    scope_key = _scope_key_from_message(message)
-    requested = _command_args(message, command)
-    if requested:
-        provider = provider_manager.set_provider(scope_key, requested)
-        if not provider:
-            available = ", ".join(p.name for p in provider_manager.providers)
-            await message.answer(f"Provider not found: {requested}\nAvailable: {available}")
-            return
-        session_manager.set_provider(chat_id, provider.name, thread_id)
-        await message.answer(f"Switched to provider: <b>{provider.name}</b>", parse_mode="HTML")
-        return
-
-    current = provider_manager.get_provider(scope_key)
-
-    lines = [f"<b>Current provider:</b> {current.name}\n<i>{current.description}</i>\n"]
-    lines.append("<b>Select a provider:</b>")
-
-    # Build inline keyboard with buttons
-    keyboard = InlineKeyboardBuilder()
-    for p in provider_manager.providers:
-        button_text = f"{'✓ ' if p.name == current.name else ''}{p.name}"
-        keyboard.button(text=button_text, callback_data=f"provider:{p.name}")
-    keyboard.adjust(2)  # 2 buttons per row
-
-    await message.answer("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
+    await _provider_command_handlers.cmd_provider(
+        message,
+        command,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+        scope_key_from_message_fn=_scope_key_from_message,
+        command_args_fn=_command_args,
+        provider_manager=provider_manager,
+        session_manager=session_manager,
+    )
 
 
 @router.callback_query(F.data.startswith("provider:"))
 async def cb_provider_switch(callback: CallbackQuery) -> None:
-    """Handle provider button click."""
-    if not callback.message:
-        return
-    if not _is_authorized(callback.from_user and callback.from_user.id, callback.message.chat.id):
-        return
-
-    chat_id = callback.message.chat.id
-    thread_id = _thread_id(callback.message)
-    scope_key = _scope_key(chat_id, thread_id)
-    name = callback.data.split(":", 1)[1]
-    logger.info("Chat %s: provider selection 'provider:%s'", scope_key, name)
-
-    provider = provider_manager.set_provider(scope_key, name)
-    if not provider:
-        await callback.answer("Provider not found", show_alert=True)
-        return
-
-    # Persist provider to session
-    session_manager.set_provider(chat_id, provider.name, thread_id)
-
-    # Update keyboard state
-    lines = [f"<b>Current provider:</b> {provider.name}\n<i>{provider.description}</i>\n"]
-    lines.append("<b>Select a provider:</b>")
-
-    keyboard = InlineKeyboardBuilder()
-    for p in provider_manager.providers:
-        button_text = f"{'✓ ' if p.name == provider.name else ''}{p.name}"
-        keyboard.button(text=button_text, callback_data=f"provider:{p.name}")
-    keyboard.adjust(2)  # 2 buttons per row
-
-    await callback.message.edit_text("\n".join(lines), reply_markup=keyboard.as_markup(), parse_mode="HTML")
-    await callback.answer(f"Switched to {provider.name}")
+    await _provider_command_handlers.cb_provider_switch(
+        callback,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+        scope_key_fn=_scope_key,
+        provider_manager=provider_manager,
+        session_manager=session_manager,
+        logger=logger,
+    )
 
 
 @router.message(Command("status"))
