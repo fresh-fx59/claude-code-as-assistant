@@ -53,6 +53,7 @@ from .features import message_media_handlers as _message_media_handlers
 from .features import media_reply_pipeline as _media_reply_pipeline
 from .features import turn_response_dispatch as _turn_response_dispatch
 from .features import turn_provider_execution as _turn_provider_execution
+from .features import turn_finalize_metrics as _turn_finalize_metrics
 from .f08_governance import F08GovernanceAdvisory
 from .media import (
     extract_media_directives,
@@ -1558,50 +1559,26 @@ async def _handle_message_inner(message: Message, override_text: str | None = No
             logger=logger,
         )
 
-        # Update session ID if we got one back
-        if (
-            final_response
-            and not _is_codex_family_cli(provider.cli)
-            and final_response.session_id
-            and final_response.session_id != session.claude_session_id
-        ):
-            session_manager.update_session_id(chat_id, final_response.session_id, thread_id)
-        if (
-            final_response
-            and _is_codex_family_cli(provider.cli)
-            and final_response.session_id
-            and final_response.session_id != session.codex_session_id
-        ):
-            session_manager.update_codex_session_id(chat_id, final_response.session_id, thread_id)
-
-        # Track metrics
-        if final_response:
-            status = "error" if final_response.is_error else "success"
-            if state.cancel_requested:
-                status = "cancelled"
-            metrics.MESSAGES_TOTAL.labels(status=status).inc()
-        metrics.observe_cost_intelligence_turn(
+        _turn_finalize_metrics.finalize_turn_metrics_and_sessions(
+            final_response=final_response,
+            provider=provider,
+            session=session,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            session_manager=session_manager,
+            is_codex_family_cli_fn=_is_codex_family_cli,
+            metrics=metrics,
             scope_key=scope_key,
-            provider=final_provider_name,
-            model=final_model_name,
-            mode="foreground",
-            cost_usd=float(final_response.cost_usd) if final_response else 0.0,
-            num_turns=int(final_response.num_turns) if final_response else 0,
-            duration_ms=float(final_response.duration_ms) if final_response else 0.0,
-            is_error=bool(final_response.is_error) if final_response else True,
-            is_cancelled=state.cancel_requested,
-            is_empty_response=(
-                not response_has_user_content
-                if (final_response and not final_response.is_error and not state.cancel_requested)
-                else not bool((final_response.text or "").strip()) if final_response else True
-            ),
-            tool_timeout=bool(final_response.idle_timeout) if final_response else False,
-            tool_names=observed_tools,
-            message_size_in=len(raw_prompt),
-            message_size_out=output_size_out,
+            final_provider_name=final_provider_name,
+            final_model_name=final_model_name,
+            state=state,
+            response_has_user_content=response_has_user_content,
+            observed_tools=observed_tools,
+            raw_prompt=raw_prompt,
+            output_size_out=output_size_out,
             step_plan_active=step_plan_active,
-            steering_event_count=steering_events_applied,
-            attempts=max(1, provider_attempts),
+            steering_events_applied=steering_events_applied,
+            provider_attempts=provider_attempts,
         )
 
 
