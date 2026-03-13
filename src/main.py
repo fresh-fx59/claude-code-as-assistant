@@ -189,8 +189,21 @@ async def auto_resume_step_plan_after_restart(bot: Bot) -> bool:
     except Exception:
         return False
 
-    if not state.get("active") or not state.get("restart_between_steps"):
+    restart_between_steps = bool(state.get("restart_between_steps"))
+    steps = state.get("steps") if isinstance(state.get("steps"), list) else []
+    current_index = int(state.get("current_index") or 0)
+    has_pending_steps = current_index < len(steps)
+
+    if not restart_between_steps or not has_pending_steps:
         return False
+
+    if not state.get("active"):
+        logging.info(
+            "Step-plan state is inactive but has pending steps (%s/%s); re-enabling auto-resume",
+            current_index,
+            len(steps),
+        )
+        state["active"] = True
 
     current_task_id = str(state.get("current_task_id") or "").strip()
     if current_task_id:
@@ -224,8 +237,6 @@ async def auto_resume_step_plan_after_restart(bot: Bot) -> bool:
     thread_id_raw = state.get("message_thread_id")
     thread_id = int(thread_id_raw) if thread_id_raw is not None else None
     user_id = int(state.get("user_id") or (min(ALLOWED_USER_IDS) if ALLOWED_USER_IDS else abs(chat_id)))
-    current_index = int(state.get("current_index") or 0)
-    steps = state.get("steps") if isinstance(state.get("steps"), list) else []
     next_step = steps[current_index] if current_index < len(steps) else None
 
     scope_key = bot_module._scope_key(chat_id, thread_id)  # noqa: SLF001

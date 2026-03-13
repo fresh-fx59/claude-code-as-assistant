@@ -200,3 +200,55 @@ async def test_auto_resume_step_plan_after_restart_submits_next_step(monkeypatch
     assert notify_kwargs["chat_id"] == -100123
     assert notify_kwargs["message_thread_id"] == 77
     assert "Auto-resumed step plan" in notify_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_reactivates_inactive_state_when_pending_steps_exist(monkeypatch) -> None:
+    bot = AsyncMock()
+    task_mgr = AsyncMock()
+    task_mgr.submit = AsyncMock(return_value="step-task-2")
+    task_mgr.get_status = AsyncMock(return_value=None)
+    monkeypatch.setattr(main, "task_manager", task_mgr, raising=False)
+    monkeypatch.setattr(main, "ALLOWED_USER_IDS", {12345})
+
+    state = {
+        "active": False,
+        "restart_between_steps": True,
+        "chat_id": -100123,
+        "message_thread_id": None,
+        "user_id": 12345,
+        "current_index": 0,
+        "steps": ["/tmp/01.md", "/tmp/02.md"],
+        "current_task_id": None,
+        "auto_resume_blocked_until": "",
+    }
+    saved = {}
+
+    monkeypatch.setattr(main.bot_module, "_load_step_plan_state", lambda: dict(state), raising=False)
+    monkeypatch.setattr(main.bot_module, "_save_step_plan_state", lambda payload: saved.update(payload), raising=False)
+    monkeypatch.setattr(main.bot_module, "_scope_key", lambda c, t: f"{c}:{t}", raising=False)
+    monkeypatch.setattr(
+        main.bot_module,
+        "_scheduled_task_backend",
+        lambda _session, _provider: ("sonnet", "sess-1", "claude", None),
+        raising=False,
+    )
+    provider_stub = type("ProviderStub", (), {"name": "claude"})()
+    monkeypatch.setattr(
+        main.bot_module,
+        "provider_manager",
+        type("ProviderMgrStub", (), {"get_provider": staticmethod(lambda _scope: provider_stub)})(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.bot_module,
+        "session_manager",
+        type("SessionMgrStub", (), {"get": staticmethod(lambda _chat, _thread: object())})(),
+        raising=False,
+    )
+
+    resumed = await main.auto_resume_step_plan_after_restart(bot)
+
+    assert resumed is True
+    assert saved["active"] is True
+    assert saved["current_task_id"] == "step-task-2"
