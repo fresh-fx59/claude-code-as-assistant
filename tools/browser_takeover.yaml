@@ -27,6 +27,8 @@ instructions: |
     `python3 -m src.browser_takeover navigate --tab-id <id> --url <url> --format json`
   - Read a compact page snapshot:
     `python3 -m src.browser_takeover snapshot --tab-id <id> --format json`
+  - Capture a screenshot:
+    `python3 -m src.browser_takeover screenshot --tab-id <id> --output /tmp/tab.png --full-page --format json`
   - Click a DOM element:
     `python3 -m src.browser_takeover click --tab-id <id> --selector '<css-selector>' --format json`
   - Type into a DOM element:
@@ -47,6 +49,7 @@ instructions: |
   Safety:
   - Only act on tabs that the user intentionally attached.
   - Prefer `snapshot` before `click` or `type` so you can verify the live page state.
+  - Use `screenshot` when you need visual confirmation or the DOM snapshot is insufficient.
   - Use `wait-selector` or `wait-text` before mutating actions when the page may still be loading.
   - Do not perform destructive or purchase-confirming actions unless the user explicitly confirms in the current conversation.
 setup: |

@@ -192,6 +192,44 @@ def test_main_wait_text_returns_success(monkeypatch: pytest.MonkeyPatch, capsys)
     assert payload["text"] == "Welcome"
 
 
+def test_main_screenshot_returns_base64_payload(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    calls: list[tuple[int, str, dict[str, object]]] = []
+
+    def fake_request_json(method: str, path: str, data: dict[str, object] | None = None) -> dict[str, object]:
+        assert method == "POST"
+        assert path == "/cdp"
+        assert data is not None
+        calls.append((int(data["tab_id"]), str(data["method"]), dict(data["params"])))
+        return {"ok": True, "result": {"data": "aGVsbG8="}}
+
+    monkeypatch.setattr(browser_takeover, "_request_json", fake_request_json)
+
+    rc = browser_takeover.main(["screenshot", "--tab-id", "7", "--image-format", "png", "--full-page"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["tab_id"] == 7
+    assert payload["image_format"] == "png"
+    assert payload["full_page"] is True
+    assert payload["data"] == "aGVsbG8="
+    assert calls == [(7, "Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True})]
+
+
+def test_main_screenshot_writes_output_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(
+        browser_takeover,
+        "_request_json",
+        lambda *args, **kwargs: {"ok": True, "result": {"data": "aGVsbG8="}},
+    )
+    output_path = tmp_path / "shots" / "page.png"
+
+    rc = browser_takeover.main(["screenshot", "--tab-id", "9", "--output", str(output_path), "--format", "text"])
+
+    assert rc == 0
+    assert output_path.read_bytes() == b"hello"
+    assert f"screenshot saved: {output_path}" in capsys.readouterr().out
+
+
 @pytest.mark.asyncio
 async def test_targets_requires_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(browser_takeover, "_default_state_root", lambda: tmp_path / "state")

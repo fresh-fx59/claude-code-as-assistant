@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import secrets
@@ -588,6 +589,47 @@ def _wait_text(tab_id: int, text: str, timeout_seconds: float) -> dict[str, Any]
     return {"ok": True, "tab_id": tab_id, **payload}
 
 
+def _screenshot_tab(
+    tab_id: int,
+    *,
+    output_path: str | None = None,
+    image_format: str = "png",
+    full_page: bool = False,
+    quality: int | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"format": image_format}
+    if image_format in {"jpeg", "webp"} and quality is not None:
+        if quality < 0 or quality > 100:
+            raise ValueError("quality must be between 0 and 100")
+        params["quality"] = quality
+    if full_page:
+        params["captureBeyondViewport"] = True
+    result = _call_cdp(tab_id, "Page.captureScreenshot", params)
+    image_b64 = str(result.get("data") or "")
+    if not image_b64:
+        raise RuntimeError(json.dumps({"ok": False, "error": "empty_screenshot_data"}))
+    if output_path:
+        image_bytes = base64.b64decode(image_b64)
+        output = Path(output_path).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(image_bytes)
+        return {
+            "ok": True,
+            "tab_id": tab_id,
+            "image_format": image_format,
+            "full_page": full_page,
+            "output_path": str(output),
+            "bytes": len(image_bytes),
+        }
+    return {
+        "ok": True,
+        "tab_id": tab_id,
+        "image_format": image_format,
+        "full_page": full_page,
+        "data": image_b64,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Browser takeover relay for iron-lady-assistant.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -652,6 +694,14 @@ def build_parser() -> argparse.ArgumentParser:
     wait_text_parser.add_argument("--text", required=True)
     wait_text_parser.add_argument("--timeout", type=float, default=10.0)
     wait_text_parser.add_argument("--format", choices=("text", "json"), default="json")
+
+    screenshot_parser = sub.add_parser("screenshot", help="Capture a screenshot from an attached tab.")
+    screenshot_parser.add_argument("--tab-id", type=int, required=True)
+    screenshot_parser.add_argument("--output", default="")
+    screenshot_parser.add_argument("--image-format", choices=("png", "jpeg", "webp"), default="png")
+    screenshot_parser.add_argument("--quality", type=int, default=80)
+    screenshot_parser.add_argument("--full-page", action="store_true")
+    screenshot_parser.add_argument("--format", choices=("text", "json"), default="json")
 
     snapshot_parser = sub.add_parser("snapshot", help="Read a compact page snapshot from an attached tab.")
     snapshot_parser.add_argument("--tab-id", type=int, required=True)
@@ -775,6 +825,27 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             print(f"text ready: {args.text}")
+        return 0
+
+    if args.command == "screenshot":
+        try:
+            payload = _screenshot_tab(
+                args.tab_id,
+                output_path=(args.output.strip() or None),
+                image_format=args.image_format,
+                full_page=args.full_page,
+                quality=args.quality,
+            )
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            if payload.get("output_path"):
+                print(f"screenshot saved: {payload['output_path']}")
+            else:
+                print(f"screenshot captured in-memory ({payload['image_format']}, tab {args.tab_id})")
         return 0
 
     if args.command == "snapshot":
