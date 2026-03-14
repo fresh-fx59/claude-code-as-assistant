@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import shutil
+import time
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -515,6 +516,78 @@ def _type_tab(tab_id: int, selector: str, text: str, submit: bool = False) -> di
     return {"ok": True, "tab_id": tab_id, **payload}
 
 
+def _wait_selector_expression(selector: str) -> str:
+    selector_js = _js_string(selector)
+    return f"""
+(() => {{
+  const selector = {selector_js};
+  const element = document.querySelector(selector);
+  return {{
+    ok: Boolean(element),
+    selector,
+    visible: Boolean(
+      element &&
+      element.getClientRects &&
+      element.getClientRects().length > 0
+    ),
+  }};
+}})()
+""".strip()
+
+
+def _wait_text_expression(text: str) -> str:
+    text_js = _js_string(text)
+    return f"""
+(() => {{
+  const text = {text_js};
+  const bodyText = document.body?.innerText || "";
+  return {{
+    ok: bodyText.includes(text),
+    text,
+  }};
+}})()
+""".strip()
+
+
+def _wait_for_expression(
+    tab_id: int,
+    expression: str,
+    *,
+    timeout_seconds: float,
+    interval_seconds: float = 0.5,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_payload: dict[str, Any] = {}
+    while True:
+        payload = _run_js(tab_id, expression)
+        last_payload = payload
+        if payload.get("ok"):
+            return payload
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "timeout",
+                        "timeout_seconds": timeout_seconds,
+                        "last_result": last_payload,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        time.sleep(interval_seconds)
+
+
+def _wait_selector(tab_id: int, selector: str, timeout_seconds: float) -> dict[str, Any]:
+    payload = _wait_for_expression(tab_id, _wait_selector_expression(selector), timeout_seconds=timeout_seconds)
+    return {"ok": True, "tab_id": tab_id, **payload}
+
+
+def _wait_text(tab_id: int, text: str, timeout_seconds: float) -> dict[str, Any]:
+    payload = _wait_for_expression(tab_id, _wait_text_expression(text), timeout_seconds=timeout_seconds)
+    return {"ok": True, "tab_id": tab_id, **payload}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Browser takeover relay for iron-lady-assistant.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -561,6 +634,24 @@ def build_parser() -> argparse.ArgumentParser:
     type_parser.add_argument("--text", required=True)
     type_parser.add_argument("--submit", action="store_true")
     type_parser.add_argument("--format", choices=("text", "json"), default="json")
+
+    wait_selector_parser = sub.add_parser(
+        "wait-selector",
+        help="Wait until a CSS selector appears in an attached tab.",
+    )
+    wait_selector_parser.add_argument("--tab-id", type=int, required=True)
+    wait_selector_parser.add_argument("--selector", required=True)
+    wait_selector_parser.add_argument("--timeout", type=float, default=10.0)
+    wait_selector_parser.add_argument("--format", choices=("text", "json"), default="json")
+
+    wait_text_parser = sub.add_parser(
+        "wait-text",
+        help="Wait until text appears in an attached tab.",
+    )
+    wait_text_parser.add_argument("--tab-id", type=int, required=True)
+    wait_text_parser.add_argument("--text", required=True)
+    wait_text_parser.add_argument("--timeout", type=float, default=10.0)
+    wait_text_parser.add_argument("--format", choices=("text", "json"), default="json")
 
     snapshot_parser = sub.add_parser("snapshot", help="Read a compact page snapshot from an attached tab.")
     snapshot_parser.add_argument("--tab-id", type=int, required=True)
@@ -660,6 +751,30 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             print(f"typed into {args.selector} in tab {args.tab_id}")
+        return 0
+
+    if args.command == "wait-selector":
+        try:
+            payload = _wait_selector(args.tab_id, args.selector, args.timeout)
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"selector ready: {args.selector}")
+        return 0
+
+    if args.command == "wait-text":
+        try:
+            payload = _wait_text(args.tab_id, args.text, args.timeout)
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"text ready: {args.text}")
         return 0
 
     if args.command == "snapshot":

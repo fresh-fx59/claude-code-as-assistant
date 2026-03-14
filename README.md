@@ -171,7 +171,7 @@ Notes:
 - The extension converts that URL to `ws(s)` automatically for the live bridge
 - The relay token is required for both the extension websocket and CLI calls
 - Once a tab is attached, you can inspect it with `python3 -m src.browser_takeover targets`
-- High-level commands currently available: `navigate`, `snapshot`, `click`, `type`, and raw `cdp`
+- High-level commands currently available: `navigate`, `snapshot`, `click`, `type`, `wait-selector`, `wait-text`, and raw `cdp`
 
 ### Alternative: Manual Setup
 

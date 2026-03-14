@@ -149,6 +149,49 @@ def test_main_type_returns_success(monkeypatch: pytest.MonkeyPatch, capsys) -> N
     assert payload["submitted"] is True
 
 
+def test_main_wait_selector_returns_success(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(
+        browser_takeover,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "result": {
+                "result": {
+                    "value": {"ok": True, "selector": "#ready", "visible": True},
+                }
+            },
+        },
+    )
+
+    rc = browser_takeover.main(["wait-selector", "--tab-id", "7", "--selector", "#ready", "--timeout", "1"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selector"] == "#ready"
+    assert payload["visible"] is True
+
+
+def test_main_wait_text_returns_success(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(
+        browser_takeover,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "result": {
+                "result": {
+                    "value": {"ok": True, "text": "Welcome"},
+                }
+            },
+        },
+    )
+
+    rc = browser_takeover.main(["wait-text", "--tab-id", "7", "--text", "Welcome", "--timeout", "1"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["text"] == "Welcome"
+
+
 @pytest.mark.asyncio
 async def test_targets_requires_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(browser_takeover, "_default_state_root", lambda: tmp_path / "state")
