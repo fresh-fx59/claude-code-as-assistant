@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -7,9 +8,11 @@ import pytest
 from src.features.gmail_bootstrap_state import GmailBootstrapSession
 from src.gmail_bootstrap_web import (
     _notify_telegram_for_session,
+    _oauth_ready,
     _extract_first_url,
     _gcp_failure_guidance,
     _render_session_html,
+    _save_bootstrap_oauth_credentials,
     _validate_credentials_json,
     build_google_auth_url,
     build_session_urls,
@@ -84,6 +87,46 @@ def test_extract_first_url_returns_first_http_match() -> None:
 def test_validate_credentials_json_accepts_installed_payload() -> None:
     payload = _validate_credentials_json('{"installed":{"client_id":"abc"}}')
     assert payload["installed"]["client_id"] == "abc"
+
+
+def test_render_session_html_shows_bootstrap_upload_form_when_oauth_missing(tmp_path, monkeypatch) -> None:
+    creds_path = tmp_path / "bootstrap-client.json"
+    monkeypatch.setattr("src.config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID", "")
+    monkeypatch.setattr("src.config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_SECRET", "")
+    monkeypatch.setattr("src.gmail_bootstrap_web._bootstrap_oauth_credentials_path", lambda: creds_path)
+    session = GmailBootstrapSession(
+        session_id="sess-1",
+        created_at="2026-03-13T10:00:00+00:00",
+        updated_at="2026-03-13T10:00:00+00:00",
+        phase="cloud_auth_pending",
+        project_id="ila-demo-project",
+        project_name="ILA Demo Project",
+        redirect_uri="http://127.0.0.1:8781/gmail/oauth/callback",
+        callback_base_url="http://127.0.0.1:8781",
+        oauth_client_name="ILA Gmail OAuth",
+    )
+
+    html = _render_session_html("http://127.0.0.1:8781", session)
+
+    assert "One-time Bootstrap Prerequisite" in html
+    assert "Save Bootstrap Credentials" in html
+    assert "/gmail/bootstrap/google/callback" in html
+
+
+def test_save_bootstrap_oauth_credentials_enables_oauth_ready(tmp_path, monkeypatch) -> None:
+    creds_path = tmp_path / "bootstrap-client.json"
+    monkeypatch.setattr("src.config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID", "")
+    monkeypatch.setattr("src.config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_SECRET", "")
+    monkeypatch.setattr("src.gmail_bootstrap_web._bootstrap_oauth_credentials_path", lambda: creds_path)
+
+    _save_bootstrap_oauth_credentials(
+        '{"installed":{"client_id":"bootstrap-client-id","client_secret":"bootstrap-client-secret"}}'
+    )
+
+    assert _oauth_ready() is True
+    saved = json.loads(creds_path.read_text(encoding="utf-8"))
+    assert saved["client_id"] == "bootstrap-client-id"
+    assert saved["client_secret"] == "bootstrap-client-secret"
 
 
 def test_render_session_html_includes_manual_checklist_and_upload_form(tmp_path) -> None:

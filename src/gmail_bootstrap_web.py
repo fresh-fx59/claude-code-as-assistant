@@ -28,6 +28,10 @@ def _artifact_root() -> Path:
     return config.MEMORY_DIR / "gmail_bootstrap_artifacts"
 
 
+def _bootstrap_oauth_credentials_path() -> Path:
+    return config.MEMORY_DIR / "gmail_bootstrap_google_client.json"
+
+
 def _normalize_base_url(base_url: str) -> str:
     return base_url.rstrip("/")
 
@@ -46,10 +50,12 @@ def _session_payload(base_url: str, session: GmailBootstrapSession) -> dict[str,
     payload["phase_label"] = _phase_label(session)
     payload["phase_message"] = _phase_message(session)
     payload["connected"] = session.phase == "completed"
-    if _oauth_ready():
+    oauth_credentials = _bootstrap_oauth_credentials()
+    if oauth_credentials:
+        client_id, _ = oauth_credentials
         payload["google_auth_url"] = build_google_auth_url(
             session=session,
-            client_id=config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID,
+            client_id=client_id,
         )
     return payload
 
@@ -65,9 +71,59 @@ def _find_gog_binary() -> str | None:
 
 
 def _oauth_ready() -> bool:
-    return bool(
-        config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID and config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_SECRET
+    return _bootstrap_oauth_credentials() is not None
+
+
+def _extract_oauth_client_credentials(payload: dict[str, Any]) -> tuple[str, str]:
+    candidate = payload.get("installed") or payload.get("web") or payload
+    if not isinstance(candidate, dict):
+        raise ValueError("OAuth credentials JSON must contain an object payload.")
+    client_id = str(candidate.get("client_id", "")).strip()
+    client_secret = str(candidate.get("client_secret", "")).strip()
+    if not client_id or not client_secret:
+        raise ValueError("OAuth credentials must include both client_id and client_secret.")
+    return client_id, client_secret
+
+
+def _bootstrap_oauth_credentials() -> tuple[str, str] | None:
+    if config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID and config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_SECRET:
+        return (
+            config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID,
+            config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_SECRET,
+        )
+    path = _bootstrap_oauth_credentials_path()
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return _extract_oauth_client_credentials(payload)
+    except ValueError:
+        return None
+
+
+def _save_bootstrap_oauth_credentials(raw_text: str) -> tuple[str, str]:
+    payload = _validate_credentials_json(raw_text)
+    client_id, client_secret = _extract_oauth_client_credentials(payload)
+    target_path = _bootstrap_oauth_credentials_path()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(
+        json.dumps(
+            {
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )
+    return client_id, client_secret
 
 
 def build_google_auth_url(*, session: GmailBootstrapSession, client_id: str) -> str:
@@ -325,6 +381,7 @@ def _render_session_html(base_url: str, session: GmailBootstrapSession) -> str:
     urls = build_session_urls(base_url=base_url, session_id=session.session_id)
     phase_label = _phase_label(session)
     phase_message = _phase_message(session)
+    oauth_credentials = _bootstrap_oauth_credentials()
     lines = [
         "<div class='card'>",
         f"<h1>Gmail Connect Session</h1>",
@@ -346,13 +403,32 @@ def _render_session_html(base_url: str, session: GmailBootstrapSession) -> str:
         lines.append(f"<p><strong>Connected Gmail:</strong> <code>{session.gmail_account_email}</code></p>")
     if session.connected_at:
         lines.append(f"<p><strong>Connected at:</strong> <code>{session.connected_at}</code></p>")
-    if _oauth_ready() and session.phase in {"cloud_auth_pending", "failed"}:
+    if oauth_credentials and session.phase in {"cloud_auth_pending", "failed"}:
+        client_id, _ = oauth_credentials
         auth_url = build_google_auth_url(
             session=session,
-            client_id=config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID,
+            client_id=client_id,
         )
         lines.append(
             f"<p class='actions'><strong>Next action:</strong> <a href='{auth_url}'>Continue with Google sign-in</a></p>"
+        )
+    if not oauth_credentials:
+        google_callback_uri = f"{session.callback_base_url}/gmail/bootstrap/google/callback"
+        lines.extend(
+            [
+                "<h2>One-time Bootstrap Prerequisite</h2>",
+                "<p>This host still needs a Google OAuth client for the setup wizard itself.</p>",
+                "<ol>",
+                "<li>Open Google Cloud Console credentials and create an <strong>OAuth client ID</strong> (Web application).</li>",
+                f"<li>Add redirect URI <code>{html.escape(google_callback_uri)}</code>.</li>",
+                "<li>Download the OAuth client JSON file and upload it below.</li>",
+                "</ol>",
+                "<p><a href='https://console.cloud.google.com/apis/credentials' target='_blank' rel='noopener noreferrer'>Open Google Cloud Console credentials</a></p>",
+                f"<form method='post' enctype='multipart/form-data' action='{base_url}/gmail/bootstrap/session/{session.session_id}/bootstrap-credentials/upload'>",
+                "<label>Bootstrap OAuth JSON<input type='file' name='bootstrap_credentials_file' accept='.json,application/json' required></label>",
+                "<button type='submit'>Save Bootstrap Credentials</button>",
+                "</form>",
+            ]
         )
     checklist_text = _manual_checklist_text(session)
     if checklist_text:
@@ -425,24 +501,32 @@ async def _start_session(request: web.Request) -> web.Response:
     )
     if request.content_type == "application/json":
         return web.json_response(_session_payload(callback_base_url, session), status=201)
-    if _oauth_ready():
+    oauth_credentials = _bootstrap_oauth_credentials()
+    if oauth_credentials:
+        client_id, _ = oauth_credentials
         raise web.HTTPFound(
             location=build_google_auth_url(
                 session=session,
-                client_id=config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID,
+                client_id=client_id,
             )
         )
     raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session.session_id}")
 
 
-async def _exchange_code_for_token(*, code: str, redirect_uri: str) -> dict[str, Any]:
+async def _exchange_code_for_token(
+    *,
+    code: str,
+    redirect_uri: str,
+    client_id: str,
+    client_secret: str,
+) -> dict[str, Any]:
     async with ClientSession() as session:
         async with session.post(
             "https://oauth2.googleapis.com/token",
             data={
                 "code": code,
-                "client_id": config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_ID,
-                "client_secret": config.GMAIL_BOOTSTRAP_GOOGLE_CLIENT_SECRET,
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "redirect_uri": redirect_uri,
                 "grant_type": "authorization_code",
             },
@@ -467,8 +551,10 @@ async def _fetch_userinfo(*, access_token: str) -> dict[str, Any]:
 
 async def _google_callback(request: web.Request) -> web.Response:
     store: GmailBootstrapStateStore = request.app["gmail_bootstrap_store"]
-    if not _oauth_ready():
+    oauth_credentials = _bootstrap_oauth_credentials()
+    if oauth_credentials is None:
         raise web.HTTPServiceUnavailable(text="Bootstrap Google OAuth client is not configured.")
+    client_id, client_secret = oauth_credentials
     session_id = request.query.get("state", "").strip()
     if not session_id:
         raise web.HTTPBadRequest(text="Missing OAuth state.")
@@ -485,7 +571,12 @@ async def _google_callback(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="Missing authorization code.")
 
     redirect_uri = f"{session.callback_base_url}/gmail/bootstrap/google/callback"
-    token_payload = await _exchange_code_for_token(code=code, redirect_uri=redirect_uri)
+    token_payload = await _exchange_code_for_token(
+        code=code,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
     access_token = str(token_payload.get("access_token", "")).strip()
     if not access_token:
         failed_session = store.record_failed(
@@ -668,6 +759,25 @@ async def _upload_credentials(request: web.Request) -> web.Response:
     raise web.HTTPFound(location=auth_url)
 
 
+async def _upload_bootstrap_credentials(request: web.Request) -> web.Response:
+    store: GmailBootstrapStateStore = request.app["gmail_bootstrap_store"]
+    session_id = request.match_info["session_id"]
+    session = store.get(session_id)
+    if session is None:
+        raise web.HTTPNotFound(text="Unknown bootstrap session.")
+    post = await request.post()
+    file_field = post.get("bootstrap_credentials_file")
+    if file_field is None or not hasattr(file_field, "file"):
+        raise web.HTTPBadRequest(text="bootstrap_credentials_file is required.")
+    raw_bytes = file_field.file.read()
+    raw_text = raw_bytes.decode("utf-8")
+    try:
+        _save_bootstrap_oauth_credentials(raw_text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise web.HTTPBadRequest(text=str(exc)) from exc
+    raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
+
+
 async def _gog_callback(request: web.Request) -> web.Response:
     store: GmailBootstrapStateStore = request.app["gmail_bootstrap_store"]
     session_id = request.match_info["session_id"]
@@ -745,6 +855,7 @@ def create_app(*, state_path: Path | None = None) -> web.Application:
             web.get("/gmail/connect", _landing),
             web.post("/gmail/bootstrap/start", _start_session),
             web.get("/gmail/bootstrap/google/callback", _google_callback),
+            web.post("/gmail/bootstrap/session/{session_id}/bootstrap-credentials/upload", _upload_bootstrap_credentials),
             web.post("/gmail/bootstrap/session/{session_id}/credentials/upload", _upload_credentials),
             web.get("/gmail/bootstrap/gog/callback/{session_id}", _gog_callback),
             web.get("/gmail/bootstrap/session/{session_id}", _session_page),

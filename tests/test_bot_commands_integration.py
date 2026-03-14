@@ -14,6 +14,7 @@ import pytest
 from aiogram.types import FSInputFile
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 
+from src.lifecycle_queue import LifecycleQueueStore
 from src.bot import (
     cb_model_switch,
     cb_provider_switch,
@@ -1141,6 +1142,45 @@ class TestVoiceHandling:
         )
         assert transcription_summary is not None
         handle_inner.assert_awaited_once()
+
+    async def test_handle_voice_marks_transcription_as_active_lifecycle_work(
+        self,
+        mock_message,
+        monkeypatch,
+        tmp_path,
+    ):
+        mock_message.voice = AsyncMock()
+        mock_message.voice.file_id = "voice-file"
+        mock_message.voice.duration = 7
+        mock_message.message_id = 654
+        mock_message.message_thread_id = 88
+        mock_message.bot.get_file = AsyncMock(return_value=type("File", (), {"file_path": "voice/path.oga"})())
+        mock_message.bot.download_file = AsyncMock()
+
+        store = LifecycleQueueStore(tmp_path / "lifecycle.db")
+        transcription_started = asyncio.Event()
+        allow_transcription_finish = asyncio.Event()
+
+        async def blocking_transcribe(_path):
+            transcription_started.set()
+            await allow_transcription_finish.wait()
+            return "hello world"
+
+        monkeypatch.setattr("src.bot.lifecycle_store", store)
+        monkeypatch.setattr("src.bot.transcribe.is_available", lambda: True)
+        monkeypatch.setattr("src.bot.transcribe.transcribe", blocking_transcribe)
+        monkeypatch.setattr("src.bot._handle_message_inner", AsyncMock())
+
+        voice_task = asyncio.create_task(handle_voice(mock_message))
+        await asyncio.wait_for(transcription_started.wait(), timeout=1)
+        await asyncio.sleep(0)
+
+        assert store.active_scope_count() == 1
+
+        allow_transcription_finish.set()
+        await voice_task
+
+        assert store.active_scope_count() == 0
 
     async def test_handle_voice_does_not_send_duplicate_generic_error_on_delivery_failure(
         self,

@@ -26,6 +26,9 @@ async def handle_voice(
     format_voice_transcription_failed_fn: Callable[[float], str],
     handle_message_inner_fn: Callable[[Any, str | None], Any],
     scope_key_from_message_fn: Callable[[Any], str],
+    actor_id_fn: Callable[[Any], int],
+    lifecycle_upsert_active_scope_fn: Callable[..., None],
+    lifecycle_clear_active_scope_fn: Callable[[str], None],
     record_error_fn: Callable[[str], None],
     metrics: Any,
     telegram_api_error_class: type[Exception],
@@ -49,16 +52,31 @@ async def handle_voice(
         )
         return
 
-    file_lookup_started_at = monotonic()
-    file = await message.bot.get_file(message.voice.file_id)
-    file_lookup_elapsed_ms = (monotonic() - file_lookup_started_at) * 1000
-    tmp = tempfile.NamedTemporaryFile(suffix=".oga", delete=False)
     transcription_started_at = monotonic()
+    source_message_id = getattr(message, "message_id", None)
+    transcription_scope_key = (
+        f"{scope_key_from_message_fn(message)}:voice:{source_message_id}"
+        if source_message_id is not None
+        else f"{scope_key_from_message_fn(message)}:voice:pending"
+    )
     transcription_status_ref: dict[str, int | None] = {"message_id": None}
     transcription_status_task: asyncio.Task | None = None
     transcription_status_retry_task: asyncio.Task | None = None
     transcription_completed = False
     transcription_failed_notified = False
+    lifecycle_upsert_active_scope_fn(
+        scope_key=transcription_scope_key,
+        chat_id=message.chat.id,
+        message_thread_id=thread_id_fn(message),
+        user_id=actor_id_fn(message),
+        kind="voice_transcription",
+        prompt_preview=f"voice:{message.voice.duration}s",
+        source_message_id=source_message_id,
+    )
+    file_lookup_started_at = monotonic()
+    file = await message.bot.get_file(message.voice.file_id)
+    file_lookup_elapsed_ms = (monotonic() - file_lookup_started_at) * 1000
+    tmp = tempfile.NamedTemporaryFile(suffix=".oga", delete=False)
     await send_chat_action_once_fn(message, chat_action_typing)
     transcription_typing_task = asyncio.create_task(keep_chat_action_fn(message, chat_action_typing))
     try:
@@ -142,13 +160,16 @@ async def handle_voice(
             if transcription_completed
             else format_voice_transcription_failed_fn(transcription_elapsed_seconds)
         )
-        await publish_voice_transcription_result_fn(
-            message=message,
-            progress_message_id=transcription_status_message_id,
-            text=transcription_final_text,
-            send_summary=transcription_completed or not transcription_failed_notified,
-        )
-        os.unlink(tmp.name)
+        try:
+            await publish_voice_transcription_result_fn(
+                message=message,
+                progress_message_id=transcription_status_message_id,
+                text=transcription_final_text,
+                send_summary=transcription_completed or not transcription_failed_notified,
+            )
+        finally:
+            lifecycle_clear_active_scope_fn(transcription_scope_key)
+            os.unlink(tmp.name)
 
     override = f"[Voice message] {text}"
     try:
