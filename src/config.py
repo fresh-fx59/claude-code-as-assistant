@@ -29,6 +29,10 @@ _raw_chat_ids = os.getenv("ALLOWED_CHAT_IDS", "")
 ALLOWED_CHAT_IDS: set[int] = {
     int(chat_id.strip()) for chat_id in _raw_chat_ids.split(",") if chat_id.strip()
 }
+_raw_passive_chat_ids = os.getenv("PASSIVE_CHAT_IDS", "")
+PASSIVE_CHAT_IDS: set[int] = {
+    int(chat_id.strip()) for chat_id in _raw_passive_chat_ids.split(",") if chat_id.strip()
+}
 if not ALLOWED_USER_IDS and not ALLOWED_CHAT_IDS:
     print(
         "WARNING: ALLOWED_USER_IDS and ALLOWED_CHAT_IDS are empty — the bot will ignore ALL messages.\n"

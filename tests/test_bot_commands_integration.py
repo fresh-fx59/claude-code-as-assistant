@@ -121,6 +121,50 @@ async def test_handle_message_queues_request_while_lifecycle_is_draining(mock_me
     assert queued[0]["prompt_format"] == "raw"
 
 
+@pytest.mark.asyncio
+async def test_handle_message_ignores_passive_chat_without_explicit_target(mock_message, monkeypatch) -> None:
+    from src import config as bot_config
+
+    monkeypatch.setattr(bot_config, "PASSIVE_CHAT_IDS", {-1003019299921, -1003305897502})
+    mock_message.chat.id = -1003019299921
+    mock_message.text = "проверка"
+
+    delegated = False
+
+    async def fake_handle_text_message(*args, **kwargs):
+        nonlocal delegated
+        delegated = True
+
+    monkeypatch.setattr("src.bot._message_media_handlers.handle_text_message", fake_handle_text_message)
+
+    await handle_message(mock_message)
+
+    assert delegated is False
+    mock_message.answer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_message_allows_explicit_bot_mention_in_passive_chat(mock_message, monkeypatch) -> None:
+    from src import config as bot_config
+
+    monkeypatch.setattr(bot_config, "PASSIVE_CHAT_IDS", {-1003305897502})
+    mock_message.chat.id = -1003305897502
+    mock_message.text = "@iron_lady_assistant_bot ответь"
+    mock_message.bot.username = "iron_lady_assistant_bot"
+
+    delegated = False
+
+    async def fake_handle_text_message(*args, **kwargs):
+        nonlocal delegated
+        delegated = True
+
+    monkeypatch.setattr("src.bot._message_media_handlers.handle_text_message", fake_handle_text_message)
+
+    await handle_message(mock_message)
+
+    assert delegated is True
+
+
 # ── Contract 2: /start command ────────────────────────────────────
 @pytest.mark.asyncio
 class TestStartCommand:

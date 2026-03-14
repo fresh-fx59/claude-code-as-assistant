@@ -248,6 +248,42 @@ def _log_incoming_message(message: Message, route: str) -> None:
     )
 
 
+def _is_passive_chat(chat_id: int | None) -> bool:
+    return chat_id is not None and chat_id in config.PASSIVE_CHAT_IDS
+
+
+def _message_explicitly_targets_bot(message: Message) -> bool:
+    reply = getattr(message, "reply_to_message", None)
+    reply_from = getattr(reply, "from_user", None)
+    bot_user = getattr(message, "bot", None)
+    bot_id = getattr(bot_user, "id", None)
+    if getattr(reply_from, "is_bot", None) is True:
+        return True
+    reply_from_id = getattr(reply_from, "id", None)
+    if isinstance(bot_id, int) and isinstance(reply_from_id, int) and reply_from_id == bot_id:
+        return True
+
+    text = (_as_text(getattr(message, "text", None)) or _as_text(getattr(message, "caption", None))).strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    usernames = {
+        str(candidate).strip().lstrip("@").lower()
+        for candidate in (
+            getattr(bot_user, "username", None),
+            getattr(getattr(bot_user, "me", None), "username", None),
+        )
+        if candidate
+    }
+    return any(f"@{username}" in lowered for username in usernames)
+
+
+def _should_ignore_passive_message(message: Message) -> bool:
+    if not _is_passive_chat(getattr(message.chat, "id", None)):
+        return False
+    return not _message_explicitly_targets_bot(message)
+
+
 def _scope_key_from_message(message: Message) -> str:
     return _scope_key_from_message_impl(message)
 
@@ -1440,6 +1476,9 @@ async def _run_codex_with_retries(
 
 @router.message(F.voice)
 async def handle_voice(message: Message) -> None:
+    if _should_ignore_passive_message(message):
+        logger.info("Ignoring voice message in passive chat: chat=%s message=%s", message.chat.id, message.message_id)
+        return
     await _message_media_handlers.handle_voice(
         message,
         is_authorized=_is_authorized,
@@ -1469,6 +1508,9 @@ async def handle_voice(message: Message) -> None:
 
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
+    if _should_ignore_passive_message(message):
+        logger.info("Ignoring text message in passive chat: chat=%s message=%s", message.chat.id, message.message_id)
+        return
     await _message_media_handlers.handle_text_message(
         message,
         log_incoming_message_fn=_log_incoming_message,
@@ -1484,6 +1526,9 @@ async def handle_message(message: Message) -> None:
 
 @router.message(F.photo)
 async def handle_photo_message(message: Message) -> None:
+    if _should_ignore_passive_message(message):
+        logger.info("Ignoring photo message in passive chat: chat=%s message=%s", message.chat.id, message.message_id)
+        return
     await _message_media_handlers.handle_photo_message(
         message,
         log_incoming_message_fn=_log_incoming_message,
