@@ -140,6 +140,18 @@ def test_write_self_hosted_bundle_writes_config_and_checklist(tmp_path: Path) ->
     assert "http://localhost:8080/oauth2/callback" in checklist
 
 
+def test_build_manual_checklist_mentions_redirect_and_oauth_client() -> None:
+    checklist = gmail_setup_tool.build_manual_checklist(
+        project_id="ila-gmail-demo",
+        project_name="ILA Gmail Demo",
+        redirect_uri="https://bot.example.com/gmail/oauth/callback",
+        oauth_client_name="ILA Gmail OAuth",
+    )
+
+    assert "ILA Gmail OAuth" in checklist
+    assert "https://bot.example.com/gmail/oauth/callback" in checklist
+
+
 def test_self_hosted_doctor_json_reports_missing_gcloud(monkeypatch, capsys, tmp_path: Path) -> None:
     monkeypatch.setattr(gmail_setup_tool, "_find_gcloud_binary", lambda: None)
     monkeypatch.setattr(gmail_setup_tool, "_find_gog_binary", lambda: "/tmp/gog")

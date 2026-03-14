@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.43.0"
+VERSION: str = "0.44.0"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -222,4 +222,17 @@ GMAIL_BOOTSTRAP_GOOGLE_SCOPES: tuple[str, ...] = tuple(
         )
     ).split(",")
     if item.strip()
+)
+GMAIL_BOOTSTRAP_BIND_HOST: str = os.getenv("GMAIL_BOOTSTRAP_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+GMAIL_BOOTSTRAP_BIND_PORT: int = int(os.getenv("GMAIL_BOOTSTRAP_BIND_PORT", "8781"))
+GMAIL_BOOTSTRAP_PUBLIC_BASE_URL: str = os.getenv(
+    "GMAIL_BOOTSTRAP_PUBLIC_BASE_URL",
+    "",
+).strip().rstrip("/")
+GMAIL_BOOTSTRAP_HEALTHCHECK_URL: str = os.getenv(
+    "GMAIL_BOOTSTRAP_HEALTHCHECK_URL",
+    "",
+).strip().rstrip("/")
+GMAIL_BOOTSTRAP_AUTOSTART: bool = (
+    os.getenv("GMAIL_BOOTSTRAP_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
 )

@@ -52,6 +52,8 @@ async def cmd_start(
         "/threads — Show tracked forum topics/threads",
         "/memory — Show what I remember",
         "/tools — Show available tools",
+        "/gmail_connect — Start Gmail API setup",
+        "/gmail_status — Show Gmail setup status",
         "/rollback — Roll back to previous version (admin)",
         "/selfmod_stage — Stage sandbox plugin (admin)",
         "/selfmod_apply — Validate+promote sandbox plugin (admin)",

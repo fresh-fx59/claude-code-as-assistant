@@ -301,7 +301,7 @@ def _bootstrap_paths(bootstrap_dir: Path, project_id: str) -> tuple[Path, Path]:
     return base_dir / "bootstrap.json", base_dir / "MANUAL_CHECKLIST.md"
 
 
-def _build_manual_checklist(
+def build_manual_checklist(
     *,
     project_id: str,
     project_name: str,
@@ -355,7 +355,7 @@ def write_self_hosted_bundle(
     }
     config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     checklist_path.write_text(
-        _build_manual_checklist(
+        build_manual_checklist(
             project_id=project_id,
             project_name=project_name,
             redirect_uri=redirect_uri,

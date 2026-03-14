@@ -21,6 +21,7 @@ from src.bot import (
     cmd_new,
     cmd_model,
     cmd_status,
+    cmd_gmail_connect,
     cmd_cancel,
     cmd_selfmod_stage,
     cmd_selfmod_apply,
@@ -138,6 +139,8 @@ class TestStartCommand:
         assert "/new" in call_args[0][0]
         assert "/model" in call_args[0][0]
         assert "/status" in call_args[0][0]
+        assert "/gmail_connect" in call_args[0][0]
+        assert "/gmail_status" in call_args[0][0]
         assert "/cancel" in call_args[0][0]
 
     async def test_start_unauthorized_no_response(self, mock_message):

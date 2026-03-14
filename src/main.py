@@ -490,6 +490,8 @@ async def main() -> None:
         BotCommand(command="threads", description="Show tracked forum threads"),
         BotCommand(command="memory", description="Show what I remember"),
         BotCommand(command="tools", description="Show available tools"),
+        BotCommand(command="gmail_connect", description="Start Gmail API setup"),
+        BotCommand(command="gmail_status", description="Show Gmail setup status"),
         BotCommand(command="rollback", description="Rollback to previous version (admin)"),
         BotCommand(command="selfmod_stage", description="Stage sandbox plugin candidate (admin)"),
         BotCommand(command="selfmod_apply", description="Apply sandbox plugin candidate (admin)"),

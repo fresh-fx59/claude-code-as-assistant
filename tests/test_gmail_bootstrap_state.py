@@ -12,10 +12,14 @@ def test_start_session_persists_browser_first_bootstrap_state(tmp_path) -> None:
         redirect_uri="https://bot.example.com/gmail/callback",
         callback_base_url="https://bot.example.com",
         oauth_client_name="ILA Gmail OAuth",
+        telegram_chat_id=123,
+        telegram_thread_id=456,
     )
 
     assert session.phase == "cloud_auth_pending"
     assert session.project_id == "ila-demo-project"
+    assert session.telegram_chat_id == 123
+    assert session.telegram_thread_id == 456
     assert store.get(session.session_id) is not None
 
 
@@ -27,6 +31,8 @@ def test_bootstrap_state_progresses_through_key_phases(tmp_path) -> None:
         redirect_uri="https://bot.example.com/gmail/callback",
         callback_base_url="https://bot.example.com",
         oauth_client_name="ILA Gmail OAuth",
+        telegram_chat_id=123,
+        telegram_thread_id=None,
     )
 
     cloud = store.record_cloud_auth(session_id=session.session_id, account_email="alex@example.com")
@@ -38,9 +44,11 @@ def test_bootstrap_state_progresses_through_key_phases(tmp_path) -> None:
         session_id=session.session_id,
         project_number="1234567890",
         manual_console_url="https://console.cloud.google.com/apis/credentials",
+        manual_checklist_path="/tmp/MANUAL_CHECKLIST.md",
     )
     assert project is not None
     assert project.phase == "oauth_manual_pending"
+    assert project.manual_checklist_path == "/tmp/MANUAL_CHECKLIST.md"
 
     uploaded = store.record_credentials_uploaded(
         session_id=session.session_id,
@@ -64,6 +72,11 @@ def test_bootstrap_state_progresses_through_key_phases(tmp_path) -> None:
     assert completed is not None
     assert completed.phase == "completed"
     assert completed.gmail_account_email == "alex@gmail.com"
+    assert completed.connected_at is not None
+
+    completed_sessions = store.list_completed()
+    assert [item.session_id for item in completed_sessions] == [session.session_id]
+    assert store.latest_for_scope(telegram_chat_id=123, telegram_thread_id=None) is not None
 
 
 def test_failed_state_is_persisted(tmp_path) -> None:

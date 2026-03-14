@@ -23,20 +23,22 @@ instructions: |
   - If recipient or target message is ambiguous, ask a clarifying question first.
   - Prefer listing/searching first, then acting on a specific message ID.
 
-  Preferred setup (user-friendly):
-  - Run `python -m src.gmail_setup_tool doctor`
-  - Then run `python -m src.gmail_setup_tool authorize --account you@gmail.com --services gmail`
-  - For headless/server auth, add `--remote`
+  Preferred setup (current product flow):
+  - Ask the user to run `/gmail_connect` in Telegram.
+  - The bot starts the Gmail bootstrap web flow and returns a ready setup URL.
+  - The user completes Google sign-in, the one Google Cloud Console checkpoint, and uploads `client_secret.json` on the setup page.
+  - Use `/gmail_status` to inspect current phase or the final connected account.
 
-  Operator provisioning (once per host, not per user):
-  - Set `GOG_OAUTH_CREDENTIALS_PATH=/secure/path/google-oauth-client.json`
-  - Or set `GOG_OAUTH_CREDENTIALS_JSON` from secret storage
-  - This removes the need for each end user to create their own Google Cloud Console project
-
-  Fallback only if shared credentials are unavailable:
-  - `gog auth credentials set /path/to/client_secret.json`
-  - `gog auth add you@gmail.com --services gmail`
+  CLI/operator fallback:
+  - `python -m src.gmail_setup_tool doctor`
+  - `python -m src.gmail_setup_tool self-hosted-doctor`
+  - `python -m src.gmail_setup_tool authorize --account you@gmail.com --services gmail --remote`
   - `gog auth list`
+
+  Shared host-level OAuth credentials are now optional operator provisioning only:
+  - `GOG_OAUTH_CREDENTIALS_PATH=/secure/path/google-oauth-client.json`
+  - `GOG_OAUTH_CREDENTIALS_JSON=...`
+  - Do not present shared OAuth as the primary end-user onboarding path unless explicitly requested.
 
   Quick command discovery (run first if syntax is uncertain):
   - `gog gmail --help`

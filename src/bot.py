@@ -47,6 +47,7 @@ from .features.provider_runtime_helpers import (
 from .features import provider_runtime as _provider_runtime
 from .features import provider_command_handlers as _provider_command_handlers
 from .features import lifecycle_ops_command_handlers as _lifecycle_ops_command_handlers
+from .features import gmail_connect_handlers as _gmail_connect_handlers
 from .features import background_schedule_handlers as _background_schedule_handlers
 from .features import rollback_selfmod_handlers as _rollback_selfmod_handlers
 from .features import message_media_handlers as _message_media_handlers
@@ -1108,6 +1109,24 @@ async def cmd_tools(message: Message) -> None:
         is_authorized=_is_authorized,
         tool_registry=tool_registry,
         strip_html_fn=strip_html,
+    )
+
+
+@router.message(Command("gmail_connect"))
+async def cmd_gmail_connect(message: Message) -> None:
+    await _gmail_connect_handlers.cmd_gmail_connect(
+        message,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
+    )
+
+
+@router.message(Command("gmail_status"))
+async def cmd_gmail_status(message: Message) -> None:
+    await _gmail_connect_handlers.cmd_gmail_status(
+        message,
+        is_authorized=_is_authorized,
+        thread_id_fn=_thread_id,
     )
 
 

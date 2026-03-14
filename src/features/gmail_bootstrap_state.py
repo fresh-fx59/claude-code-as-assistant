@@ -36,11 +36,15 @@ class GmailBootstrapSession:
     redirect_uri: str
     callback_base_url: str
     oauth_client_name: str
+    telegram_chat_id: int | None = None
+    telegram_thread_id: int | None = None
     gcloud_account_email: str | None = None
     project_number: str | None = None
     manual_console_url: str | None = None
+    manual_checklist_path: str | None = None
     credentials_path: str | None = None
     gmail_account_email: str | None = None
+    connected_at: str | None = None
     failure_reason: str | None = None
 
 
@@ -87,6 +91,8 @@ class GmailBootstrapStateStore:
         redirect_uri: str,
         callback_base_url: str,
         oauth_client_name: str,
+        telegram_chat_id: int | None = None,
+        telegram_thread_id: int | None = None,
     ) -> GmailBootstrapSession:
         with self._lock:
             sessions = self._load_all_unlocked()
@@ -101,6 +107,8 @@ class GmailBootstrapStateStore:
                 redirect_uri=redirect_uri,
                 callback_base_url=callback_base_url.rstrip("/"),
                 oauth_client_name=oauth_client_name,
+                telegram_chat_id=telegram_chat_id,
+                telegram_thread_id=telegram_thread_id,
             )
             sessions[session.session_id] = session
             self._save_all_unlocked(sessions)
@@ -129,6 +137,7 @@ class GmailBootstrapStateStore:
         session_id: str,
         project_number: str | None = None,
         manual_console_url: str | None = None,
+        manual_checklist_path: str | None = None,
     ) -> GmailBootstrapSession | None:
         with self._lock:
             sessions = self._load_all_unlocked()
@@ -137,6 +146,7 @@ class GmailBootstrapStateStore:
                 return None
             session.project_number = project_number
             session.manual_console_url = manual_console_url
+            session.manual_checklist_path = manual_checklist_path
             session.phase = "oauth_manual_pending"
             session.updated_at = _now_iso()
             sessions[session_id] = session
@@ -200,11 +210,38 @@ class GmailBootstrapStateStore:
             if session is None:
                 return None
             session.gmail_account_email = gmail_account_email
+            session.connected_at = _now_iso()
             session.phase = "completed"
             session.updated_at = _now_iso()
             sessions[session_id] = session
             self._save_all_unlocked(sessions)
             return session
+
+    def list_completed(self) -> list[GmailBootstrapSession]:
+        with self._lock:
+            sessions = self._load_all_unlocked()
+            completed = [session for session in sessions.values() if session.phase == "completed"]
+            completed.sort(key=lambda item: item.updated_at, reverse=True)
+            return completed
+
+    def latest_for_scope(
+        self,
+        *,
+        telegram_chat_id: int,
+        telegram_thread_id: int | None,
+    ) -> GmailBootstrapSession | None:
+        with self._lock:
+            sessions = self._load_all_unlocked().values()
+            matching = [
+                session
+                for session in sessions
+                if session.telegram_chat_id == telegram_chat_id
+                and session.telegram_thread_id == telegram_thread_id
+            ]
+            if not matching:
+                return None
+            matching.sort(key=lambda item: item.updated_at, reverse=True)
+            return matching[0]
 
     def record_failed(self, *, session_id: str, reason: str) -> GmailBootstrapSession | None:
         with self._lock:

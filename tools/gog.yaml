@@ -11,38 +11,38 @@ triggers:
 instructions: '# gog
 
 
-  Use `gog` for Gmail/Calendar/Drive/Contacts/Sheets/Docs. Prefer shared OAuth setup
-  so end users do not need to create a Google Cloud Console project.
+  Use `gog` for Gmail/Calendar/Drive/Contacts/Sheets/Docs.
+  For Gmail onboarding, prefer the bot-managed `/gmail_connect` flow first.
 
 
-  Preferred setup (once per account)
+  Preferred setup (Gmail)
+
+
+  - Run `/gmail_connect` in Telegram.
+
+  - Open the returned setup page and complete the browser-driven flow.
+
+  - Use `/gmail_status` to inspect progress or confirm the connected Gmail account.
+
+
+  CLI/operator setup
 
 
   - `python -m src.gmail_setup_tool doctor`
 
-  - `python -m src.gmail_setup_tool authorize --account you@gmail.com --services gmail,calendar,drive,contacts,docs,sheets`
+  - `python -m src.gmail_setup_tool self-hosted-doctor`
 
-  - Add `--remote` for headless/server auth
-
-
-  Operator provisioning (once per host)
-
-
-  - Set `GOG_OAUTH_CREDENTIALS_PATH=/secure/path/google-oauth-client.json`
-
-  - Or set `GOG_OAUTH_CREDENTIALS_JSON` from secret storage
-
-  - The helper will install those credentials into `gog` automatically
-
-
-  Fallback if shared credentials are unavailable
-
-
-  - `gog auth credentials set /path/to/client_secret.json`
-
-  - `gog auth add you@gmail.com --services gmail,calendar,drive,contacts,docs,sheets`
+  - `python -m src.gmail_setup_tool authorize --account you@gmail.com --services gmail,calendar,drive,contacts,docs,sheets --remote`
 
   - `gog auth list`
+
+
+  Shared host-level OAuth is optional operator provisioning, not the primary end-user flow
+
+
+  - `GOG_OAUTH_CREDENTIALS_PATH=/secure/path/google-oauth-client.json`
+
+  - `GOG_OAUTH_CREDENTIALS_JSON=...`
 
 
   Common commands
