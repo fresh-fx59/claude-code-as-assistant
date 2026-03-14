@@ -89,11 +89,16 @@ def test_failed_state_is_persisted(tmp_path) -> None:
         oauth_client_name="ILA Gmail OAuth",
     )
 
-    failed = store.record_failed(session_id=session.session_id, reason="consent_screen_blocked")
+    failed = store.record_failed(
+        session_id=session.session_id,
+        reason="consent_screen_blocked",
+        guidance="Use an allowed Google Cloud project and retry.",
+    )
 
     assert failed is not None
     assert failed.phase == "failed"
     assert failed.failure_reason == "consent_screen_blocked"
+    assert failed.failure_guidance == "Use an allowed Google Cloud project and retry."
 
 
 def test_record_telegram_notification_persists_last_notification_key(tmp_path) -> None:

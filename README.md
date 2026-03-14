@@ -1,6 +1,6 @@
 # Telegram Persona Assistant
 
-Chat with your assistant directly from Telegram. The bot supports multiple providers and CLIs, including Claude, Codex, and Codex2.
+Chat with your assistant directly from Telegram. The bot supports multiple providers and CLIs, including Claude, Codex, Codex2, and Codex3.
 
 The runtime can switch providers per chat, preserve session state, and fall back between configured backends from `providers.json`.
 
@@ -15,6 +15,7 @@ Before starting, make sure you have:
    - Claude: [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
    - Codex: `codex`
    - Codex2: `codex2`
+   - Codex3: `codex3`
 
 ## Setup (5 minutes)
 
@@ -40,12 +41,19 @@ Codex2:
 # install/configure the codex2 CLI so `codex2` is available in PATH
 ```
 
+Codex3:
+
+```bash
+# install/configure the codex3 CLI so `codex3` is available in PATH
+```
+
 Then authenticate the providers you installed:
 
 ```bash
 claude   # follow the prompts to log in
 codex    # optional
 codex2   # optional
+codex3   # optional
 ```
 
 ### 2. Clone this repo
@@ -219,7 +227,7 @@ What it does:
 - Creates `~/.<instance_name>`
 - Symlinks your `~/.gitconfig`
 - Symlinks your `~/.ssh`
-- Installs a wrapper executable like `/usr/local/bin/codex3` that runs `codex` with `HOME=~/.codex3`
+- Installs a wrapper executable on your `PATH` (auto-selects a writable bin dir, preferring `/usr/local/bin`, else `~/.local/bin`)
 - Keeps Codex/OpenAI login isolated by default because each instance has its own `HOME`
 - Shares `gh` auth only if you explicitly pass `--share-gh-config`
 
@@ -568,7 +576,7 @@ The bundled systemd units include the per-user npm bin path so `codex` CLIs inst
 - Run `npm install -g @anthropic-ai/claude-code`
 - Make sure Node.js 18+ is installed
 
-**"Provider CLI 'codex' or 'codex2' is not installed"**
+**"Provider CLI 'codex', 'codex2', or 'codex3' is not installed"**
 - Install or configure the missing CLI so it is available on `PATH`
 - Switch providers with `/provider` only after the CLI is installed
 

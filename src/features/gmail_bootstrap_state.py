@@ -47,6 +47,7 @@ class GmailBootstrapSession:
     connected_at: str | None = None
     last_telegram_notification_key: str | None = None
     failure_reason: str | None = None
+    failure_guidance: str | None = None
 
 
 class GmailBootstrapStateStore:
@@ -244,13 +245,20 @@ class GmailBootstrapStateStore:
             matching.sort(key=lambda item: item.updated_at, reverse=True)
             return matching[0]
 
-    def record_failed(self, *, session_id: str, reason: str) -> GmailBootstrapSession | None:
+    def record_failed(
+        self,
+        *,
+        session_id: str,
+        reason: str,
+        guidance: str | None = None,
+    ) -> GmailBootstrapSession | None:
         with self._lock:
             sessions = self._load_all_unlocked()
             session = sessions.get(session_id)
             if session is None:
                 return None
             session.failure_reason = reason
+            session.failure_guidance = guidance
             session.phase = "failed"
             session.updated_at = _now_iso()
             sessions[session_id] = session

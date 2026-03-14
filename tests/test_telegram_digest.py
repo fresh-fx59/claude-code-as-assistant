@@ -66,6 +66,8 @@ async def test_collect_digest_via_proxy_ingests_channel_and_linked_chat_messages
     tmp_path,
     monkeypatch,
 ) -> None:
+    now = datetime.now(timezone.utc)
+
     class FakeProxyClient:
         async def list_channels(self, *, limit: int):  # noqa: ARG002
             return [
@@ -91,12 +93,12 @@ async def test_collect_digest_via_proxy_ingests_channel_and_linked_chat_messages
             assert recent_first is True
             if kind == "channel" and entity_id == 100:
                 return [
-                    {
-                        "message_id": 101,
-                        "posted_at": "2026-03-12T08:00:00+00:00",
-                        "sender_id": 10,
-                        "views": 123,
-                        "forwards": 4,
+                        {
+                            "message_id": 101,
+                            "posted_at": (now - timedelta(hours=2)).isoformat(),
+                            "sender_id": 10,
+                            "views": 123,
+                            "forwards": 4,
                         "replies": 2,
                         "link": "https://t.me/main_channel/101",
                         "text": "Proxy channel update",
@@ -105,12 +107,12 @@ async def test_collect_digest_via_proxy_ingests_channel_and_linked_chat_messages
                 ]
             if kind == "linked_chat" and entity_id == 200:
                 return [
-                    {
-                        "message_id": 55,
-                        "posted_at": "2026-03-12T08:05:00+00:00",
-                        "sender_id": 20,
-                        "views": None,
-                        "forwards": None,
+                        {
+                            "message_id": 55,
+                            "posted_at": (now - timedelta(hours=1, minutes=55)).isoformat(),
+                            "sender_id": 20,
+                            "views": None,
+                            "forwards": None,
                         "replies": 7,
                         "link": None,
                         "text": "Proxy linked chat discussion",
@@ -144,9 +146,13 @@ async def test_collect_digest_uses_recent_first_only_for_initial_sync(
     monkeypatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+    list_channel_calls = 0
+    now = datetime.now(timezone.utc)
 
     class FakeProxyClient:
         async def list_channels(self, *, limit: int):  # noqa: ARG002
+            nonlocal list_channel_calls
+            list_channel_calls += 1
             return [
                 types.SimpleNamespace(
                     entity_id=100,
@@ -180,7 +186,7 @@ async def test_collect_digest_uses_recent_first_only_for_initial_sync(
                 return [
                     {
                         "message_id": 500,
-                        "posted_at": "2026-03-12T12:00:00+00:00",
+                        "posted_at": (now - timedelta(minutes=10)).isoformat(),
                         "sender_id": 10,
                         "views": 123,
                         "forwards": 4,
@@ -193,7 +199,7 @@ async def test_collect_digest_uses_recent_first_only_for_initial_sync(
             return [
                 {
                     "message_id": 501,
-                    "posted_at": "2026-03-12T12:05:00+00:00",
+                    "posted_at": (now - timedelta(minutes=5)).isoformat(),
                     "sender_id": 11,
                     "views": 124,
                     "forwards": 5,
@@ -214,6 +220,7 @@ async def test_collect_digest_uses_recent_first_only_for_initial_sync(
 
     assert first_payload["status"] == "ok"
     assert second_payload["status"] == "ok"
+    assert list_channel_calls == 1
     assert calls[0]["recent_first"] is True
     assert calls[0]["min_id"] == 0
     assert calls[1]["recent_first"] is False

@@ -138,11 +138,13 @@ def _phase_message(session: GmailBootstrapSession) -> str:
     if session.phase == "completed":
         return "This bot host now has a stored Gmail API connection ready for Gmail operations."
     if session.phase == "failed":
-        return _friendly_failure_message(session.failure_reason)
+        return _friendly_failure_message(session.failure_reason, session.failure_guidance)
     return "The Gmail setup session is active."
 
 
-def _friendly_failure_message(reason: str | None) -> str:
+def _friendly_failure_message(reason: str | None, guidance: str | None = None) -> str:
+    if guidance:
+        return guidance
     if not reason:
         return "The setup failed. Review the session details and retry the current step."
     if reason.startswith("google_auth_error:"):
@@ -159,6 +161,34 @@ def _friendly_failure_message(reason: str | None) -> str:
     if reason.startswith("gog_remote_finish_failed:"):
         return "The Gmail callback returned, but local token storage failed. Check gog and retry."
     return f"Setup error: {reason}"
+
+
+def _gcp_failure_guidance(error_text: str) -> str:
+    lowered = error_text.lower()
+    if "billing" in lowered:
+        return (
+            "Automatic Google Cloud setup was blocked because billing is not enabled for the project. "
+            "Open Google Cloud Console, enable billing for the project, then retry Gmail setup."
+        )
+    if "permission" in lowered or "forbidden" in lowered or "permission_denied" in lowered:
+        return (
+            "Automatic Google Cloud setup was blocked by permissions. "
+            "Use a Google account that can create projects and enable APIs, then retry."
+        )
+    if "orgpolicy" in lowered or "organization policy" in lowered or "policy" in lowered:
+        return (
+            "Automatic Google Cloud setup was blocked by organization policy. "
+            "Use an allowed Google Cloud project or relax the policy, then retry."
+        )
+    if "quota" in lowered or "limit" in lowered:
+        return (
+            "Automatic Google Cloud setup hit a Google Cloud quota or limit. "
+            "Use a different project id or clear the Google Cloud limit, then retry."
+        )
+    return (
+        "Automatic Google Cloud project setup failed. "
+        "Check project id availability, billing, and organization policy, then retry."
+    )
 
 
 def _render_markdown_checklist(markdown_text: str) -> str:
@@ -280,7 +310,7 @@ async def _notify_telegram_for_session(
         account = session.gmail_account_email or "unknown account"
         text = f"Gmail setup complete: {account} is now connected to the bot."
     elif session.phase == "failed":
-        text = f"Gmail setup needs attention: {_friendly_failure_message(session.failure_reason)}"
+        text = f"Gmail setup needs attention: {_friendly_failure_message(session.failure_reason, session.failure_guidance)}"
 
     if text is None:
         return
@@ -310,6 +340,8 @@ def _render_session_html(base_url: str, session: GmailBootstrapSession) -> str:
         )
     if session.failure_reason:
         lines.append(f"<p><strong>Failure detail:</strong> <code>{html.escape(session.failure_reason)}</code></p>")
+    if session.failure_guidance:
+        lines.append(f"<p><strong>Recovery hint:</strong> {html.escape(session.failure_guidance)}</p>")
     if session.phase == "completed" and session.gmail_account_email:
         lines.append(f"<p><strong>Connected Gmail:</strong> <code>{session.gmail_account_email}</code></p>")
     if session.connected_at:
@@ -445,7 +477,8 @@ async def _google_callback(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text="Unknown bootstrap session.")
     error = request.query.get("error", "").strip()
     if error:
-        store.record_failed(session_id=session_id, reason=f"google_auth_error:{error}")
+        failed_session = store.record_failed(session_id=session_id, reason=f"google_auth_error:{error}")
+        await _notify_telegram_for_session(store, failed_session)
         raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
     code = request.query.get("code", "").strip()
     if not code:
@@ -455,7 +488,12 @@ async def _google_callback(request: web.Request) -> web.Response:
     token_payload = await _exchange_code_for_token(code=code, redirect_uri=redirect_uri)
     access_token = str(token_payload.get("access_token", "")).strip()
     if not access_token:
-        store.record_failed(session_id=session_id, reason="missing_access_token")
+        failed_session = store.record_failed(
+            session_id=session_id,
+            reason="missing_access_token",
+            guidance="Google returned no access token. Retry Google sign-in from the setup page.",
+        )
+        await _notify_telegram_for_session(store, failed_session)
         raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
     userinfo = await _fetch_userinfo(access_token=access_token)
     email = str(userinfo.get("email", "")).strip() or "unknown"
@@ -468,7 +506,11 @@ async def _google_callback(request: web.Request) -> web.Response:
             project_name=session.project_name,
         )
     except Exception as exc:
-        failed_session = store.record_failed(session_id=session_id, reason=f"gcp_bootstrap_failed:{exc}")
+        failed_session = store.record_failed(
+            session_id=session_id,
+            reason=f"gcp_bootstrap_failed:{exc}",
+            guidance=_gcp_failure_guidance(str(exc)),
+        )
         await _notify_telegram_for_session(store, failed_session)
     else:
         artifact_dir = _session_artifact_dir(session_id)
@@ -616,7 +658,11 @@ async def _upload_credentials(request: web.Request) -> web.Response:
         )
         await _notify_telegram_for_session(store, auth_started_session)
     except Exception as exc:
-        failed_session = store.record_failed(session_id=session_id, reason=f"gog_remote_start_failed:{exc}")
+        failed_session = store.record_failed(
+            session_id=session_id,
+            reason=f"gog_remote_start_failed:{exc}",
+            guidance="The Gmail authorization step could not start locally. Check gog and the uploaded client_secret.json, then retry.",
+        )
         await _notify_telegram_for_session(store, failed_session)
         raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
     raise web.HTTPFound(location=auth_url)
@@ -629,12 +675,20 @@ async def _gog_callback(request: web.Request) -> web.Response:
     if session is None:
         raise web.HTTPNotFound(text="Unknown bootstrap session.")
     if not session.gmail_account_email:
-        failed_session = store.record_failed(session_id=session_id, reason="missing_gmail_account_email")
+        failed_session = store.record_failed(
+            session_id=session_id,
+            reason="missing_gmail_account_email",
+            guidance="The setup session lost the Gmail account email. Return to the setup page and restart the Gmail authorization step.",
+        )
         await _notify_telegram_for_session(store, failed_session)
         raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
     error = request.query.get("error", "").strip()
     if error:
-        failed_session = store.record_failed(session_id=session_id, reason=f"gmail_auth_error:{error}")
+        failed_session = store.record_failed(
+            session_id=session_id,
+            reason=f"gmail_auth_error:{error}",
+            guidance="Google returned an error during Gmail authorization. Retry the Gmail authorization step from the setup page.",
+        )
         await _notify_telegram_for_session(store, failed_session)
         raise web.HTTPFound(location=f"/gmail/bootstrap/session/{session_id}")
     auth_url = f"{request.scheme}://{request.host}{request.path_qs}"
@@ -645,7 +699,11 @@ async def _gog_callback(request: web.Request) -> web.Response:
             auth_url=auth_url,
         )
     except Exception as exc:
-        result_session = store.record_failed(session_id=session_id, reason=f"gog_remote_finish_failed:{exc}")
+        result_session = store.record_failed(
+            session_id=session_id,
+            reason=f"gog_remote_finish_failed:{exc}",
+            guidance="Google authorization completed, but local token storage failed. Check gog on the host, then retry the setup.",
+        )
     else:
         result_session = store.record_completed(
             session_id=session_id,

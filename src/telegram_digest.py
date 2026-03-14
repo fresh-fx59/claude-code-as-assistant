@@ -17,6 +17,7 @@ from .telegram_proxy_client import TelegramProxyClient
 @dataclass(frozen=True)
 class SourceRecord:
     peer_key: str
+    entity_id: int
     title: str
     username: str | None
     kind: str
@@ -187,6 +188,27 @@ class TelegramDigestStore:
             row = con.execute("SELECT COUNT(*) AS count FROM digest_sources").fetchone()
             return int(row["count"] or 0)
 
+    def list_sources(self) -> list[SourceRecord]:
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT peer_key, entity_id, title, username, kind, linked_channel_key
+                FROM digest_sources
+                ORDER BY kind, title
+                """
+            ).fetchall()
+        return [
+            SourceRecord(
+                peer_key=str(row["peer_key"]),
+                entity_id=int(row["entity_id"]),
+                title=str(row["title"]),
+                username=row["username"],
+                kind=str(row["kind"]),
+                linked_channel_key=row["linked_channel_key"],
+            )
+            for row in rows
+        ]
+
     def recent_message_count(self, window_hours: int) -> int:
         cutoff = _isoformat(_utc_now() - timedelta(hours=window_hours))
         with self._connect() as con:
@@ -226,9 +248,10 @@ class TelegramDigestStore:
                 f"Window hours: {window_hours}",
                 f"Sources with activity: {len(sources)}",
                 "",
-                "Summarize this into a short executive Russian digest.",
-                "Focus on trends, important events, repeated signals across sources, and what changed.",
-                "Use only a few source links when truly important.",
+                "Summarize this into a short Russian digest for Samarin.",
+                "Cover what happened over the last window across channel posts and linked discussion chats.",
+                "Focus on important events, what people discussed, repeated signals across sources, and what changed.",
+                "Include only a few source links when they are truly important.",
                 "",
             ]
 
@@ -297,49 +320,62 @@ async def _collect_digest_via_proxy(
     collect_limit = collect_limit or config.TELEGRAM_DIGEST_COLLECT_LIMIT
 
     client = TelegramProxyClient()
-    channels = await client.list_channels(limit=source_limit)
 
     collected_messages = 0
     tracked_sources = 0
-    for channel in channels:
-        channel_key = _peer_key("channel", int(channel.entity_id))
-        store.upsert_source(
-            peer_key=channel_key,
-            entity_id=int(channel.entity_id),
-            title=(channel.title or "Unnamed channel").strip(),
-            username=channel.username,
-            kind="channel",
-            linked_channel_key=None,
-        )
-        tracked_sources += 1
-        collected_messages += await _collect_proxy_messages_for_peer(
-            client=client,
-            store=store,
-            peer_key=channel_key,
-            kind="channel",
-            entity_id=int(channel.entity_id),
-            collect_limit=collect_limit,
-        )
-
-        if channel.linked_chat_id:
-            linked_key = _peer_key("linked_chat", int(channel.linked_chat_id))
+    known_sources = store.list_sources()
+    if known_sources:
+        for source in known_sources:
+            tracked_sources += 1
+            collected_messages += await _collect_proxy_messages_for_peer(
+                client=client,
+                store=store,
+                peer_key=source.peer_key,
+                kind=source.kind,
+                entity_id=source.entity_id,
+                collect_limit=collect_limit,
+            )
+    else:
+        channels = await client.list_channels(limit=source_limit)
+        for channel in channels:
+            channel_key = _peer_key("channel", int(channel.entity_id))
             store.upsert_source(
-                peer_key=linked_key,
-                entity_id=int(channel.linked_chat_id),
-                title=((channel.linked_chat_title or "Unnamed linked chat")).strip(),
-                username=channel.linked_chat_username,
-                kind="linked_chat",
-                linked_channel_key=channel_key,
+                peer_key=channel_key,
+                entity_id=int(channel.entity_id),
+                title=(channel.title or "Unnamed channel").strip(),
+                username=channel.username,
+                kind="channel",
+                linked_channel_key=None,
             )
             tracked_sources += 1
             collected_messages += await _collect_proxy_messages_for_peer(
                 client=client,
                 store=store,
-                peer_key=linked_key,
-                kind="linked_chat",
-                entity_id=int(channel.linked_chat_id),
+                peer_key=channel_key,
+                kind="channel",
+                entity_id=int(channel.entity_id),
                 collect_limit=collect_limit,
             )
+
+            if channel.linked_chat_id:
+                linked_key = _peer_key("linked_chat", int(channel.linked_chat_id))
+                store.upsert_source(
+                    peer_key=linked_key,
+                    entity_id=int(channel.linked_chat_id),
+                    title=((channel.linked_chat_title or "Unnamed linked chat")).strip(),
+                    username=channel.linked_chat_username,
+                    kind="linked_chat",
+                    linked_channel_key=channel_key,
+                )
+                tracked_sources += 1
+                collected_messages += await _collect_proxy_messages_for_peer(
+                    client=client,
+                    store=store,
+                    peer_key=linked_key,
+                    kind="linked_chat",
+                    entity_id=int(channel.linked_chat_id),
+                    collect_limit=collect_limit,
+                )
 
     brief = store.render_briefing(window_hours=window_hours)
     brief_target.write_text(brief)

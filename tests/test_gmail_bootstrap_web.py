@@ -8,6 +8,7 @@ from src.features.gmail_bootstrap_state import GmailBootstrapSession
 from src.gmail_bootstrap_web import (
     _notify_telegram_for_session,
     _extract_first_url,
+    _gcp_failure_guidance,
     _render_session_html,
     _validate_credentials_json,
     build_google_auth_url,
@@ -131,6 +132,32 @@ def test_render_session_html_for_google_auth_failure_omits_upload_form() -> None
 
     assert "Google sign-in was cancelled or denied" in html
     assert "Upload Credentials and Continue" not in html
+
+
+def test_render_session_html_prefers_persisted_failure_guidance() -> None:
+    session = GmailBootstrapSession(
+        session_id="sess-1",
+        created_at="2026-03-13T10:00:00+00:00",
+        updated_at="2026-03-13T10:00:00+00:00",
+        phase="failed",
+        project_id="ila-demo-project",
+        project_name="ILA Demo Project",
+        redirect_uri="https://bot.example.com/gmail/oauth/callback",
+        callback_base_url="https://bot.example.com",
+        oauth_client_name="ILA Gmail OAuth",
+        failure_reason="gcp_bootstrap_failed:billing disabled",
+        failure_guidance="Enable billing for the project, then retry Gmail setup.",
+    )
+
+    html = _render_session_html("https://bot.example.com", session)
+
+    assert "Enable billing for the project, then retry Gmail setup." in html
+    assert "Recovery hint" in html
+
+
+def test_gcp_failure_guidance_mentions_billing_when_detected() -> None:
+    guidance = _gcp_failure_guidance("serviceusage API failed because billing is disabled")
+    assert "billing" in guidance.lower()
 
 
 @pytest.mark.asyncio

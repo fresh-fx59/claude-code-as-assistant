@@ -109,10 +109,10 @@ class TelegramProxy:
         client = self._require_client()
         lookup_value = lookup.strip().lower() if lookup else None
         async with self._lock:
-            dialogs = [dialog async for dialog in client.iter_dialogs(limit=limit)]
             entity_by_id: dict[int, Any] = {}
             channels: list[Any] = []
-            for dialog in dialogs:
+            dialog_limit = None if lookup_value is None else limit
+            async for dialog in client.iter_dialogs(limit=dialog_limit):
                 entity = dialog.entity
                 if not isinstance(entity, self._channel_cls):
                     continue
@@ -125,6 +125,10 @@ class TelegramProxy:
                         if lookup_value not in {entity_id, username, title}:
                             continue
                     channels.append(entity)
+                    if lookup_value:
+                        break
+                    if len(channels) >= limit:
+                        break
 
             records: list[ProxyChannelRecord] = []
             for entity in channels:
@@ -194,10 +198,34 @@ class TelegramProxy:
         if cached is not None:
             return cached
         client = self._require_client()
-        async with self._lock:
-            entity = await client.get_entity(entity_id)
+        try:
+            async with self._lock:
+                entity = await client.get_entity(entity_id)
+        except ValueError:
+            await self._prime_entity_cache_from_dialogs()
+            cached = self._entity_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            raise web.HTTPNotFound(text="Entity is not available in the current Telegram dialogs.") from None
         self._entity_cache[cache_key] = entity
         return entity
+
+    async def _prime_entity_cache_from_dialogs(self) -> None:
+        client = self._require_client()
+        async with self._lock:
+            async for dialog in client.iter_dialogs(limit=None):
+                entity = dialog.entity
+                entity_id = getattr(entity, "id", None)
+                if entity_id is None:
+                    continue
+                entity_id = int(entity_id)
+                if isinstance(entity, self._channel_cls):
+                    cache_kind = "channel" if getattr(entity, "broadcast", False) else "linked_chat"
+                    self._entity_cache[(cache_kind, entity_id)] = entity
+                    if cache_kind == "linked_chat":
+                        self._entity_cache[("chat", entity_id)] = entity
+                else:
+                    self._entity_cache[("chat", entity_id)] = entity
 
     def _authorize_entity(self, *, kind: str, entity_id: int) -> None:
         if kind == "channel":
