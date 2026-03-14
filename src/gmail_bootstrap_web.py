@@ -21,6 +21,8 @@ from .features.gmail_bootstrap_state import GmailBootstrapSession, GmailBootstra
 from .gmail_gcp_bootstrap import bootstrap_gcp_project
 from .gmail_setup_tool import build_manual_checklist
 
+_KEYRING_READY = False
+
 
 def _default_state_path() -> Path:
     return config.MEMORY_DIR / "gmail_bootstrap_sessions.json"
@@ -697,6 +699,21 @@ def _run_gog_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True, check=False, env=_gog_env())
 
 
+def _ensure_gog_keyring_ready(gog_path: str) -> None:
+    global _KEYRING_READY
+    if _KEYRING_READY:
+        return
+    result = subprocess.run(  # noqa: S603
+        [gog_path, "auth", "keyring", "file", "--no-input"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=_gog_env(),
+    )
+    if result.returncode == 0:
+        _KEYRING_READY = True
+
+
 def _extract_first_url(text: str) -> str | None:
     match = re.search(r"https?://[^\s\"']+", text)
     return match.group(0) if match else None
@@ -706,6 +723,7 @@ def _import_gog_credentials(credentials_path: Path) -> None:
     gog_path = _find_gog_binary()
     if not gog_path:
         raise RuntimeError("gog binary not found.")
+    _ensure_gog_keyring_ready(gog_path)
     result = _run_gog_command([gog_path, "auth", "credentials", "set", str(credentials_path)])
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "gog auth credentials set failed")
@@ -715,6 +733,7 @@ def _start_gog_remote_auth(*, gmail_account_email: str, redirect_uri: str) -> st
     gog_path = _find_gog_binary()
     if not gog_path:
         raise RuntimeError("gog binary not found.")
+    _ensure_gog_keyring_ready(gog_path)
     result = _run_gog_command(
         [
             gog_path,
@@ -744,6 +763,7 @@ def _finish_gog_remote_auth(*, gmail_account_email: str, redirect_uri: str, auth
     gog_path = _find_gog_binary()
     if not gog_path:
         raise RuntimeError("gog binary not found.")
+    _ensure_gog_keyring_ready(gog_path)
     result = _run_gog_command(
         [
             gog_path,
