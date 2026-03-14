@@ -1,12 +1,21 @@
 let relayWs = null;
 const tabs = new Map();
+const DEFAULT_RELAY_URL = "http://127.0.0.1:18792";
 
 async function getSettings() {
-  const stored = await chrome.storage.local.get(["relayPort", "relayToken"]);
+  const stored = await chrome.storage.local.get(["relayBaseUrl", "relayPort", "relayToken"]);
+  const legacyRelayUrl = stored.relayPort ? `http://127.0.0.1:${stored.relayPort}` : DEFAULT_RELAY_URL;
   return {
-    port: Number.parseInt(String(stored.relayPort || "18792"), 10) || 18792,
+    relayBaseUrl: String(stored.relayBaseUrl || legacyRelayUrl).trim().replace(/\/+$/, "") || DEFAULT_RELAY_URL,
     token: String(stored.relayToken || "").trim(),
   };
+}
+
+function toWebSocketUrl(relayBaseUrl, token) {
+  const url = new URL(`${relayBaseUrl}/extension`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("token", token);
+  return url.toString();
 }
 
 async function ensureRelay() {
@@ -14,7 +23,7 @@ async function ensureRelay() {
     return relayWs;
   }
   const settings = await getSettings();
-  const url = `ws://127.0.0.1:${settings.port}/extension?token=${encodeURIComponent(settings.token)}`;
+  const url = toWebSocketUrl(settings.relayBaseUrl, settings.token);
   relayWs = new WebSocket(url);
   relayWs.onmessage = (event) => {
     const data = JSON.parse(String(event.data || "{}"));

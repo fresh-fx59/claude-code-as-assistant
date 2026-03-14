@@ -143,6 +143,35 @@ For safe remote interaction, keep VNC localhost-only and forward it over SSH:
 ssh -N -L 5901:127.0.0.1:5901 claude-developer@31.220.78.216
 ```
 
+## Personal Browser Takeover
+
+This repo now includes a lightweight Chrome-extension relay for attaching the assistant to a tab in your own browser.
+
+Local same-machine path:
+
+```bash
+cd /home/claude-developer/iron-lady-assistant
+python3 -m src.browser_takeover setup
+python3 -m src.browser_takeover serve
+```
+
+Then load the unpacked extension from the printed `extension_path`, open its options page, paste the printed relay URL and token, and click the toolbar button on the tab you want to attach.
+
+Remote personal-computer path:
+
+```bash
+cd /home/claude-developer/iron-lady-assistant
+python3 -m src.browser_takeover setup --public-base-url https://YOUR-HOST/browser-takeover
+python3 -m src.browser_takeover serve --host 0.0.0.0 --port 18792 --public-base-url https://YOUR-HOST/browser-takeover
+```
+
+Notes:
+- `--public-base-url` is for the browser extension running on another machine; it must be an externally reachable `http(s)` URL that forwards to the relay
+- The extension converts that URL to `ws(s)` automatically for the live bridge
+- The relay token is required for both the extension websocket and CLI calls
+- Once a tab is attached, you can inspect it with `python3 -m src.browser_takeover targets`
+- High-level commands currently available: `navigate`, `snapshot`, `click`, `type`, and raw `cdp`
+
 ### Alternative: Manual Setup
 
 If you prefer to configure things yourself:

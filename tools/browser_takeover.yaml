@@ -1,0 +1,47 @@
+name: browser_takeover
+description: Connect the assistant to a tab in the user's personal Chrome browser through the local browser-takeover relay and extension.
+tier: extended
+triggers:
+  - browser extension
+  - personal browser
+  - attach browser
+  - user browser
+  - browser takeover
+instructions: |
+  # Browser Takeover
+
+  Use this tool when the task needs the user's real Chrome browser tab rather than a separate automation browser.
+
+  Primary commands:
+  - Install/update the unpacked extension and print setup instructions:
+    `python3 -m src.browser_takeover setup`
+  - Same as above, but for a browser running on another machine:
+    `python3 -m src.browser_takeover setup --public-base-url https://YOUR-HOST/browser-takeover`
+  - Start the relay locally:
+    `python3 -m src.browser_takeover serve`
+  - Start the relay for remote browser access:
+    `python3 -m src.browser_takeover serve --host 0.0.0.0 --port 18792 --public-base-url https://YOUR-HOST/browser-takeover`
+  - List attached tabs:
+    `python3 -m src.browser_takeover targets --format json`
+  - Navigate an attached tab:
+    `python3 -m src.browser_takeover navigate --tab-id <id> --url <url> --format json`
+  - Read a compact page snapshot:
+    `python3 -m src.browser_takeover snapshot --tab-id <id> --format json`
+  - Click a DOM element:
+    `python3 -m src.browser_takeover click --tab-id <id> --selector '<css-selector>' --format json`
+  - Type into a DOM element:
+    `python3 -m src.browser_takeover type --tab-id <id> --selector '<css-selector>' --text '<text>' --format json`
+  - Send raw Chrome DevTools Protocol:
+    `python3 -m src.browser_takeover cdp --tab-id <id> --method Runtime.evaluate --params '{"expression":"document.title","returnByValue":true}' --format json`
+
+  Operating model:
+  - The browser extension runs in the user's Chrome browser and attaches to a specific tab when the toolbar button is clicked.
+  - The relay process runs on the assistant host and exposes HTTP + websocket endpoints protected by a bearer token.
+  - For a browser on another machine, the relay must be reachable over an external `http(s)` URL; the extension automatically converts it to `ws(s)`.
+
+  Safety:
+  - Only act on tabs that the user intentionally attached.
+  - Prefer `snapshot` before `click` or `type` so you can verify the live page state.
+  - Do not perform destructive or purchase-confirming actions unless the user explicitly confirms in the current conversation.
+setup: |
+  python3 -m src.browser_takeover setup

@@ -10,6 +10,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from urllib import error, request
 
 from aiohttp import ClientSession, WSMsgType, web
@@ -51,6 +52,7 @@ class RelaySettings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     token: str = ""
+    public_base_url: str = ""
 
 
 @dataclass
@@ -88,6 +90,7 @@ def _load_settings() -> RelaySettings:
             host=str(raw.get("host") or DEFAULT_HOST),
             port=int(raw.get("port") or DEFAULT_PORT),
             token=str(raw.get("token") or ""),
+            public_base_url=str(raw.get("public_base_url") or ""),
         )
     settings = RelaySettings(token=secrets.token_urlsafe(24))
     _save_settings(settings)
@@ -103,6 +106,7 @@ def _save_settings(settings: RelaySettings) -> None:
                 "host": settings.host,
                 "port": settings.port,
                 "token": settings.token,
+                "public_base_url": settings.public_base_url,
             },
             ensure_ascii=False,
             indent=2,
@@ -126,17 +130,22 @@ def install_extension() -> Path:
 def build_setup_payload() -> dict[str, Any]:
     settings = _load_settings()
     extension_dir = install_extension()
+    relay_url = _public_http_base_url(settings) or _client_base_url(settings)
+    relay_ws_url = _ws_base_url(relay_url)
     return {
         "ok": True,
         "host": settings.host,
         "port": settings.port,
         "token": settings.token,
+        "relay_url": relay_url,
+        "relay_ws_url": relay_ws_url,
+        "public_base_url": settings.public_base_url,
         "extension_path": str(extension_dir),
         "commands": [
             f"python3 -m src.browser_takeover serve --host {settings.host} --port {settings.port}",
             "Chrome -> chrome://extensions -> enable Developer mode",
             f"Load unpacked -> {extension_dir}",
-            f"Open extension options -> set Relay port {settings.port} and token {settings.token}",
+            f"Open extension options -> set Relay URL {relay_url} and token {settings.token}",
             "Click the toolbar button on the tab you want to attach",
             "python3 -m src.browser_takeover targets",
         ],
@@ -145,7 +154,8 @@ def build_setup_payload() -> dict[str, Any]:
 
 def _format_setup_text(payload: dict[str, Any]) -> str:
     lines = [
-        f"relay: http://{payload['host']}:{payload['port']}",
+        f"relay: {payload['relay_url']}",
+        f"relay_ws: {payload['relay_ws_url']}",
         f"extension_path: {payload['extension_path']}",
         f"token: {payload['token']}",
         "",
@@ -154,6 +164,47 @@ def _format_setup_text(payload: dict[str, Any]) -> str:
     for command in payload["commands"]:
         lines.append(f"- {command}")
     return "\n".join(lines)
+
+
+def _normalize_public_base_url(value: str) -> str:
+    raw = value.strip().rstrip("/")
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("public_base_url must be an absolute http(s) URL")
+    return raw
+
+
+def _public_http_base_url(settings: RelaySettings) -> str:
+    return _normalize_public_base_url(settings.public_base_url) if settings.public_base_url else ""
+
+
+def _client_base_url(settings: RelaySettings) -> str:
+    host = settings.host
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{settings.port}"
+
+
+def _ws_base_url(http_base_url: str) -> str:
+    parsed = urlparse(http_base_url)
+    if parsed.scheme == "https":
+        scheme = "wss"
+    elif parsed.scheme == "http":
+        scheme = "ws"
+    else:
+        raise ValueError(f"Unsupported relay scheme: {parsed.scheme}")
+    return urlunparse(parsed._replace(scheme=scheme))
+
+
+def _build_extension_ws_url(settings: RelaySettings) -> str:
+    base = _public_http_base_url(settings) or _client_base_url(settings)
+    ws_base = _ws_base_url(base)
+    parsed = urlparse(urljoin(f"{ws_base}/", "extension"))
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["token"] = settings.token
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 def _is_authorized(req: web.Request, settings: RelaySettings) -> bool:
@@ -303,7 +354,7 @@ def create_app(settings: RelaySettings | None = None) -> web.Application:
 
 def _request_json(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = _load_settings()
-    url = f"http://{settings.host}:{settings.port}{path}"
+    url = urljoin(f"{_client_base_url(settings)}/", path.lstrip("/"))
     data = None
     headers = {"Authorization": f"Bearer {settings.token}"}
     if payload is not None:
@@ -368,16 +419,106 @@ def _navigate_tab(tab_id: int, url: str) -> dict[str, Any]:
     }
 
 
+def _js_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _click_expression(selector: str) -> str:
+    selector_js = _js_string(selector)
+    return f"""
+(() => {{
+  const selector = {selector_js};
+  const element = document.querySelector(selector);
+  if (!element) {{
+    return {{ ok: false, error: "selector_not_found", selector }};
+  }}
+  element.scrollIntoView({{ block: "center", inline: "center" }});
+  element.click();
+  return {{ ok: true, selector }};
+}})()
+""".strip()
+
+
+def _type_expression(selector: str, text: str, submit: bool) -> str:
+    selector_js = _js_string(selector)
+    text_js = _js_string(text)
+    submit_js = "true" if submit else "false"
+    return f"""
+(() => {{
+  const selector = {selector_js};
+  const text = {text_js};
+  const shouldSubmit = {submit_js};
+  const element = document.querySelector(selector);
+  if (!element) {{
+    return {{ ok: false, error: "selector_not_found", selector }};
+  }}
+  element.scrollIntoView({{ block: "center", inline: "center" }});
+  element.focus();
+  if ("value" in element) {{
+    element.value = text;
+  }} else {{
+    element.textContent = text;
+  }}
+  element.dispatchEvent(new Event("input", {{ bubbles: true }}));
+  element.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  if (shouldSubmit) {{
+    element.dispatchEvent(new KeyboardEvent("keydown", {{ key: "Enter", bubbles: true }}));
+    element.dispatchEvent(new KeyboardEvent("keypress", {{ key: "Enter", bubbles: true }}));
+    element.dispatchEvent(new KeyboardEvent("keyup", {{ key: "Enter", bubbles: true }}));
+    if (element.form) {{
+      element.form.requestSubmit();
+    }}
+  }}
+  return {{ ok: true, selector, textLength: text.length, submitted: shouldSubmit }};
+}})()
+""".strip()
+
+
+def _run_js(tab_id: int, expression: str) -> dict[str, Any]:
+    result = _call_cdp(
+        tab_id,
+        "Runtime.evaluate",
+        {
+            "expression": expression,
+            "returnByValue": True,
+        },
+    )
+    payload = (((result.get("result") or {}).get("value")) if isinstance(result, dict) else None) or {}
+    if payload.get("ok") is False:
+        raise RuntimeError(json.dumps(payload, ensure_ascii=False))
+    return payload
+
+
+def _click_tab(tab_id: int, selector: str) -> dict[str, Any]:
+    payload = _run_js(tab_id, _click_expression(selector))
+    return {"ok": True, "tab_id": tab_id, **payload}
+
+
+def _type_tab(tab_id: int, selector: str, text: str, submit: bool = False) -> dict[str, Any]:
+    payload = _run_js(tab_id, _type_expression(selector, text, submit))
+    return {"ok": True, "tab_id": tab_id, **payload}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Browser takeover relay for iron-lady-assistant.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     setup_parser = sub.add_parser("setup", help="Install extension assets and print local setup steps.")
     setup_parser.add_argument("--format", choices=("text", "json"), default="text")
+    setup_parser.add_argument(
+        "--public-base-url",
+        default=None,
+        help="Optional public http(s) base URL for remote browser connections, e.g. https://example.com/browser-takeover",
+    )
 
     serve_parser = sub.add_parser("serve", help="Start the local browser takeover relay.")
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve_parser.add_argument(
+        "--public-base-url",
+        default=None,
+        help="Persist a public http(s) base URL for the extension to use when it runs on another machine.",
+    )
 
     targets_parser = sub.add_parser("targets", help="List tabs currently attached by the extension.")
     targets_parser.add_argument("--format", choices=("text", "json"), default="json")
@@ -393,6 +534,18 @@ def build_parser() -> argparse.ArgumentParser:
     navigate_parser.add_argument("--url", required=True)
     navigate_parser.add_argument("--format", choices=("text", "json"), default="json")
 
+    click_parser = sub.add_parser("click", help="Click a DOM element in an attached tab by CSS selector.")
+    click_parser.add_argument("--tab-id", type=int, required=True)
+    click_parser.add_argument("--selector", required=True)
+    click_parser.add_argument("--format", choices=("text", "json"), default="json")
+
+    type_parser = sub.add_parser("type", help="Type into a DOM element in an attached tab by CSS selector.")
+    type_parser.add_argument("--tab-id", type=int, required=True)
+    type_parser.add_argument("--selector", required=True)
+    type_parser.add_argument("--text", required=True)
+    type_parser.add_argument("--submit", action="store_true")
+    type_parser.add_argument("--format", choices=("text", "json"), default="json")
+
     snapshot_parser = sub.add_parser("snapshot", help="Read a compact page snapshot from an attached tab.")
     snapshot_parser.add_argument("--tab-id", type=int, required=True)
     snapshot_parser.add_argument("--format", choices=("text", "json"), default="json")
@@ -404,6 +557,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "setup":
+        if args.public_base_url is not None:
+            settings = _load_settings()
+            settings.public_base_url = _normalize_public_base_url(args.public_base_url)
+            _save_settings(settings)
         payload = build_setup_payload()
         if args.format == "json":
             print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -415,6 +572,8 @@ def main(argv: list[str] | None = None) -> int:
         settings = _load_settings()
         settings.host = args.host
         settings.port = args.port
+        if args.public_base_url is not None:
+            settings.public_base_url = _normalize_public_base_url(args.public_base_url)
         _save_settings(settings)
         web.run_app(create_app(settings), host=settings.host, port=settings.port)
         return 0
@@ -461,6 +620,30 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             print(f"navigated tab {args.tab_id} to {args.url}")
+        return 0
+
+    if args.command == "click":
+        try:
+            payload = _click_tab(args.tab_id, args.selector)
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"clicked {args.selector} in tab {args.tab_id}")
+        return 0
+
+    if args.command == "type":
+        try:
+            payload = _type_tab(args.tab_id, args.selector, args.text, submit=args.submit)
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"typed into {args.selector} in tab {args.tab_id}")
         return 0
 
     if args.command == "snapshot":

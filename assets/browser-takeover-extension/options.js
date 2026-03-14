@@ -1,16 +1,17 @@
-const DEFAULT_PORT = 18792;
+const DEFAULT_RELAY_URL = "http://127.0.0.1:18792";
 
 async function load() {
-  const stored = await chrome.storage.local.get(["relayPort", "relayToken"]);
-  document.getElementById("port").value = String(stored.relayPort || DEFAULT_PORT);
+  const stored = await chrome.storage.local.get(["relayBaseUrl", "relayPort", "relayToken"]);
+  const fallbackUrl = stored.relayPort ? `http://127.0.0.1:${stored.relayPort}` : DEFAULT_RELAY_URL;
+  document.getElementById("relay-url").value = String(stored.relayBaseUrl || fallbackUrl);
   document.getElementById("token").value = String(stored.relayToken || "");
 }
 
 async function save() {
-  const port = Number.parseInt(document.getElementById("port").value || "", 10) || DEFAULT_PORT;
+  const relayBaseUrl = String(document.getElementById("relay-url").value || "").trim().replace(/\/+$/, "") || DEFAULT_RELAY_URL;
   const token = String(document.getElementById("token").value || "").trim();
-  await chrome.storage.local.set({ relayPort: port, relayToken: token });
-  document.getElementById("status").textContent = `Saved relay settings for http://127.0.0.1:${port}`;
+  await chrome.storage.local.set({ relayBaseUrl, relayToken: token });
+  document.getElementById("status").textContent = `Saved relay settings for ${relayBaseUrl}`;
 }
 
 document.getElementById("save").addEventListener("click", () => void save());

@@ -24,6 +24,27 @@ def test_build_setup_payload_installs_extension(tmp_path: Path, monkeypatch: pyt
     assert payload["ok"] is True
     assert Path(payload["extension_path"]).exists()
     assert payload["token"]
+    assert payload["relay_url"] == "http://127.0.0.1:18792"
+    assert payload["relay_ws_url"] == "ws://127.0.0.1:18792"
+
+
+def test_build_setup_payload_prefers_public_base_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    (bundled / "manifest.json").write_text('{"manifest_version":3}', encoding="utf-8")
+    (bundled / "background.js").write_text("console.log('ok')\n", encoding="utf-8")
+
+    monkeypatch.setattr(browser_takeover, "_default_state_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(browser_takeover, "_repo_root", lambda: tmp_path / "repo")
+    monkeypatch.setattr(browser_takeover, "_bundled_extension_dir", lambda: bundled)
+    browser_takeover._save_settings(
+        browser_takeover.RelaySettings(token="secret", public_base_url="https://ila.example/browser")
+    )
+
+    payload = browser_takeover.build_setup_payload()
+
+    assert payload["relay_url"] == "https://ila.example/browser"
+    assert payload["relay_ws_url"] == "wss://ila.example/browser"
 
 
 def test_main_targets_reports_relay_errors(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -72,6 +93,60 @@ def test_main_navigate_returns_success(monkeypatch: pytest.MonkeyPatch, capsys) 
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["url"] == "https://example.com"
+
+
+def test_build_extension_ws_url_uses_public_base_url() -> None:
+    settings = browser_takeover.RelaySettings(token="secret", public_base_url="https://ila.example/browser")
+
+    assert (
+        browser_takeover._build_extension_ws_url(settings)
+        == "wss://ila.example/browser/extension?token=secret"
+    )
+
+
+def test_main_click_returns_success(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(
+        browser_takeover,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "result": {
+                "result": {
+                    "value": {"ok": True, "selector": "#login"},
+                }
+            },
+        },
+    )
+
+    rc = browser_takeover.main(["click", "--tab-id", "7", "--selector", "#login"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selector"] == "#login"
+
+
+def test_main_type_returns_success(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(
+        browser_takeover,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "result": {
+                "result": {
+                    "value": {"ok": True, "selector": "input[name=q]", "textLength": 4, "submitted": True},
+                }
+            },
+        },
+    )
+
+    rc = browser_takeover.main(
+        ["type", "--tab-id", "7", "--selector", "input[name=q]", "--text", "ozon", "--submit"]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selector"] == "input[name=q]"
+    assert payload["submitted"] is True
 
 
 @pytest.mark.asyncio
