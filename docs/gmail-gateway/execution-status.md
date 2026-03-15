@@ -47,14 +47,25 @@ Last updated: 2026-03-15
    - Added access-token refresh exchange in Gmail API client (`oauth2.googleapis.com/token`).
    - Added automatic single retry on 401 with refresh-token rotation in gateway handlers.
    - Persisted rotated access token in auth store.
+13. Step 5 assistant runtime wiring slice:
+   - Added runtime Gmail commands backed by `GmailGatewayClient` only:
+     - `/gmail_account`
+     - `/gmail_search`
+     - `/gmail_read`
+     - `/gmail_trash`
+     - `/gmail_delete`
+     - `/gmail_send`
+   - Registered command handlers in bot runtime and Telegram command list.
+   - Added focused command-handler tests for gateway runtime path.
 
 ## Validations Run
 
 - `pytest -q tests/gmail_gateway` -> 18 passed
+- `pytest -q tests/test_gmail_gateway_command_handlers.py` -> pass
 - `python -m compileall -q src/gmail_gateway` -> success
 
 ## Next Slice (auto-continue target)
 
-1. Wire `GmailGatewayClient` into assistant runtime as the only Gmail path (no legacy fallback).
-2. Add persistent metrics export path (Prometheus-style or equivalent) beyond in-process counters.
-3. Add integration tests that hit real Gmail test tenant (stage ladder prerequisite).
+1. Add persistent metrics export path (Prometheus-style or equivalent) beyond in-process counters.
+2. Add integration tests that hit real Gmail test tenant (stage ladder prerequisite).
+3. Complete migration-stage parity/canary checks in docs + rollout scripts.

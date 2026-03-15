@@ -12,7 +12,6 @@ import subprocess
 from uuid import uuid4
 from datetime import datetime, timezone as tz
 from pathlib import Path
-import yaml
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message, CallbackQuery, ErrorEvent
@@ -48,6 +47,7 @@ from .features import provider_runtime as _provider_runtime
 from .features import provider_command_handlers as _provider_command_handlers
 from .features import lifecycle_ops_command_handlers as _lifecycle_ops_command_handlers
 from .features import gmail_connect_handlers as _gmail_connect_handlers
+from .features import gmail_gateway_command_handlers as _gmail_gateway_command_handlers
 from .features import background_schedule_handlers as _background_schedule_handlers
 from .features import rollback_selfmod_handlers as _rollback_selfmod_handlers
 from .features import message_media_handlers as _message_media_handlers
@@ -67,7 +67,7 @@ from .media import (
 from .memory import MemoryManager
 from .lifecycle_queue import LifecycleQueueStore
 from .progress import ProgressReporter
-from .providers import ProviderManager
+from .providers import ProviderManager, codex_family_providers
 from .scheduler import ScheduleManager
 from .plugins.tools_plugin import ToolRegistry
 from .ocr_local import extract_ocr_text
@@ -159,9 +159,6 @@ _STEERING_CONFLICT_PATTERNS = (
     (re.compile(r"\b(ignore|disregard)\s+(all|everything|previous|prior)\b", re.IGNORECASE), "broad_override"),
     (re.compile(r"\b(secret|password|token|credential)\b", re.IGNORECASE), "sensitive_data"),
 )
-_SCHEDULED_TASK_PREFERRED_PROVIDER = "codex3"
-
-
 def _thread_id(message: Message) -> int | None:
     return _thread_id_impl(message)
 
@@ -783,17 +780,11 @@ def _is_codex_family_cli(cli_name: str | None) -> bool:
 
 
 def _preferred_scheduled_provider(current_provider):
-    preferred = next(
-        (
-            candidate
-            for candidate in provider_manager.providers
-            if getattr(candidate, "name", None) == _SCHEDULED_TASK_PREFERRED_PROVIDER
-            or getattr(candidate, "cli", None) == _SCHEDULED_TASK_PREFERRED_PROVIDER
-        ),
-        None,
-    )
-    if preferred is not None:
-        return preferred
+    if _is_codex_family_cli(getattr(current_provider, "cli", None)):
+        return current_provider
+    codex_providers = codex_family_providers(provider_manager.providers)
+    if codex_providers:
+        return codex_providers[0]
     return current_provider
 
 
@@ -1183,6 +1174,66 @@ async def cmd_gmail_status(message: Message) -> None:
         message,
         is_authorized=_is_authorized,
         thread_id_fn=_thread_id,
+    )
+
+
+@router.message(Command("gmail_account"))
+async def cmd_gmail_account(message: Message, command: CommandObject) -> None:
+    await _gmail_gateway_command_handlers.cmd_gmail_account(
+        message,
+        is_authorized=_is_authorized,
+        command_args_fn=_command_args,
+        command=command,
+    )
+
+
+@router.message(Command("gmail_search"))
+async def cmd_gmail_search(message: Message, command: CommandObject) -> None:
+    await _gmail_gateway_command_handlers.cmd_gmail_search(
+        message,
+        is_authorized=_is_authorized,
+        command_args_fn=_command_args,
+        command=command,
+    )
+
+
+@router.message(Command("gmail_read"))
+async def cmd_gmail_read(message: Message, command: CommandObject) -> None:
+    await _gmail_gateway_command_handlers.cmd_gmail_read(
+        message,
+        is_authorized=_is_authorized,
+        command_args_fn=_command_args,
+        command=command,
+    )
+
+
+@router.message(Command("gmail_trash"))
+async def cmd_gmail_trash(message: Message, command: CommandObject) -> None:
+    await _gmail_gateway_command_handlers.cmd_gmail_trash(
+        message,
+        is_authorized=_is_authorized,
+        command_args_fn=_command_args,
+        command=command,
+    )
+
+
+@router.message(Command("gmail_delete"))
+async def cmd_gmail_delete(message: Message, command: CommandObject) -> None:
+    await _gmail_gateway_command_handlers.cmd_gmail_delete(
+        message,
+        is_authorized=_is_authorized,
+        command_args_fn=_command_args,
+        command=command,
+    )
+
+
+@router.message(Command("gmail_send"))
+async def cmd_gmail_send(message: Message, command: CommandObject) -> None:
+    await _gmail_gateway_command_handlers.cmd_gmail_send(
+        message,
+        is_authorized=_is_authorized,
+        command_args_fn=_command_args,
+        command=command,
     )
 
 

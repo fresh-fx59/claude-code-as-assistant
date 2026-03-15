@@ -254,3 +254,11 @@ class ProviderManager:
         env["PATH"] = _normalized_subprocess_path(env.get("PATH", ""))
         env.update(provider.env)
         return env
+
+
+def is_codex_cli(cli_name: str | None) -> bool:
+    return bool(cli_name and cli_name.lower().startswith("codex"))
+
+
+def codex_family_providers(providers: list[Provider] | list[object]) -> list[object]:
+    return [provider for provider in providers if is_codex_cli(getattr(provider, "cli", None))]
