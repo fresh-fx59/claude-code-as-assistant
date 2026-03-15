@@ -1,8 +1,10 @@
 import subprocess
 import json
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import yaml
 
 from src.memory import MemoryManager
@@ -14,7 +16,7 @@ def _write_profile(path: Path, payload: dict) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
-def test_profile_is_normalized_with_fact_types(tmp_path: Path) -> None:
+def test_legacy_yaml_migrates_to_sql_and_is_removed(tmp_path: Path) -> None:
     memory_dir = tmp_path / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     profile_path = memory_dir / "user_profile.yaml"
@@ -35,48 +37,41 @@ def test_profile_is_normalized_with_fact_types(tmp_path: Path) -> None:
         },
     )
 
-    MemoryManager(memory_dir)
-    normalized = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    manager = MemoryManager(memory_dir)
+    facts = manager.list_facts(fact_type="workflow", include_deleted=True)
 
-    assert "fact_types" in normalized
-    assert normalized["facts"][0]["type"] == "workflow"
+    assert profile_path.exists() is False
+    assert any(f["key"] == "commit_versioning_rule" for f in facts)
 
 
 def test_build_context_groups_relevant_facts_by_type(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
-    profile_path = tmp_path / "memory" / "user_profile.yaml"
-    _write_profile(
-        profile_path,
-        {
-            "name": "Alex",
-            "preferences": {"timezone": "UTC+3", "languages": ["Russian", "English"]},
-            "facts": [
-                {
-                    "key": "location",
-                    "value": "Ryazan, Russia",
-                    "type": "identity",
-                    "confidence": 1.0,
-                    "source": "explicit",
-                    "updated": "2026-03-07",
-                },
-                {
-                    "key": "feature_apply_commit_push_verify_preference",
-                    "value": "After applying a feature, commit and push, then verify",
-                    "type": "workflow",
-                    "confidence": 1.0,
-                    "source": "explicit",
-                    "updated": "2026-03-07",
-                },
-                {
-                    "key": "monitoring_server_connection",
-                    "value": "ssh user1@45.151.30.146",
-                    "type": "infrastructure",
-                    "confidence": 1.0,
-                    "source": "explicit",
-                    "updated": "2026-03-07",
-                },
-            ],
-        },
+    manager.upsert_fact(
+        key="location",
+        value="Ryazan, Russia",
+        fact_type="identity",
+        confidence=1.0,
+        source="explicit",
+        updated="2026-03-07",
+        mode="append",
+    )
+    manager.upsert_fact(
+        key="feature_apply_commit_push_verify_preference",
+        value="After applying a feature, commit and push, then verify",
+        fact_type="workflow",
+        confidence=1.0,
+        source="explicit",
+        updated="2026-03-07",
+        mode="append",
+    )
+    manager.upsert_fact(
+        key="monitoring_server_connection",
+        value="ssh user1@45.151.30.146",
+        fact_type="infrastructure",
+        confidence=1.0,
+        source="explicit",
+        updated="2026-03-07",
+        mode="append",
     )
 
     context = manager.build_context("continue commit push workflow")
@@ -86,11 +81,12 @@ def test_build_context_groups_relevant_facts_by_type(tmp_path: Path) -> None:
     assert "feature_apply_commit_push_verify_preference" in context
 
 
-def test_build_instructions_require_direct_yaml_edit() -> None:
+def test_build_instructions_require_sql_memory_manager() -> None:
     manager = MemoryManager(Path("memory"))
     instructions = manager.build_instructions()
 
-    assert "no bash/cat/sed/awk" in instructions
+    assert "memory-manager tool" in instructions
+    assert "no YAML profile file" in instructions
     assert "Allowed fact types:" in instructions
 
 
@@ -199,6 +195,23 @@ def test_upsert_append_and_replace_modes(tmp_path: Path) -> None:
     with_deleted = manager.list_facts(fact_type="operation", include_deleted=True)
     deleted_versions = [f for f in with_deleted if f["key"] == "environment" and f["status"] == "deleted"]
     assert len(deleted_versions) >= 1
+
+
+def test_memory_facts_hard_delete_is_blocked(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    manager.upsert_fact(
+        key="sql_guard_check",
+        value="must_soft_delete_only",
+        fact_type="workflow",
+        mode="replace",
+    )
+
+    con = manager._connect()  # noqa: SLF001
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute("DELETE FROM memory_facts")
+    finally:
+        con.close()
 
 
 def test_worklog_links_summary_to_commit_and_files(tmp_path: Path) -> None:

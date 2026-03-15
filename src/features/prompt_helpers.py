@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import yaml
-
 from .. import config
+from ..memory import MemoryManager
 
 
 def truncate_label(text: str, max_len: int = 52) -> str:
@@ -26,16 +25,11 @@ def inject_tool_request(prompt_text: str, tool_name: str) -> str:
 
 
 def default_timezone_name() -> str:
-    profile_path = config.MEMORY_DIR / "user_profile.yaml"
     try:
-        data = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
-        prefs = data.get("preferences") or {}
-        tz_name = prefs.get("timezone")
-        if isinstance(tz_name, str) and tz_name.strip():
-            return tz_name.strip()
+        manager = MemoryManager(config.MEMORY_DIR)
+        return manager.get_timezone(default="UTC")
     except Exception:
-        pass
-    return "UTC"
+        return "UTC"
 
 
 def strip_markdown_code_fence(text: str) -> str:

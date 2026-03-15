@@ -1,12 +1,10 @@
 """Persistent memory system for the Telegram Claude bot.
 
-Global memory stored as:
-  {MEMORY_DIR}/user_profile.yaml  — core profile + semantic facts (Claude edits directly)
-  {MEMORY_DIR}/episodes.db        — episodic memory (SQLite with FTS5)
+Global memory is stored in SQLite at:
+  {MEMORY_DIR}/episodes.db
 
-Memory context is injected as XML before each user message. Claude updates
-user_profile.yaml via its built-in file tools. Episodic memory is managed
-by Python (REFLECT on /new, RECALL via FTS5 search).
+Memory context is injected as XML before each user message. Semantic facts,
+core profile values, episodic summaries, and worklog links are all SQL-backed.
 """
 
 import json
@@ -17,8 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
-
-from . import config
 
 logger = logging.getLogger(__name__)
 
@@ -89,29 +85,6 @@ _FACT_TYPE_PRIORITY = {
     "misc": 9,
 }
 
-_PROFILE_TEMPLATE = """\
-# User profile and semantic memory.
-# Claude: update this file when you learn about the user.
-name: null
-preferences:
-  communication_style: null
-  timezone: null
-  languages: []
-fact_types:
-  identity: Stable personal details (family, role, location, birthdays).
-  preference: User preferences and defaults.
-  workflow: Execution and delivery workflow constraints.
-  infrastructure: Servers, domains, ports, deployment topology.
-  communication: Messaging/channel behavior and language rules.
-  project: Project-specific goals, repositories, architecture decisions.
-  operation: Current operational state and runtime constraints.
-  tooling: Tools, providers, integrations, CLI preferences.
-  schedule: Timing, intervals, and recurring cadence rules.
-  misc: Other useful context not fitting other types.
-facts: []
-# Each fact: {key: str, value: str, type: one of fact_types, confidence: 0.0-1.0, source: explicit|inferred, updated: YYYY-MM-DD, status: active|deleted, deleted_at: YYYY-MM-DD|null}
-"""
-
 _EPISODES_SCHEMA = """\
 CREATE TABLE IF NOT EXISTS episodes (
     id INTEGER PRIMARY KEY,
@@ -177,11 +150,78 @@ CREATE TABLE IF NOT EXISTS worklog_files (
 );
 """
 
+_MEMORY_FACTS_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    type TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    source TEXT NOT NULL,
+    updated TEXT NOT NULL,
+    status TEXT NOT NULL,
+    deleted_at TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+_MEMORY_PROFILE_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS memory_profile (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    value TEXT NOT NULL,
+    updated TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
 _WORKLOG_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_worklog_sessions_scope ON worklog_sessions(scope_key, session_id, started_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_worklog_sessions_episode ON worklog_sessions(episode_id)",
     "CREATE INDEX IF NOT EXISTS idx_worklog_commits_session ON worklog_commits(worklog_session_id, committed_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_worklog_files_commit ON worklog_files(worklog_commit_id)",
+]
+
+_MEMORY_FACTS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_memory_facts_status_type_updated ON memory_facts(status, type, updated DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_facts_key_status_updated ON memory_facts(key, status, updated DESC)",
+]
+
+_MEMORY_PROFILE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_memory_profile_key_updated ON memory_profile(key, updated DESC)",
+]
+
+_DELETE_GUARD_TRIGGERS = [
+    """\
+CREATE TRIGGER IF NOT EXISTS episodes_no_delete BEFORE DELETE ON episodes BEGIN
+    SELECT RAISE(ABORT, 'Hard delete is forbidden for persistent memory episodes.');
+END;
+""",
+    """\
+CREATE TRIGGER IF NOT EXISTS worklog_sessions_no_delete BEFORE DELETE ON worklog_sessions BEGIN
+    SELECT RAISE(ABORT, 'Hard delete is forbidden for persistent memory worklog sessions.');
+END;
+""",
+    """\
+CREATE TRIGGER IF NOT EXISTS worklog_commits_no_delete BEFORE DELETE ON worklog_commits BEGIN
+    SELECT RAISE(ABORT, 'Hard delete is forbidden for persistent memory worklog commits.');
+END;
+""",
+    """\
+CREATE TRIGGER IF NOT EXISTS worklog_files_no_delete BEFORE DELETE ON worklog_files BEGIN
+    SELECT RAISE(ABORT, 'Hard delete is forbidden for persistent memory worklog files.');
+END;
+""",
+    """\
+CREATE TRIGGER IF NOT EXISTS memory_facts_no_delete BEFORE DELETE ON memory_facts BEGIN
+    SELECT RAISE(ABORT, 'Hard delete is forbidden for persistent memory facts.');
+END;
+""",
+    """\
+CREATE TRIGGER IF NOT EXISTS memory_profile_no_delete BEFORE DELETE ON memory_profile BEGIN
+    SELECT RAISE(ABORT, 'Hard delete is forbidden for persistent memory profile.');
+END;
+""",
 ]
 
 # Triggers to keep FTS index in sync with episodes table
@@ -210,22 +250,17 @@ END;
 
 
 class MemoryManager:
-    """Global memory manager with YAML profile + SQLite episodic storage."""
+    """Global SQL-backed memory manager."""
 
     def __init__(self, memory_dir: Path) -> None:
         self._dir = memory_dir
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._profile_path = self._dir / "user_profile.yaml"
+        self._legacy_profile_path = self._dir / "user_profile.yaml"
         self._db_path = self._dir / "episodes.db"
-
-        # Seed profile template if missing
-        if not self._profile_path.exists():
-            self._profile_path.write_text(_PROFILE_TEMPLATE, encoding="utf-8")
-
-        self._ensure_profile_schema()
 
         # Init SQLite
         self._init_db()
+        self._migrate_legacy_profile_yaml()
 
     def _init_db(self) -> None:
         """Create episodes table and FTS5 index if they don't exist."""
@@ -236,9 +271,17 @@ class MemoryManager:
             con.execute(_WORKLOG_SESSIONS_SCHEMA)
             con.execute(_WORKLOG_COMMITS_SCHEMA)
             con.execute(_WORKLOG_FILES_SCHEMA)
+            con.execute(_MEMORY_FACTS_SCHEMA)
+            con.execute(_MEMORY_PROFILE_SCHEMA)
             for trigger in _FTS_TRIGGERS:
                 con.execute(trigger)
+            for trigger in _DELETE_GUARD_TRIGGERS:
+                con.execute(trigger)
             for statement in _WORKLOG_INDEXES:
+                con.execute(statement)
+            for statement in _MEMORY_FACTS_INDEXES:
+                con.execute(statement)
+            for statement in _MEMORY_PROFILE_INDEXES:
                 con.execute(statement)
             con.commit()
         finally:
@@ -255,32 +298,7 @@ class MemoryManager:
         if not self._db_path.exists():
             self._init_db()
 
-    def _ensure_profile_schema(self) -> None:
-        """Normalize profile format so facts always have a memory type."""
-        data = self._load_profile()
-        normalized, changed = self._normalize_profile(data)
-        if changed:
-            self._profile_path.parent.mkdir(parents=True, exist_ok=True)
-            self._profile_path.write_text(
-                yaml.safe_dump(normalized, sort_keys=False, allow_unicode=True),
-                encoding="utf-8",
-            )
-
-    def _save_profile(self, data: dict) -> None:
-        self._profile_path.parent.mkdir(parents=True, exist_ok=True)
-        self._profile_path.write_text(
-            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
-
-    def _load_profile(self) -> dict:
-        try:
-            return yaml.safe_load(self._profile_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            logger.debug("Could not read user_profile.yaml")
-            return {}
-
-    def _normalize_profile(self, data: dict) -> tuple[dict, bool]:
+    def _normalize_legacy_profile(self, data: dict) -> tuple[dict, bool]:
         changed = False
         normalized = dict(data or {})
 
@@ -362,6 +380,122 @@ class MemoryManager:
             changed = True
 
         return normalized, changed
+
+    def _set_profile_value(self, key: str, value: str) -> None:
+        self._ensure_storage()
+        now = self._today_utc()
+        con = self._connect()
+        try:
+            with con:
+                con.execute(
+                    """
+                    INSERT INTO memory_profile (key, value, updated, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated = excluded.updated
+                    """,
+                    (key, value, now, self._now_utc_iso()),
+                )
+        finally:
+            con.close()
+
+    def _load_profile_from_sql(self) -> dict:
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute(
+                "SELECT key, value FROM memory_profile ORDER BY id ASC"
+            ).fetchall()
+        finally:
+            con.close()
+
+        profile: dict[str, object] = {
+            "name": None,
+            "preferences": {
+                "communication_style": None,
+                "timezone": None,
+                "languages": [],
+            },
+            "fact_types": dict(_FACT_TYPE_HINTS),
+        }
+        prefs = profile["preferences"]
+        assert isinstance(prefs, dict)
+        for row in rows:
+            key = str(row["key"])
+            value = str(row["value"])
+            if key == "name":
+                profile["name"] = value
+            elif key == "communication_style":
+                prefs["communication_style"] = value
+            elif key == "timezone":
+                prefs["timezone"] = value
+            elif key == "languages":
+                parsed = self._decode_json_list(value)
+                prefs["languages"] = parsed
+        return profile
+
+    def _migrate_legacy_profile_yaml(self) -> None:
+        if not self._legacy_profile_path.exists():
+            return
+        try:
+            raw = yaml.safe_load(self._legacy_profile_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            logger.debug("Could not parse legacy user_profile.yaml")
+            return
+
+        data, _ = self._normalize_legacy_profile(raw)
+        name = data.get("name")
+        if isinstance(name, str) and name.strip():
+            self._set_profile_value("name", name.strip())
+        prefs = data.get("preferences") or {}
+        if isinstance(prefs, dict):
+            communication_style = prefs.get("communication_style")
+            if isinstance(communication_style, str) and communication_style.strip():
+                self._set_profile_value("communication_style", communication_style.strip())
+            timezone_name = prefs.get("timezone")
+            if isinstance(timezone_name, str) and timezone_name.strip():
+                self._set_profile_value("timezone", timezone_name.strip())
+            languages = prefs.get("languages")
+            if isinstance(languages, list) and languages:
+                self._set_profile_value("languages", json.dumps([str(item) for item in languages]))
+
+        for fact in data.get("facts") or []:
+            if not isinstance(fact, dict):
+                continue
+            key = str(fact.get("key", "")).strip()
+            value = str(fact.get("value", "")).strip()
+            if not key:
+                continue
+            fact_type = str(fact.get("type", "misc")).strip().lower()
+            if fact_type not in _FACT_TYPES:
+                fact_type = self._infer_fact_type(key, value)
+            confidence = self._normalize_confidence(fact.get("confidence", 1.0))
+            source = str(fact.get("source", "inferred"))
+            if source not in {"explicit", "inferred"}:
+                source = "inferred"
+            updated = str(fact.get("updated") or self._today_utc())
+            status = str(fact.get("status", "active")).strip().lower()
+            if status not in {"active", "deleted"}:
+                status = "active"
+            deleted_at = str(fact.get("deleted_at") or self._today_utc()) if status == "deleted" else None
+            self._upsert_fact_exact(
+                key=key,
+                value=value,
+                fact_type=fact_type,
+                confidence=confidence,
+                source=source,
+                updated=updated,
+                status=status,
+                deleted_at=deleted_at,
+            )
+
+        try:
+            self._legacy_profile_path.unlink()
+            logger.info("Migrated legacy user_profile.yaml to SQL and removed the YAML file.")
+        except OSError:
+            logger.warning("Migrated legacy profile, but failed to remove user_profile.yaml")
 
     def _normalize_confidence(self, value: object) -> float:
         try:
@@ -479,28 +613,126 @@ class MemoryManager:
             lines.extend(buckets[fact_type])
         return lines
 
+    @staticmethod
+    def _row_to_fact(row: sqlite3.Row) -> dict:
+        return {
+            "key": row["key"],
+            "value": row["value"],
+            "type": row["type"],
+            "confidence": float(row["confidence"]),
+            "source": row["source"],
+            "updated": row["updated"],
+            "status": row["status"],
+            "deleted_at": row["deleted_at"],
+        }
+
+    def _all_sql_facts(self) -> list[dict]:
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute(
+                """
+                SELECT key, value, type, confidence, source, updated, status, deleted_at
+                FROM memory_facts
+                ORDER BY id ASC
+                """
+            ).fetchall()
+            return [self._row_to_fact(row) for row in rows]
+        finally:
+            con.close()
+
+    def _upsert_fact_exact(
+        self,
+        *,
+        key: str,
+        value: str,
+        fact_type: str,
+        confidence: float,
+        source: str,
+        updated: str,
+        status: str,
+        deleted_at: str | None,
+    ) -> None:
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            with con:
+                existing = con.execute(
+                    """
+                    SELECT id
+                    FROM memory_facts
+                    WHERE key = ? AND value = ? AND status = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (key, value, status),
+                ).fetchone()
+                if existing is not None:
+                    con.execute(
+                        """
+                        UPDATE memory_facts
+                        SET type = ?, confidence = ?, source = ?, updated = ?, deleted_at = ?
+                        WHERE id = ?
+                        """,
+                        (fact_type, confidence, source, updated, deleted_at, int(existing["id"])),
+                    )
+                else:
+                    con.execute(
+                        """
+                        INSERT INTO memory_facts (
+                            key, value, type, confidence, source, updated, status, deleted_at, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (key, value, fact_type, confidence, source, updated, status, deleted_at, self._now_utc_iso()),
+                    )
+                if status == "deleted":
+                    con.execute(
+                        """
+                        UPDATE memory_facts
+                        SET status = 'deleted',
+                            deleted_at = COALESCE(deleted_at, ?),
+                            updated = ?
+                        WHERE key = ? AND value = ? AND status = 'active'
+                        """,
+                        (deleted_at or self._today_utc(), updated, key, value),
+                    )
+        finally:
+            con.close()
+
     def list_facts(
         self,
         fact_type: str | None = None,
         min_confidence: float = 0.0,
         include_deleted: bool = False,
     ) -> list[dict]:
-        """Return normalized facts optionally filtered by type and confidence."""
-        raw = self._load_profile()
-        data, changed = self._normalize_profile(raw)
-        if changed:
-            self._save_profile(data)
-        facts = data.get("facts") or []
-        selected = [
-            fact for fact in facts
-            if isinstance(fact, dict) and float(fact.get("confidence", 0.0)) >= min_confidence
-        ]
-        if not include_deleted:
-            selected = [fact for fact in selected if self._is_active_fact(fact)]
-        if fact_type:
-            wanted = fact_type.strip().lower()
-            selected = [fact for fact in selected if str(fact.get("type", "")).lower() == wanted]
-        return selected
+        """Return facts from SQL storage, optionally filtered by type and confidence."""
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            clauses = ["confidence >= ?"]
+            params: list[object] = [float(min_confidence)]
+            if not include_deleted:
+                clauses.append("status = 'active'")
+            if fact_type:
+                clauses.append("LOWER(type) = ?")
+                params.append(fact_type.strip().lower())
+            where = " AND ".join(clauses) if clauses else "1=1"
+            rows = con.execute(
+                f"""
+                SELECT key, value, type, confidence, source, updated, status, deleted_at
+                FROM memory_facts
+                WHERE {where}
+                ORDER BY updated DESC, id DESC
+                """,
+                params,
+            ).fetchall()
+            return [self._row_to_fact(row) for row in rows]
+        finally:
+            con.close()
 
     def upsert_fact(
         self,
@@ -526,9 +758,6 @@ class MemoryManager:
         if normalized_mode not in {"replace", "append"}:
             raise ValueError("Unsupported mode. Use 'replace' or 'append'.")
 
-        raw = self._load_profile()
-        data, changed = self._normalize_profile(raw)
-        facts = data.get("facts") or []
         target = {
             "key": clean_key,
             "value": clean_value,
@@ -539,39 +768,82 @@ class MemoryManager:
             "status": "active",
             "deleted_at": None,
         }
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            with con:
+                exact = con.execute(
+                    """
+                    SELECT id
+                    FROM memory_facts
+                    WHERE key = ? AND value = ? AND status = 'active'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (clean_key, clean_value),
+                ).fetchone()
 
-        active_indexes = [
-            idx
-            for idx, fact in enumerate(facts)
-            if str(fact.get("key", "")).strip() == clean_key and self._is_active_fact(fact)
-        ]
-        exact_index = next(
-            (
-                idx for idx in active_indexes
-                if str(facts[idx].get("value", "")).strip() == clean_value
-            ),
-            None,
-        )
+                if normalized_mode == "replace":
+                    if exact is not None:
+                        con.execute(
+                            """
+                            UPDATE memory_facts
+                            SET status = 'deleted',
+                                deleted_at = COALESCE(deleted_at, ?),
+                                updated = ?
+                            WHERE key = ? AND status = 'active' AND id != ?
+                            """,
+                            (self._today_utc(), self._today_utc(), clean_key, int(exact["id"])),
+                        )
+                    else:
+                        con.execute(
+                            """
+                            UPDATE memory_facts
+                            SET status = 'deleted',
+                                deleted_at = COALESCE(deleted_at, ?),
+                                updated = ?
+                            WHERE key = ? AND status = 'active'
+                            """,
+                            (self._today_utc(), self._today_utc(), clean_key),
+                        )
 
-        if exact_index is not None:
-            facts[exact_index] = target
-        elif normalized_mode == "append":
-            facts.append(target)
-        elif active_indexes:
-            keep_idx = active_indexes[0]
-            facts[keep_idx] = target
-            deleted_on = self._today_utc()
-            for idx in active_indexes[1:]:
-                facts[idx]["status"] = "deleted"
-                facts[idx]["deleted_at"] = deleted_on
-                facts[idx]["updated"] = deleted_on
-        else:
-            facts.append(target)
-        data["facts"] = facts
-        self._save_profile(data)
+                if exact is not None:
+                    con.execute(
+                        """
+                        UPDATE memory_facts
+                        SET type = ?, confidence = ?, source = ?, updated = ?, status = 'active', deleted_at = NULL
+                        WHERE id = ?
+                        """,
+                        (
+                            target["type"],
+                            target["confidence"],
+                            target["source"],
+                            target["updated"],
+                            int(exact["id"]),
+                        ),
+                    )
+                else:
+                    con.execute(
+                        """
+                        INSERT INTO memory_facts (
+                            key, value, type, confidence, source, updated, status, deleted_at, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, 'active', NULL, ?)
+                        """,
+                        (
+                            target["key"],
+                            target["value"],
+                            target["type"],
+                            target["confidence"],
+                            target["source"],
+                            target["updated"],
+                            self._now_utc_iso(),
+                        ),
+                    )
+        finally:
+            con.close()
         logger.info("Upserted memory fact key=%s type=%s mode=%s", clean_key, final_type, normalized_mode)
-        if changed:
-            logger.debug("Profile schema normalized while upserting fact key=%s", clean_key)
         return target
 
     def delete_fact(self, key: str, value: str | None = None) -> bool:
@@ -580,48 +852,74 @@ class MemoryManager:
         if not clean_key:
             return False
         clean_value = value.strip() if value else None
-        raw = self._load_profile()
-        data, changed = self._normalize_profile(raw)
-        facts = data.get("facts") or []
-        removed = False
+        self._ensure_storage()
         deleted_on = self._today_utc()
-        for fact in facts:
-            if not isinstance(fact, dict):
-                continue
-            if str(fact.get("key", "")).strip() != clean_key:
-                continue
-            if clean_value is not None and str(fact.get("value", "")).strip() != clean_value:
-                continue
-            if not self._is_active_fact(fact):
-                continue
-            fact["status"] = "deleted"
-            fact["deleted_at"] = deleted_on
-            fact["updated"] = deleted_on
-            removed = True
-        if removed or changed:
-            data["facts"] = facts
-            self._save_profile(data)
+        con = self._connect()
+        try:
+            with con:
+                if clean_value is None:
+                    cursor = con.execute(
+                        """
+                        UPDATE memory_facts
+                        SET status = 'deleted', deleted_at = COALESCE(deleted_at, ?), updated = ?
+                        WHERE key = ? AND status = 'active'
+                        """,
+                        (deleted_on, deleted_on, clean_key),
+                    )
+                else:
+                    cursor = con.execute(
+                        """
+                        UPDATE memory_facts
+                        SET status = 'deleted', deleted_at = COALESCE(deleted_at, ?), updated = ?
+                        WHERE key = ? AND value = ? AND status = 'active'
+                        """,
+                        (deleted_on, deleted_on, clean_key, clean_value),
+                    )
+                removed = cursor.rowcount > 0
+        finally:
+            con.close()
         if removed:
             logger.info("Soft-deleted memory fact key=%s", clean_key)
         return removed
 
     def reclassify_facts(self) -> int:
         """Recompute fact types using inference rules; return changed count."""
-        raw = self._load_profile()
-        data, changed = self._normalize_profile(raw)
-        facts = data.get("facts") or []
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
         updated_count = 0
-        for fact in facts:
-            if not isinstance(fact, dict):
-                continue
-            inferred = self._infer_fact_type(str(fact.get("key", "")), str(fact.get("value", "")))
-            if fact.get("type") != inferred:
-                fact["type"] = inferred
-                updated_count += 1
-        if updated_count or changed:
-            data["facts"] = facts
-            self._save_profile(data)
+        try:
+            with con:
+                rows = con.execute(
+                    "SELECT id, key, value, type FROM memory_facts ORDER BY id ASC"
+                ).fetchall()
+                for row in rows:
+                    inferred = self._infer_fact_type(str(row["key"]), str(row["value"]))
+                    if str(row["type"]) != inferred:
+                        con.execute(
+                            "UPDATE memory_facts SET type = ? WHERE id = ?",
+                            (inferred, int(row["id"])),
+                        )
+                        updated_count += 1
+        finally:
+            con.close()
         return updated_count
+
+    def get_timezone(self, default: str = "UTC") -> str:
+        profile = self._load_profile_from_sql()
+        prefs = profile.get("preferences") or {}
+        if isinstance(prefs, dict):
+            tz_name = prefs.get("timezone")
+            if isinstance(tz_name, str) and tz_name.strip():
+                return tz_name.strip()
+        candidates = self.list_facts(min_confidence=0.0, include_deleted=False)
+        for fact in candidates:
+            key = str(fact.get("key", "")).strip().lower()
+            if key in {"timezone", "user_timezone", "preferred_timezone"}:
+                value = str(fact.get("value", "")).strip()
+                if value:
+                    return value
+        return default
 
     # ── Context building ─────────────────────────────────────
 
@@ -632,11 +930,7 @@ class MemoryManager:
         """
         sections: list[str] = []
 
-        # Core + Semantic from YAML
-        raw_data = self._load_profile()
-        data, changed = self._normalize_profile(raw_data)
-        if changed:
-            self._save_profile(data)
+        data = self._load_profile_from_sql()
 
         # Core profile
         core_lines: list[str] = []
@@ -653,13 +947,7 @@ class MemoryManager:
             sections.append("<core>\n" + "\n".join(core_lines) + "\n</core>")
 
         # Semantic facts (confidence >= 0.6)
-        facts = data.get("facts") or []
-        high_conf = [
-            f for f in facts
-            if isinstance(f, dict)
-            and self._is_active_fact(f)
-            and float(f.get("confidence", 1.0)) >= 0.6
-        ]
+        high_conf = self.list_facts(min_confidence=0.6, include_deleted=False)
         if high_conf:
             selected = self._select_relevant_facts(high_conf, user_message, limit=24)
             lines = self._format_facts_by_type(selected)
@@ -677,14 +965,12 @@ class MemoryManager:
         return "<memory>\n" + "\n".join(sections) + "\n</memory>"
 
     def build_instructions(self) -> str:
-        """Return memory_instructions block with absolute file path."""
-        abs_path = self._profile_path.resolve()
+        """Return memory_instructions block for SQL-backed facts."""
         return (
             "\n<memory_instructions>\n"
-            f"You have persistent memory. Your profile + facts file:\n"
-            f"  {abs_path}\n"
+            "You have persistent memory. Facts are stored in SQL (no YAML profile file).\n"
+            "Use the memory-manager tool to list/upsert/delete/reclassify facts.\n"
             "Update it when you learn something worth remembering about the user.\n"
-            "Edit YAML directly (no bash/cat/sed/awk for memory updates).\n"
             "Use fact schema: key, value, type, confidence, source, updated, status, deleted_at.\n"
             f"Allowed fact types: {', '.join(_FACT_TYPES)}.\n"
             "Do NOT update memory on every message — only when you learn something new.\n"
@@ -1334,12 +1620,29 @@ class MemoryManager:
         self._ensure_storage()
         parts: list[str] = []
 
-        # Profile
-        if self._profile_path.exists():
-            content = self._profile_path.read_text().strip()
-            parts.append(f"<b>user_profile.yaml</b>\n<pre>{content}</pre>")
+        profile = self._load_profile_from_sql()
+        profile_lines: list[str] = []
+        if profile.get("name"):
+            profile_lines.append(f"name: {profile['name']}")
+        prefs = profile.get("preferences") or {}
+        if isinstance(prefs, dict):
+            if prefs.get("communication_style"):
+                profile_lines.append(f"communication_style: {prefs['communication_style']}")
+            if prefs.get("timezone"):
+                profile_lines.append(f"timezone: {prefs['timezone']}")
+            if prefs.get("languages"):
+                profile_lines.append(f"languages: {', '.join(prefs['languages'])}")
+        if profile_lines:
+            parts.append("<b>Profile (SQL)</b>\n<pre>" + "\n".join(profile_lines) + "</pre>")
         else:
-            parts.append("<b>user_profile.yaml</b>\n<i>(not created yet)</i>")
+            parts.append("<b>Profile (SQL)</b>\n<i>(none yet)</i>")
+
+        facts = self.list_facts(min_confidence=0.0, include_deleted=True)[:50]
+        if facts:
+            fact_lines = [f"- [{f['status']}] {f['type']}: {f['key']} = {f['value']}" for f in facts]
+            parts.append("<b>Facts</b> (latest 50)\n<pre>" + "\n".join(fact_lines) + "</pre>")
+        else:
+            parts.append("<b>Facts</b>\n<i>(none yet)</i>")
 
         # Episodes
         con = self._connect()
@@ -1358,20 +1661,3 @@ class MemoryManager:
             parts.append("<b>Episodes</b>\n<i>(none yet)</i>")
 
         return "\n\n".join(parts)
-
-    def clear(self) -> None:
-        """Reset all memory to defaults."""
-        self._ensure_storage()
-        self._profile_path.write_text(_PROFILE_TEMPLATE)
-        con = self._connect()
-        try:
-            con.execute("DELETE FROM episodes")
-            con.execute("DELETE FROM worklog_files")
-            con.execute("DELETE FROM worklog_commits")
-            con.execute("DELETE FROM worklog_sessions")
-            # Rebuild FTS index
-            con.execute("INSERT INTO episodes_fts(episodes_fts) VALUES ('rebuild')")
-            con.commit()
-        finally:
-            con.close()
-        logger.info("All memory cleared")

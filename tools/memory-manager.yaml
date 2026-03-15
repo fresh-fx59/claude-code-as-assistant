@@ -13,7 +13,7 @@ triggers:
 instructions: |
   # Memory Manager
 
-  Use this tool for structured edits of `memory/user_profile.yaml`.
+  Use this tool for structured edits of persistent memory facts (SQL-backed).
   Prefer this tool over manual `bash` parsing commands.
 
   Command:
@@ -22,7 +22,7 @@ instructions: |
   Subcommands:
   - `list --type <fact_type> --min-confidence 0.6 [--include-deleted]`
   - `upsert --key <key> --value <value> --type <fact_type> --mode replace|append --confidence 1.0 --source explicit`
-  - `delete --key <key> [--value <value>]` (soft-delete)
+  - `delete --key <key> [--value <value>]` (soft-delete only; hard delete is forbidden)
   - `reclassify`
 
   Fact schema:

@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone as tz
 from typing import Any, Callable
 
-import yaml
+from ..memory import MemoryManager
 
 
 async def cmd_start(
@@ -22,9 +22,7 @@ async def cmd_start(
 
     user_tz = None
     try:
-        data = yaml.safe_load((config.MEMORY_DIR / "user_profile.yaml"))
-        prefs = data.get("preferences", {})
-        user_tz = prefs.get("timezone")
+        user_tz = MemoryManager(config.MEMORY_DIR).get_timezone(default="UTC")
     except Exception:
         pass
 
