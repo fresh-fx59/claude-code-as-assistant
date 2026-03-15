@@ -349,9 +349,49 @@ async def test_internal_metrics_collects_route_status_counters(tmp_path: Path) -
         metrics = await client.get("/internal/metrics")
         payload = await metrics.json()
         counters = payload["counters"]
+        persistent = payload["persistent_counters"]
 
         assert counters["GET /health 2xx"] >= 1
         assert counters["GET /v1/accounts/missing 4xx"] >= 1
+        assert persistent["GET /health 2xx"] >= 1
+        assert persistent["GET /v1/accounts/missing 4xx"] >= 1
+    finally:
+        await client.close()
+        await server.close()
+
+
+async def test_internal_metrics_persistent_survives_app_restart(tmp_path: Path) -> None:
+    _, server1, client1 = await _client(tmp_path)
+    try:
+        resp = await client1.get("/health")
+        assert resp.status == 200
+    finally:
+        await client1.close()
+        await server1.close()
+
+    _, server2, client2 = await _client(tmp_path)
+    try:
+        metrics = await client2.get("/internal/metrics")
+        payload = await metrics.json()
+        assert payload["persistent_counters"]["GET /health 2xx"] >= 1
+    finally:
+        await client2.close()
+        await server2.close()
+
+
+async def test_prometheus_metrics_endpoint_exports_counter_lines(tmp_path: Path) -> None:
+    _, server, client = await _client(tmp_path)
+    try:
+        ok = await client.get("/health")
+        assert ok.status == 200
+        prom = await client.get("/internal/metrics/prometheus")
+        body = await prom.text()
+        assert prom.status == 200
+        assert "gmail_gateway_requests_total" in body
+        assert 'method="GET"' in body
+        assert 'path="/health"' in body
+        assert 'status_class="2xx"' in body
+        assert 'source="persistent"' in body
     finally:
         await client.close()
         await server.close()

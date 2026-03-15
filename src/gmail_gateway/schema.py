@@ -14,6 +14,7 @@ REQUIRED_TABLES: tuple[str, ...] = (
     "gateway_sync_cursors",
     "gateway_delivery_receipts",
     "gateway_idempotency_records",
+    "gateway_metrics_counters",
 )
 
 

@@ -13,6 +13,7 @@ from .. import config
 from .auth_store import AuthStore
 from .gmail_api import GmailApiClient, GmailApiError
 from .message_store import MessageStore
+from .metrics_store import PersistentMetricsStore
 from .models import ErrorCode, ErrorEnvelope
 from .observability import GatewayObservability
 from .sync_store import SyncStore
@@ -24,6 +25,10 @@ MESSAGE_STORE_KEY: web.AppKey[MessageStore] = web.AppKey("message_store", Messag
 SYNC_STORE_KEY: web.AppKey[SyncStore] = web.AppKey("sync_store", SyncStore)
 GMAIL_API_KEY: web.AppKey[GmailApiClient] = web.AppKey("gmail_api", GmailApiClient)
 OBS_KEY: web.AppKey[GatewayObservability] = web.AppKey("observability", GatewayObservability)
+PERSISTENT_OBS_KEY: web.AppKey[PersistentMetricsStore] = web.AppKey(
+    "persistent_observability",
+    PersistentMetricsStore,
+)
 
 
 def _error_response(
@@ -50,7 +55,46 @@ async def _health(_: web.Request) -> web.Response:
 
 
 async def _metrics(request: web.Request) -> web.Response:
-    return web.json_response({"counters": request.app[OBS_KEY].snapshot()})
+    return web.json_response(
+        {
+            "counters": request.app[OBS_KEY].snapshot(),
+            "persistent_counters": request.app[PERSISTENT_OBS_KEY].snapshot(),
+        }
+    )
+
+
+def _escape_label_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _to_prometheus(counter_map: dict[str, int], *, source: str) -> str:
+    lines = [
+        "# HELP gmail_gateway_requests_total Total processed gateway HTTP requests",
+        "# TYPE gmail_gateway_requests_total counter",
+    ]
+    for key, count in sorted(counter_map.items()):
+        parts = key.split(" ", maxsplit=2)
+        if len(parts) != 3:
+            continue
+        method, path, status_class = parts
+        lines.append(
+            "gmail_gateway_requests_total"
+            "{method=\"%s\",path=\"%s\",status_class=\"%s\",source=\"%s\"} %d"
+            % (
+                _escape_label_value(method),
+                _escape_label_value(path),
+                _escape_label_value(status_class),
+                _escape_label_value(source),
+                count,
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+async def _metrics_prometheus(request: web.Request) -> web.Response:
+    persistent = request.app[PERSISTENT_OBS_KEY].snapshot()
+    body = _to_prometheus(persistent, source="persistent")
+    return web.Response(text=body, content_type="text/plain")
 
 
 @web.middleware
@@ -60,7 +104,9 @@ async def _observability_middleware(request: web.Request, handler):
     except web.HTTPException as exc:
         bucket = f"{exc.status // 100}xx"
         route = request.path
-        request.app[OBS_KEY].inc(f"{request.method} {route} {bucket}")
+        metric_key = f"{request.method} {route} {bucket}"
+        request.app[OBS_KEY].inc(metric_key)
+        request.app[PERSISTENT_OBS_KEY].inc(metric_key)
         logger.info(
             "gmail_gateway_request method=%s path=%s status=%s",
             request.method,
@@ -70,7 +116,9 @@ async def _observability_middleware(request: web.Request, handler):
         raise
     except Exception:
         route = request.path
-        request.app[OBS_KEY].inc(f"{request.method} {route} 5xx")
+        metric_key = f"{request.method} {route} 5xx"
+        request.app[OBS_KEY].inc(metric_key)
+        request.app[PERSISTENT_OBS_KEY].inc(metric_key)
         logger.exception(
             "gmail_gateway_request method=%s path=%s status=500",
             request.method,
@@ -79,7 +127,9 @@ async def _observability_middleware(request: web.Request, handler):
         raise
     bucket = f"{response.status // 100}xx"
     route = request.path
-    request.app[OBS_KEY].inc(f"{request.method} {route} {bucket}")
+    metric_key = f"{request.method} {route} {bucket}"
+    request.app[OBS_KEY].inc(metric_key)
+    request.app[PERSISTENT_OBS_KEY].inc(metric_key)
     logger.info(
         "gmail_gateway_request method=%s path=%s status=%s",
         request.method,
@@ -689,10 +739,12 @@ def create_app(*, db_path: Path) -> web.Application:
     app[SYNC_STORE_KEY] = SyncStore(db_path)
     app[GMAIL_API_KEY] = GmailApiClient()
     app[OBS_KEY] = GatewayObservability()
+    app[PERSISTENT_OBS_KEY] = PersistentMetricsStore(db_path)
     app.add_routes(
         [
             web.get("/health", _health),
             web.get("/internal/metrics", _metrics),
+            web.get("/internal/metrics/prometheus", _metrics_prometheus),
             web.get("/v1/accounts/{account_id}", _get_account),
             web.post("/v1/accounts/{account_id}/connect", _connect_account),
             web.post("/v1/accounts/{account_id}/disconnect", _disconnect_account),

@@ -99,3 +99,9 @@ CREATE TABLE IF NOT EXISTS gateway_idempotency_records (
     FOREIGN KEY(account_id) REFERENCES gateway_accounts(account_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_gateway_idempotency_expiry ON gateway_idempotency_records(expires_at);
+
+CREATE TABLE IF NOT EXISTS gateway_metrics_counters (
+    metric_key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

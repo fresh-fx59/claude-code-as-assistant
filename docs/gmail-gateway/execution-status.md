@@ -57,6 +57,12 @@ Last updated: 2026-03-15
      - `/gmail_send`
    - Registered command handlers in bot runtime and Telegram command list.
    - Added focused command-handler tests for gateway runtime path.
+14. Step 6 persistent metrics export slice:
+   - Added sqlite-backed persistent gateway counters (`gateway_metrics_counters`) via `PersistentMetricsStore`.
+   - Extended middleware to update both in-memory and persistent counters.
+   - Extended `GET /internal/metrics` to include both in-memory and persistent snapshots.
+   - Added `GET /internal/metrics/prometheus` text export for Prometheus scraping.
+   - Added restart-survival and export-format tests.
 
 ## Validations Run
 
@@ -66,6 +72,6 @@ Last updated: 2026-03-15
 
 ## Next Slice (auto-continue target)
 
-1. Add persistent metrics export path (Prometheus-style or equivalent) beyond in-process counters.
-2. Add integration tests that hit real Gmail test tenant (stage ladder prerequisite).
-3. Complete migration-stage parity/canary checks in docs + rollout scripts.
+1. Add integration tests that hit real Gmail test tenant (stage ladder prerequisite).
+2. Complete migration-stage parity/canary checks in docs + rollout scripts.
+3. Execute canary checklist and attach rollout evidence in docs.
