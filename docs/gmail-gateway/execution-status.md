@@ -74,17 +74,26 @@ Last updated: 2026-03-15
    - Replaced `/gmail_status` runtime flow with direct `GmailGatewayClient.get_account` usage.
    - Removed runtime dependency on local bootstrap/gog flow for these commands.
    - Updated command contracts/help text to explicit account-based gateway usage.
+17. Step 9 canary guardrails + rollout evidence:
+   - Added explicit guardrail evaluator script:
+     - `scripts/gmail_gateway_canary_guardrails.py`
+   - Added canary checklist and evidence templates:
+     - `docs/gmail-gateway/canary-checklist.md`
+     - `docs/gmail-gateway/canary-evidence.md`
+   - Added guardrail unit tests:
+     - `tests/gmail_gateway/test_canary_guardrails.py`
 
 ## Validations Run
 
 - `pytest -q tests/gmail_gateway` -> 20 passed
 - `pytest -q tests/gmail_gateway/test_real_tenant_integration.py` -> 3 skipped (env-gated)
 - `pytest -q tests/gmail_gateway tests/test_gmail_connect_handlers.py` -> 24 passed, 3 skipped
+- `pytest -q tests/gmail_gateway/test_canary_guardrails.py` -> pass
 - `pytest -q tests/test_gmail_gateway_command_handlers.py` -> pass
 - `python -m compileall -q src/gmail_gateway` -> success
 
 ## Next Slice (auto-continue target)
 
-1. Complete migration-stage parity/canary checks in docs + rollout scripts.
-2. Execute canary checklist and attach rollout evidence in docs.
+1. Execute stage runbook against real tenant and attach captured outputs.
+2. Fill canary evidence with live metrics + decision.
 3. Remove now-unused bootstrap-runtime artifacts once rollout signs off.
