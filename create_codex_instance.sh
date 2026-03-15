@@ -151,6 +151,11 @@ echo "Installing wrapper to $INSTALL_PATH..."
 WRAPPER_CONTENT=$(cat <<EOF
 #!/bin/sh
 export HOME="$TARGET_DIR"
+export XDG_CONFIG_HOME="$USER_HOME/.config"
+export XDG_DATA_HOME="$USER_HOME/.local/share"
+if [ -z "\${GOG_KEYRING_PASSWORD:-}" ] && [ -f "$USER_HOME/iron-lady-assistant/memory/gog_keyring_password.txt" ]; then
+  export GOG_KEYRING_PASSWORD="\$(cat "$USER_HOME/iron-lady-assistant/memory/gog_keyring_password.txt")"
+fi
 exec "$CODEX_BIN" "\$@"
 EOF
 )
