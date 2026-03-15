@@ -63,15 +63,22 @@ Last updated: 2026-03-15
    - Extended `GET /internal/metrics` to include both in-memory and persistent snapshots.
    - Added `GET /internal/metrics/prometheus` text export for Prometheus scraping.
    - Added restart-survival and export-format tests.
+15. Step 7 stage real-tenant integration harness:
+   - Added env-gated real-tenant integration tests:
+     - `tests/gmail_gateway/test_real_tenant_integration.py`
+   - Added stage runbook with env contract and refresh/retry verification steps:
+     - `docs/gmail-gateway/stage-validation.md`
+   - Added optional send/read probes while keeping CI-safe skip behavior when stage env is absent.
 
 ## Validations Run
 
-- `pytest -q tests/gmail_gateway` -> 18 passed
+- `pytest -q tests/gmail_gateway` -> 20 passed
+- `pytest -q tests/gmail_gateway/test_real_tenant_integration.py` -> 3 skipped (env-gated)
 - `pytest -q tests/test_gmail_gateway_command_handlers.py` -> pass
 - `python -m compileall -q src/gmail_gateway` -> success
 
 ## Next Slice (auto-continue target)
 
-1. Add integration tests that hit real Gmail test tenant (stage ladder prerequisite).
-2. Complete migration-stage parity/canary checks in docs + rollout scripts.
-3. Execute canary checklist and attach rollout evidence in docs.
+1. Complete migration-stage parity/canary checks in docs + rollout scripts.
+2. Execute canary checklist and attach rollout evidence in docs.
+3. Decommission remaining direct `gog` runtime dependencies where replaced by gateway flows.
