@@ -11,6 +11,7 @@ empty ``env`` is assumed to be the native Anthropic backend.
 """
 
 import asyncio
+import getpass
 import json
 import logging
 import os
@@ -25,6 +26,27 @@ from watchdog.events import FileSystemEventHandler
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "providers.json"
+
+
+def _normalized_subprocess_path(existing_path: str) -> str:
+    """Return PATH with common user-local bin dirs prepended deterministically."""
+    existing_parts = [part for part in (existing_path or "").split(os.pathsep) if part]
+    user = getpass.getuser()
+    home = Path.home()
+    candidate_parts = [
+        str(home / f".npm-{user}" / "bin"),
+        str(home / ".local" / "bin"),
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    merged_parts: list[str] = []
+    for part in candidate_parts + existing_parts:
+        if not part or part in merged_parts:
+            continue
+        if part.startswith("/usr/") or part == "/bin" or Path(part).is_dir():
+            merged_parts.append(part)
+    return os.pathsep.join(merged_parts)
 
 
 class _ConfigFileWatcher:
@@ -229,5 +251,6 @@ class ProviderManager:
         """Build subprocess environment with provider's env vars applied."""
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)
+        env["PATH"] = _normalized_subprocess_path(env.get("PATH", ""))
         env.update(provider.env)
         return env
