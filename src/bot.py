@@ -861,6 +861,13 @@ def _normalize_step_plan_next_action(state: dict[str, object]) -> dict[str, obje
         return None
     if not prompt or not step_path:
         return None
+    steps, current_index = _step_plan_pending_steps(state)
+    if current_index < 0 or current_index >= len(steps):
+        return None
+    expected_step_path = str(steps[current_index]).strip()
+    if step_index != current_index or step_path != expected_step_path:
+        # Discard stale persisted action when step pointer advanced.
+        return None
     return {
         "type": "continue_step_plan",
         "prompt": prompt,
