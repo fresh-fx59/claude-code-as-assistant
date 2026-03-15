@@ -133,7 +133,7 @@ async def test_due_schedule_with_deliver_marker_submits_delivery_mode(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_due_schedule_preserves_provider_runtime(tmp_path) -> None:
+async def test_due_schedule_normalizes_codex_runtime_to_codex3(tmp_path) -> None:
     stub = _StubTaskManager()
     manager = ScheduleManager(stub, tmp_path / "schedules.db")
     sid = await manager.create_every(
@@ -151,7 +151,7 @@ async def test_due_schedule_preserves_provider_runtime(tmp_path) -> None:
     await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
 
     await manager._run_due_once()  # noqa: SLF001
-    assert stub.submissions[0]["provider_cli"] == "codex2"
+    assert stub.submissions[0]["provider_cli"] == "codex3"
     assert stub.submissions[0]["resume_arg"] == "resume"
     assert stub.submissions[0]["model"] == "gpt-5-codex"
 

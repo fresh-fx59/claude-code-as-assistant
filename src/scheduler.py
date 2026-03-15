@@ -32,6 +32,7 @@ _RATE_LIMIT_ERROR_RE = re.compile(
 _TRY_AGAIN_AT_RE = re.compile(r"try again at\s+(.+?)(?:[.]|$)", re.IGNORECASE)
 _ORDINAL_DAY_RE = re.compile(r"(\d{1,2})(st|nd|rd|th)\b", re.IGNORECASE)
 _NO_UPDATE = object()
+_SCHEDULED_CODEX_PROVIDER_CLI = "codex3"
 
 
 @dataclass(frozen=True)
@@ -252,6 +253,7 @@ class ScheduleManager:
         task_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         next_run = now + timedelta(minutes=interval_minutes)
+        provider_cli, resume_arg = self._normalize_provider_runtime(provider_cli, resume_arg)
         await asyncio.to_thread(
             self._insert_schedule,
             task_id,
@@ -289,6 +291,7 @@ class ScheduleManager:
         task_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         next_run = self._next_daily_run(daily_time=daily_time, timezone_name=timezone_name, now_utc=now)
+        provider_cli, resume_arg = self._normalize_provider_runtime(provider_cli, resume_arg)
         await asyncio.to_thread(
             self._insert_schedule,
             task_id,
@@ -332,6 +335,7 @@ class ScheduleManager:
             timezone_name=timezone_name,
             now_utc=now,
         )
+        provider_cli, resume_arg = self._normalize_provider_runtime(provider_cli, resume_arg)
         await asyncio.to_thread(
             self._insert_schedule,
             task_id,
@@ -539,6 +543,13 @@ class ScheduleManager:
                 (self._render_native_schedule(updated_spec), task_id),
             )
             return True
+
+    @staticmethod
+    def _normalize_provider_runtime(provider_cli: str | None, resume_arg: str | None) -> tuple[str, str | None]:
+        cli_name = (provider_cli or "claude").strip() or "claude"
+        if cli_name.startswith("codex") and cli_name != _SCHEDULED_CODEX_PROVIDER_CLI:
+            return _SCHEDULED_CODEX_PROVIDER_CLI, resume_arg
+        return cli_name, resume_arg
 
     async def _worker_loop(self) -> None:
         while True:
@@ -1274,6 +1285,10 @@ class ScheduleManager:
 
     @staticmethod
     def _row_to_scheduled_task(row: sqlite3.Row) -> ScheduledTask:
+        provider_cli, resume_arg = ScheduleManager._normalize_provider_runtime(
+            row["provider_cli"],
+            row["resume_arg"],
+        )
         return ScheduledTask(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -1287,8 +1302,8 @@ class ScheduleManager:
             weekly_day=row["weekly_day"],
             model=row["model"],
             session_id=row["session_id"],
-            provider_cli=row["provider_cli"] or "claude",
-            resume_arg=row["resume_arg"],
+            provider_cli=provider_cli,
+            resume_arg=resume_arg,
             state=row["state"] or "active",
             misfire_policy=row["misfire_policy"] or "catch_up_one",
             current_run_id=row["current_run_id"],

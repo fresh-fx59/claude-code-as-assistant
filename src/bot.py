@@ -159,6 +159,7 @@ _STEERING_CONFLICT_PATTERNS = (
     (re.compile(r"\b(ignore|disregard)\s+(all|everything|previous|prior)\b", re.IGNORECASE), "broad_override"),
     (re.compile(r"\b(secret|password|token|credential)\b", re.IGNORECASE), "sensitive_data"),
 )
+_SCHEDULED_TASK_PREFERRED_PROVIDER = "codex3"
 
 
 def _thread_id(message: Message) -> int | None:
@@ -781,6 +782,21 @@ def _is_codex_family_cli(cli_name: str | None) -> bool:
     return bool(cli_name and cli_name.lower().startswith("codex"))
 
 
+def _preferred_scheduled_provider(current_provider):
+    preferred = next(
+        (
+            candidate
+            for candidate in provider_manager.providers
+            if getattr(candidate, "name", None) == _SCHEDULED_TASK_PREFERRED_PROVIDER
+            or getattr(candidate, "cli", None) == _SCHEDULED_TASK_PREFERRED_PROVIDER
+        ),
+        None,
+    )
+    if preferred is not None:
+        return preferred
+    return current_provider
+
+
 def _load_step_plan_state() -> dict[str, object]:
     try:
         payload = json.loads(_STEP_PLAN_STATE_PATH.read_text(encoding="utf-8"))
@@ -915,18 +931,20 @@ def _codex_task_model(session: object, provider) -> str:
 
 
 def _scheduled_task_backend(session: object, provider) -> tuple[str, str | None, str, str | None]:
-    if _is_codex_family_cli(getattr(provider, "cli", None)):
+    scheduled_provider = _preferred_scheduled_provider(provider)
+    if _is_codex_family_cli(getattr(scheduled_provider, "cli", None)):
+        model_provider = provider if _is_codex_family_cli(getattr(provider, "cli", None)) else scheduled_provider
         return (
-            _codex_task_model(session, provider),
-            _provider_session_id(session, provider),
-            provider.cli,
-            getattr(provider, "resume_arg", None),
+            _codex_task_model(session, model_provider),
+            getattr(session, "codex_session_id", None),
+            scheduled_provider.cli,
+            getattr(scheduled_provider, "resume_arg", None) or getattr(provider, "resume_arg", None),
         )
     return (
         session.model,
         getattr(session, "claude_session_id", None),
-        getattr(provider, "cli", "claude"),
-        getattr(provider, "resume_arg", None),
+        getattr(scheduled_provider, "cli", "claude"),
+        getattr(scheduled_provider, "resume_arg", None),
     )
 
 
