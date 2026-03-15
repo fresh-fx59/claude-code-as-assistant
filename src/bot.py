@@ -1167,20 +1167,22 @@ async def cmd_tools(message: Message) -> None:
 
 
 @router.message(Command("gmail_connect"))
-async def cmd_gmail_connect(message: Message) -> None:
+async def cmd_gmail_connect(message: Message, command: CommandObject) -> None:
     await _gmail_connect_handlers.cmd_gmail_connect(
         message,
         is_authorized=_is_authorized,
-        thread_id_fn=_thread_id,
+        command_args_fn=_command_args,
+        command=command,
     )
 
 
 @router.message(Command("gmail_status"))
-async def cmd_gmail_status(message: Message) -> None:
+async def cmd_gmail_status(message: Message, command: CommandObject) -> None:
     await _gmail_connect_handlers.cmd_gmail_status(
         message,
         is_authorized=_is_authorized,
-        thread_id_fn=_thread_id,
+        command_args_fn=_command_args,
+        command=command,
     )
 
 

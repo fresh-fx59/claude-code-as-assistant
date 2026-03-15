@@ -69,11 +69,17 @@ Last updated: 2026-03-15
    - Added stage runbook with env contract and refresh/retry verification steps:
      - `docs/gmail-gateway/stage-validation.md`
    - Added optional send/read probes while keeping CI-safe skip behavior when stage env is absent.
+16. Step 8 runtime decommission hardening:
+   - Replaced `/gmail_connect` runtime flow with direct `GmailGatewayClient.connect_account` usage.
+   - Replaced `/gmail_status` runtime flow with direct `GmailGatewayClient.get_account` usage.
+   - Removed runtime dependency on local bootstrap/gog flow for these commands.
+   - Updated command contracts/help text to explicit account-based gateway usage.
 
 ## Validations Run
 
 - `pytest -q tests/gmail_gateway` -> 20 passed
 - `pytest -q tests/gmail_gateway/test_real_tenant_integration.py` -> 3 skipped (env-gated)
+- `pytest -q tests/gmail_gateway tests/test_gmail_connect_handlers.py` -> 24 passed, 3 skipped
 - `pytest -q tests/test_gmail_gateway_command_handlers.py` -> pass
 - `python -m compileall -q src/gmail_gateway` -> success
 
@@ -81,4 +87,4 @@ Last updated: 2026-03-15
 
 1. Complete migration-stage parity/canary checks in docs + rollout scripts.
 2. Execute canary checklist and attach rollout evidence in docs.
-3. Decommission remaining direct `gog` runtime dependencies where replaced by gateway flows.
+3. Remove now-unused bootstrap-runtime artifacts once rollout signs off.
