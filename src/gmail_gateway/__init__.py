@@ -11,6 +11,7 @@ from .models import (
     IdempotencyOperation,
 )
 from .schema import REQUIRED_TABLES, ensure_gateway_schema, verify_gateway_schema
+from .observability import GatewayObservability
 from .sync_store import SyncCursor, SyncStore
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "ConnectSession",
     "GmailApiClient",
     "GmailApiError",
+    "GatewayObservability",
     "create_app",
     "MessageStore",
     "SyncCursor",

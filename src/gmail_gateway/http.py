@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -12,12 +13,16 @@ from .auth_store import AuthStore
 from .gmail_api import GmailApiClient, GmailApiError
 from .message_store import MessageStore
 from .models import ErrorCode, ErrorEnvelope
+from .observability import GatewayObservability
 from .sync_store import SyncStore
+
+logger = logging.getLogger(__name__)
 
 AUTH_STORE_KEY: web.AppKey[AuthStore] = web.AppKey("auth_store", AuthStore)
 MESSAGE_STORE_KEY: web.AppKey[MessageStore] = web.AppKey("message_store", MessageStore)
 SYNC_STORE_KEY: web.AppKey[SyncStore] = web.AppKey("sync_store", SyncStore)
 GMAIL_API_KEY: web.AppKey[GmailApiClient] = web.AppKey("gmail_api", GmailApiClient)
+OBS_KEY: web.AppKey[GatewayObservability] = web.AppKey("observability", GatewayObservability)
 
 
 def _error_response(
@@ -41,6 +46,46 @@ def _error_response(
 
 async def _health(_: web.Request) -> web.Response:
     return web.json_response({"ok": True})
+
+
+async def _metrics(request: web.Request) -> web.Response:
+    return web.json_response({"counters": request.app[OBS_KEY].snapshot()})
+
+
+@web.middleware
+async def _observability_middleware(request: web.Request, handler):
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        bucket = f"{exc.status // 100}xx"
+        route = request.path
+        request.app[OBS_KEY].inc(f"{request.method} {route} {bucket}")
+        logger.info(
+            "gmail_gateway_request method=%s path=%s status=%s",
+            request.method,
+            route,
+            exc.status,
+        )
+        raise
+    except Exception:
+        route = request.path
+        request.app[OBS_KEY].inc(f"{request.method} {route} 5xx")
+        logger.exception(
+            "gmail_gateway_request method=%s path=%s status=500",
+            request.method,
+            route,
+        )
+        raise
+    bucket = f"{response.status // 100}xx"
+    route = request.path
+    request.app[OBS_KEY].inc(f"{request.method} {route} {bucket}")
+    logger.info(
+        "gmail_gateway_request method=%s path=%s status=%s",
+        request.method,
+        route,
+        response.status,
+    )
+    return response
 
 
 async def _get_account(request: web.Request) -> web.Response:
@@ -611,14 +656,16 @@ async def _renew_watch(request: web.Request) -> web.Response:
 
 
 def create_app(*, db_path: Path) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_observability_middleware])
     app[AUTH_STORE_KEY] = AuthStore(db_path)
     app[MESSAGE_STORE_KEY] = MessageStore(db_path)
     app[SYNC_STORE_KEY] = SyncStore(db_path)
     app[GMAIL_API_KEY] = GmailApiClient()
+    app[OBS_KEY] = GatewayObservability()
     app.add_routes(
         [
             web.get("/health", _health),
+            web.get("/internal/metrics", _metrics),
             web.get("/v1/accounts/{account_id}", _get_account),
             web.post("/v1/accounts/{account_id}/connect", _connect_account),
             web.post("/v1/accounts/{account_id}/disconnect", _disconnect_account),

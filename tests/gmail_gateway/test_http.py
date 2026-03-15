@@ -276,3 +276,22 @@ async def test_sync_bootstrap_delta_and_watch_renew(tmp_path: Path) -> None:
     finally:
         await client.close()
         await server.close()
+
+
+async def test_internal_metrics_collects_route_status_counters(tmp_path: Path) -> None:
+    _, server, client = await _client(tmp_path)
+    try:
+        ok = await client.get("/health")
+        assert ok.status == 200
+        missing = await client.get("/v1/accounts/missing")
+        assert missing.status == 404
+
+        metrics = await client.get("/internal/metrics")
+        payload = await metrics.json()
+        counters = payload["counters"]
+
+        assert counters["GET /health 2xx"] >= 1
+        assert counters["GET /v1/accounts/missing 4xx"] >= 1
+    finally:
+        await client.close()
+        await server.close()

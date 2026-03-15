@@ -40,14 +40,17 @@ Last updated: 2026-03-15
 10. Step 2 production adapter move:
    - Wired `/v1/messages/search`, `/v1/messages/{message_id}`, `/v1/messages/{message_id}/trash`, `DELETE /v1/messages/{message_id}` to Gmail API client.
    - Removed store-backed behavior from those endpoints and kept typed Gmail error mapping.
+11. Step 3 observability slice:
+   - Added middleware-based request counters and structured request logs in gateway HTTP service.
+   - Added `GET /internal/metrics` for local counter inspection.
 
 ## Validations Run
 
-- `pytest -q tests/gmail_gateway` -> 16 passed
+- `pytest -q tests/gmail_gateway` -> 17 passed
 - `python -m compileall -q src/gmail_gateway` -> success
 
 ## Next Slice (auto-continue target)
 
 1. Wire `GmailGatewayClient` into assistant runtime as the only Gmail path (no legacy fallback).
-2. Add gateway success/error counters and structured operational logs.
-3. Implement OAuth token refresh exchange (access-token renewal) instead of static callback-provided token usage.
+2. Implement OAuth token refresh exchange (access-token renewal) instead of static callback-provided token usage.
+3. Add persistent metrics export path (Prometheus-style or equivalent) beyond in-process counters.
