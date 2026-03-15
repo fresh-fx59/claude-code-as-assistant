@@ -3,13 +3,17 @@ from pathlib import Path
 import pytest
 from aiohttp.test_utils import TestServer
 
-from src.gmail_gateway.http import MESSAGE_STORE_KEY, create_app
+from src.gmail_gateway.http import GMAIL_API_KEY, MESSAGE_STORE_KEY, create_app
 from src.gmail_gateway_client import GatewayClientError, GmailGatewayClient
 
 
 @pytest.mark.asyncio
 async def test_client_connect_callback_send_and_disconnect(tmp_path: Path) -> None:
     app = create_app(db_path=tmp_path / "gateway.db")
+    class _FakeGmailApi:
+        async def send_message(self, *, access_token: str, to: list[str], subject: str, body_text: str) -> str:
+            return "gmail-msg-1"
+    app[GMAIL_API_KEY] = _FakeGmailApi()
     server = TestServer(app)
     await server.start_server()
     try:
@@ -37,7 +41,7 @@ async def test_client_connect_callback_send_and_disconnect(tmp_path: Path) -> No
             body_text="Body",
             idempotency_key="idem-client-1",
         )
-        assert receipt["status"] == "queued"
+        assert receipt["status"] == "sent"
 
         await client.disconnect_account(account_id="acc-1")
 

@@ -2,15 +2,44 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.gmail_gateway.http import AUTH_STORE_KEY, MESSAGE_STORE_KEY, create_app
+from src.gmail_gateway.http import AUTH_STORE_KEY, GMAIL_API_KEY, MESSAGE_STORE_KEY, create_app
 
 
-async def _client(tmp_path: Path):
+async def _client(tmp_path: Path, *, gmail_api=None):
     app = create_app(db_path=tmp_path / "gateway.db")
+    if gmail_api is not None:
+        app[GMAIL_API_KEY] = gmail_api
     server = TestServer(app)
     client = TestClient(server)
     await client.start_server()
     return app, server, client
+
+
+class _FakeGmailApi:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def send_message(self, *, access_token: str, to: list[str], subject: str, body_text: str) -> str:
+        self.calls += 1
+        assert access_token
+        assert to
+        assert subject
+        assert body_text
+        return "gmail-msg-1"
+
+
+def _connect_account_for_send(app) -> None:
+    store = app[AUTH_STORE_KEY]
+    store.upsert_account(account_id="acc-1", gmail_email="alex@example.com")
+    store.upsert_token(
+        token_id="tok-1",
+        account_id="acc-1",
+        access_token_ciphertext=b"access-token",
+        refresh_token_ciphertext=b"refresh-token",
+        scopes="gmail.send",
+        kms_key_version="kms-v1",
+        expires_at=None,
+    )
 
 
 async def test_health_endpoint_returns_ok(tmp_path: Path) -> None:
@@ -82,7 +111,9 @@ async def test_connect_callback_and_disconnect_flow(tmp_path: Path) -> None:
 
 
 async def test_send_is_idempotent_for_same_payload(tmp_path: Path) -> None:
-    _, server, client = await _client(tmp_path)
+    fake_api = _FakeGmailApi()
+    app, server, client = await _client(tmp_path, gmail_api=fake_api)
+    _connect_account_for_send(app)
     payload = {
         "account_id": "acc-1",
         "to": ["bob@example.com"],
@@ -99,13 +130,16 @@ async def test_send_is_idempotent_for_same_payload(tmp_path: Path) -> None:
         assert first.status == 202
         assert second.status == 202
         assert first_payload["receipt_id"] == second_payload["receipt_id"]
+        assert first_payload["status"] == "sent"
+        assert fake_api.calls == 1
     finally:
         await client.close()
         await server.close()
 
 
 async def test_send_rejects_same_idempotency_key_with_different_payload(tmp_path: Path) -> None:
-    _, server, client = await _client(tmp_path)
+    app, server, client = await _client(tmp_path, gmail_api=_FakeGmailApi())
+    _connect_account_for_send(app)
     headers = {"Idempotency-Key": "idem-12345"}
     try:
         first = await client.post(

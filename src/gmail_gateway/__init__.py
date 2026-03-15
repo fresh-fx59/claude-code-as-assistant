@@ -1,6 +1,7 @@
 """Gmail gateway foundational models and schema helpers."""
 
 from .auth_store import AccountAuthState, AuthStore, ConnectSession
+from .gmail_api import GmailApiClient, GmailApiError
 from .http import create_app
 from .message_store import MessageStore
 from .models import (
@@ -20,6 +21,8 @@ __all__ = [
     "AccountAuthState",
     "AuthStore",
     "ConnectSession",
+    "GmailApiClient",
+    "GmailApiError",
     "create_app",
     "MessageStore",
     "SyncCursor",

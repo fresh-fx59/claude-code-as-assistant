@@ -77,16 +77,20 @@ class MessageStore:
         account_id: str,
         idempotency_key: str,
         request_hash: str,
+        status: str = "queued",
+        provider_message_id: str | None = None,
+        sent_at: str | None = None,
+        status_code: int = 202,
     ) -> DeliveryReceiptRecord:
         receipt_id = f"rcpt-{uuid4().hex}"
         queued_at = self._now_iso()
         response_payload = {
             "receipt_id": receipt_id,
             "account_id": account_id,
-            "status": "queued",
-            "provider_message_id": None,
+            "status": status,
+            "provider_message_id": provider_message_id,
             "queued_at": queued_at,
-            "sent_at": None,
+            "sent_at": sent_at,
         }
         expires_at = self._now_iso()
         with self._connect() as con:
@@ -101,9 +105,17 @@ class MessageStore:
                     error_code,
                     queued_at,
                     sent_at
-                ) VALUES (?, ?, ?, NULL, 'queued', NULL, ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
                 """,
-                (receipt_id, account_id, idempotency_key, queued_at),
+                (
+                    receipt_id,
+                    account_id,
+                    idempotency_key,
+                    provider_message_id,
+                    status,
+                    queued_at,
+                    sent_at,
+                ),
             )
             con.execute(
                 """
@@ -116,13 +128,14 @@ class MessageStore:
                     status_code,
                     created_at,
                     expires_at
-                ) VALUES (?, 'send_message', ?, ?, ?, 202, ?, ?)
+                ) VALUES (?, 'send_message', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_id,
                     idempotency_key,
                     request_hash,
                     json.dumps(response_payload, ensure_ascii=False),
+                    status_code,
                     queued_at,
                     expires_at,
                 ),

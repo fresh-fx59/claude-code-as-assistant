@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from aiohttp import web
 
 from .auth_store import AuthStore
+from .gmail_api import GmailApiClient, GmailApiError
 from .message_store import MessageStore
 from .models import ErrorCode, ErrorEnvelope
 from .sync_store import SyncStore
@@ -15,6 +17,7 @@ from .sync_store import SyncStore
 AUTH_STORE_KEY: web.AppKey[AuthStore] = web.AppKey("auth_store", AuthStore)
 MESSAGE_STORE_KEY: web.AppKey[MessageStore] = web.AppKey("message_store", MessageStore)
 SYNC_STORE_KEY: web.AppKey[SyncStore] = web.AppKey("sync_store", SyncStore)
+GMAIL_API_KEY: web.AppKey[GmailApiClient] = web.AppKey("gmail_api", GmailApiClient)
 
 
 def _error_response(
@@ -246,10 +249,60 @@ async def _send_message(request: web.Request) -> web.Response:
         response_json = json.loads(existing["response_json"] or "{}")
         status_code = int(existing["status_code"] or 202)
         return web.json_response(response_json, status=status_code)
+    auth_store = request.app[AUTH_STORE_KEY]
+    access_token = auth_store.get_active_access_token(account_id=account_id)
+    if not access_token:
+        return _error_response(
+            status=401,
+            code=ErrorCode.REAUTH_REQUIRED,
+            error_class="oauth.missing_token",
+            message=f"Account '{account_id}' is not connected or token is missing",
+            retryable=False,
+        )
+    gmail_api = request.app[GMAIL_API_KEY]
+    try:
+        provider_message_id = await gmail_api.send_message(
+            access_token=access_token,
+            to=list(payload["to"]),
+            subject=str(payload["subject"]),
+            body_text=str(payload["body_text"]),
+        )
+    except GmailApiError as exc:
+        if exc.reason in {"invalid_grant", "authError"}:
+            auth_store.mark_invalid_grant(account_id=account_id)
+            return _error_response(
+                status=401,
+                code=ErrorCode.REAUTH_REQUIRED,
+                error_class="oauth.invalid_grant",
+                message=exc.message,
+                retryable=False,
+                details={"reason": exc.reason},
+            )
+        if exc.status == 429 or exc.reason in {"userRateLimitExceeded", "rateLimitExceeded"}:
+            return _error_response(
+                status=429,
+                code=ErrorCode.QUOTA_LIMITED,
+                error_class="gmail.quota_limited",
+                message=exc.message,
+                retryable=True,
+                details={"reason": exc.reason},
+            )
+        return _error_response(
+            status=502,
+            code=ErrorCode.RETRYABLE if exc.retryable else ErrorCode.INTERNAL_ERROR,
+            error_class="gmail.send_failed",
+            message=exc.message,
+            retryable=exc.retryable,
+            details={"reason": exc.reason},
+        )
     receipt = store.record_send_receipt(
         account_id=account_id,
         idempotency_key=idem_key,
         request_hash=request_hash,
+        status="sent",
+        provider_message_id=provider_message_id,
+        sent_at=datetime.now(UTC).isoformat(),
+        status_code=202,
     )
     return web.json_response(
         {
@@ -501,6 +554,7 @@ def create_app(*, db_path: Path) -> web.Application:
     app[AUTH_STORE_KEY] = AuthStore(db_path)
     app[MESSAGE_STORE_KEY] = MessageStore(db_path)
     app[SYNC_STORE_KEY] = SyncStore(db_path)
+    app[GMAIL_API_KEY] = GmailApiClient()
     app.add_routes(
         [
             web.get("/health", _health),

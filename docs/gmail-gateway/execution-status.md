@@ -33,6 +33,10 @@ Last updated: 2026-03-15
 8. Gmail tool routing replacement:
    - Added `src/gmail_gateway_cli.py` for gateway operations from CLI/tooling.
    - Updated `tools/gmail.yaml` to use gateway-only commands (legacy direct `gog gmail` path removed from primary tool instructions).
+9. Step 1 production adapter move:
+   - Added `src/gmail_gateway/gmail_api.py` with Gmail API send integration.
+   - Wired `/v1/messages/send` to use account token + Gmail API call instead of queue-only fake send.
+   - Added typed error mapping (`invalid_grant` -> `reauth_required`, `429` -> `quota_limited`).
 
 ## Validations Run
 
@@ -41,6 +45,6 @@ Last updated: 2026-03-15
 
 ## Next Slice (auto-continue target)
 
-1. Wire `GmailGatewayClient` into assistant runtime as the only Gmail path (no legacy fallback).
-2. Add gateway success/error counters and structured operational logs.
-3. Implement real Gmail API adaptor behind gateway stores (replace current local mock persistence behavior).
+1. Implement real Gmail API read/search/trash/delete paths in gateway (currently still store-backed).
+2. Wire `GmailGatewayClient` into assistant runtime as the only Gmail path (no legacy fallback).
+3. Add gateway success/error counters and structured operational logs.

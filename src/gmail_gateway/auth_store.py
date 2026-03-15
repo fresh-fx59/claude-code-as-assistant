@@ -140,6 +140,27 @@ class AuthStore:
                 (now, account_id),
             )
 
+    def get_active_access_token(self, *, account_id: str) -> str | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT access_token_ciphertext
+                FROM gateway_oauth_tokens
+                WHERE account_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        raw = row["access_token_ciphertext"]
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8")
+        return str(raw)
+
     def get_account_auth_state(self, *, account_id: str) -> AccountAuthState | None:
         with self._connect() as con:
             row = con.execute(
