@@ -37,6 +37,9 @@ Last updated: 2026-03-15
    - Added `src/gmail_gateway/gmail_api.py` with Gmail API send integration.
    - Wired `/v1/messages/send` to use account token + Gmail API call instead of queue-only fake send.
    - Added typed error mapping (`invalid_grant` -> `reauth_required`, `429` -> `quota_limited`).
+10. Step 2 production adapter move:
+   - Wired `/v1/messages/search`, `/v1/messages/{message_id}`, `/v1/messages/{message_id}/trash`, `DELETE /v1/messages/{message_id}` to Gmail API client.
+   - Removed store-backed behavior from those endpoints and kept typed Gmail error mapping.
 
 ## Validations Run
 
@@ -45,6 +48,6 @@ Last updated: 2026-03-15
 
 ## Next Slice (auto-continue target)
 
-1. Implement real Gmail API read/search/trash/delete paths in gateway (currently still store-backed).
-2. Wire `GmailGatewayClient` into assistant runtime as the only Gmail path (no legacy fallback).
-3. Add gateway success/error counters and structured operational logs.
+1. Wire `GmailGatewayClient` into assistant runtime as the only Gmail path (no legacy fallback).
+2. Add gateway success/error counters and structured operational logs.
+3. Implement OAuth token refresh exchange (access-token renewal) instead of static callback-provided token usage.

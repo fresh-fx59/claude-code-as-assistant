@@ -197,6 +197,43 @@ def _account_exists(request: web.Request, account_id: str) -> bool:
     return request.app[AUTH_STORE_KEY].get_account_auth_state(account_id=account_id) is not None
 
 
+def _gmail_error_response(
+    *,
+    request: web.Request,
+    account_id: str,
+    exc: GmailApiError,
+    operation: str,
+) -> web.Response:
+    auth_store = request.app[AUTH_STORE_KEY]
+    if exc.reason in {"invalid_grant", "authError"}:
+        auth_store.mark_invalid_grant(account_id=account_id)
+        return _error_response(
+            status=401,
+            code=ErrorCode.REAUTH_REQUIRED,
+            error_class="oauth.invalid_grant",
+            message=exc.message,
+            retryable=False,
+            details={"reason": exc.reason},
+        )
+    if exc.status == 429 or exc.reason in {"userRateLimitExceeded", "rateLimitExceeded"}:
+        return _error_response(
+            status=429,
+            code=ErrorCode.QUOTA_LIMITED,
+            error_class="gmail.quota_limited",
+            message=exc.message,
+            retryable=True,
+            details={"reason": exc.reason},
+        )
+    return _error_response(
+        status=502,
+        code=ErrorCode.RETRYABLE if exc.retryable else ErrorCode.INTERNAL_ERROR,
+        error_class=f"gmail.{operation}_failed",
+        message=exc.message,
+        retryable=exc.retryable,
+        details={"reason": exc.reason},
+    )
+
+
 async def _send_message(request: web.Request) -> web.Response:
     idem_key = request.headers.get("Idempotency-Key", "").strip()
     if not idem_key:
@@ -268,33 +305,7 @@ async def _send_message(request: web.Request) -> web.Response:
             body_text=str(payload["body_text"]),
         )
     except GmailApiError as exc:
-        if exc.reason in {"invalid_grant", "authError"}:
-            auth_store.mark_invalid_grant(account_id=account_id)
-            return _error_response(
-                status=401,
-                code=ErrorCode.REAUTH_REQUIRED,
-                error_class="oauth.invalid_grant",
-                message=exc.message,
-                retryable=False,
-                details={"reason": exc.reason},
-            )
-        if exc.status == 429 or exc.reason in {"userRateLimitExceeded", "rateLimitExceeded"}:
-            return _error_response(
-                status=429,
-                code=ErrorCode.QUOTA_LIMITED,
-                error_class="gmail.quota_limited",
-                message=exc.message,
-                retryable=True,
-                details={"reason": exc.reason},
-            )
-        return _error_response(
-            status=502,
-            code=ErrorCode.RETRYABLE if exc.retryable else ErrorCode.INTERNAL_ERROR,
-            error_class="gmail.send_failed",
-            message=exc.message,
-            retryable=exc.retryable,
-            details={"reason": exc.reason},
-        )
+        return _gmail_error_response(request=request, account_id=account_id, exc=exc, operation="send")
     receipt = store.record_send_receipt(
         account_id=account_id,
         idempotency_key=idem_key,
@@ -341,18 +352,35 @@ async def _search_messages(request: web.Request) -> web.Response:
         )
     page_size = int(payload.get("page_size", 20))
     page_size = max(1, min(page_size, 100))
-    store = request.app[MESSAGE_STORE_KEY]
-    messages = store.search_messages(account_id=account_id, query=query, page_size=page_size)
+    auth_store = request.app[AUTH_STORE_KEY]
+    access_token = auth_store.get_active_access_token(account_id=account_id)
+    if not access_token:
+        return _error_response(
+            status=401,
+            code=ErrorCode.REAUTH_REQUIRED,
+            error_class="oauth.missing_token",
+            message=f"Account '{account_id}' is not connected or token is missing",
+            retryable=False,
+        )
+    gmail_api = request.app[GMAIL_API_KEY]
+    try:
+        messages = await gmail_api.search_messages(
+            access_token=access_token,
+            query=query,
+            max_results=page_size,
+        )
+    except GmailApiError as exc:
+        return _gmail_error_response(request=request, account_id=account_id, exc=exc, operation="search")
     return web.json_response(
         {
             "messages": [
                 {
-                    "message_id": m.message_id,
-                    "thread_id": m.thread_id,
-                    "subject": m.subject,
-                    "from": m.from_email,
-                    "snippet": m.snippet,
-                    "internal_date": m.internal_ts,
+                    "message_id": str(m.get("message_id", "")),
+                    "thread_id": str(m.get("thread_id", "")),
+                    "subject": str(m.get("subject", "")),
+                    "from": str(m.get("from", "")),
+                    "snippet": str(m.get("snippet", "")),
+                    "internal_date": str(m.get("internal_date", "")),
                 }
                 for m in messages
             ]
@@ -376,27 +404,40 @@ async def _read_message(request: web.Request) -> web.Response:
             retryable=False,
         )
     message_id = request.match_info["message_id"]
-    store = request.app[MESSAGE_STORE_KEY]
-    message = store.get_message(account_id=account_id, message_id=message_id)
-    if message is None:
+    auth_store = request.app[AUTH_STORE_KEY]
+    access_token = auth_store.get_active_access_token(account_id=account_id)
+    if not access_token:
         return _error_response(
-            status=404,
-            code=ErrorCode.NOT_FOUND,
-            error_class="message.not_found",
-            message=f"Message '{message_id}' was not found",
+            status=401,
+            code=ErrorCode.REAUTH_REQUIRED,
+            error_class="oauth.missing_token",
+            message=f"Account '{account_id}' is not connected or token is missing",
             retryable=False,
         )
+    gmail_api = request.app[GMAIL_API_KEY]
+    try:
+        message = await gmail_api.read_message(access_token=access_token, message_id=message_id)
+    except GmailApiError as exc:
+        if exc.status == 404:
+            return _error_response(
+                status=404,
+                code=ErrorCode.NOT_FOUND,
+                error_class="message.not_found",
+                message=f"Message '{message_id}' was not found",
+                retryable=False,
+            )
+        return _gmail_error_response(request=request, account_id=account_id, exc=exc, operation="read")
     return web.json_response(
         {
-            "message_id": message.message_id,
-            "thread_id": message.thread_id,
-            "subject": message.subject,
-            "from": message.from_email,
-            "snippet": message.snippet,
-            "internal_date": message.internal_ts,
-            "body_text": message.body_text,
-            "body_html": message.body_html,
-            "labels": message.labels,
+            "message_id": str(message.get("message_id", "")),
+            "thread_id": str(message.get("thread_id", "")),
+            "subject": str(message.get("subject", "")),
+            "from": str(message.get("from", "")),
+            "snippet": str(message.get("snippet", "")),
+            "internal_date": str(message.get("internal_date", "")),
+            "body_text": str(message.get("body_text", "")),
+            "body_html": message.get("body_html"),
+            "labels": [str(item) for item in (message.get("labels") or [])],
         }
     )
 
@@ -412,16 +453,36 @@ async def _trash_or_delete_message(request: web.Request, *, hard_delete: bool) -
             retryable=False,
         )
     message_id = request.match_info["message_id"]
-    label = "DELETED" if hard_delete else "TRASH"
-    store = request.app[MESSAGE_STORE_KEY]
-    updated = store.add_label(account_id=account_id, message_id=message_id, label=label)
-    if not updated:
+    auth_store = request.app[AUTH_STORE_KEY]
+    access_token = auth_store.get_active_access_token(account_id=account_id)
+    if not access_token:
         return _error_response(
-            status=404,
-            code=ErrorCode.NOT_FOUND,
-            error_class="message.not_found",
-            message=f"Message '{message_id}' was not found",
+            status=401,
+            code=ErrorCode.REAUTH_REQUIRED,
+            error_class="oauth.missing_token",
+            message=f"Account '{account_id}' is not connected or token is missing",
             retryable=False,
+        )
+    gmail_api = request.app[GMAIL_API_KEY]
+    try:
+        if hard_delete:
+            await gmail_api.delete_message(access_token=access_token, message_id=message_id)
+        else:
+            await gmail_api.trash_message(access_token=access_token, message_id=message_id)
+    except GmailApiError as exc:
+        if exc.status == 404:
+            return _error_response(
+                status=404,
+                code=ErrorCode.NOT_FOUND,
+                error_class="message.not_found",
+                message=f"Message '{message_id}' was not found",
+                retryable=False,
+            )
+        return _gmail_error_response(
+            request=request,
+            account_id=account_id,
+            exc=exc,
+            operation="delete" if hard_delete else "trash",
         )
     return web.Response(status=202)
 

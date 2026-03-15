@@ -18,6 +18,19 @@ async def _client(tmp_path: Path, *, gmail_api=None):
 class _FakeGmailApi:
     def __init__(self) -> None:
         self.calls = 0
+        self.messages: dict[str, dict] = {
+            "msg-1": {
+                "message_id": "msg-1",
+                "thread_id": "thr-1",
+                "subject": "Invoice April",
+                "from": "billing@example.com",
+                "snippet": "Invoice attached",
+                "internal_date": "1710000000",
+                "body_text": "Full invoice body",
+                "body_html": None,
+                "labels": ["INBOX"],
+            }
+        }
 
     async def send_message(self, *, access_token: str, to: list[str], subject: str, body_text: str) -> str:
         self.calls += 1
@@ -26,6 +39,40 @@ class _FakeGmailApi:
         assert subject
         assert body_text
         return "gmail-msg-1"
+
+    async def search_messages(self, *, access_token: str, query: str, max_results: int) -> list[dict]:
+        assert access_token
+        return [
+            msg
+            for msg in self.messages.values()
+            if query.lower() in msg["subject"].lower() or query.lower() in msg["snippet"].lower()
+        ][:max_results]
+
+    async def read_message(self, *, access_token: str, message_id: str) -> dict:
+        assert access_token
+        if message_id not in self.messages:
+            from src.gmail_gateway.gmail_api import GmailApiError
+
+            raise GmailApiError(status=404, reason="notFound", message="Message not found", retryable=False)
+        return self.messages[message_id]
+
+    async def trash_message(self, *, access_token: str, message_id: str) -> None:
+        if message_id not in self.messages:
+            from src.gmail_gateway.gmail_api import GmailApiError
+
+            raise GmailApiError(status=404, reason="notFound", message="Message not found", retryable=False)
+        labels = self.messages[message_id]["labels"]
+        if "TRASH" not in labels:
+            labels.append("TRASH")
+
+    async def delete_message(self, *, access_token: str, message_id: str) -> None:
+        if message_id not in self.messages:
+            from src.gmail_gateway.gmail_api import GmailApiError
+
+            raise GmailApiError(status=404, reason="notFound", message="Message not found", retryable=False)
+        labels = self.messages[message_id]["labels"]
+        if "DELETED" not in labels:
+            labels.append("DELETED")
 
 
 def _connect_account_for_send(app) -> None:
@@ -172,18 +219,9 @@ async def test_send_rejects_same_idempotency_key_with_different_payload(tmp_path
 
 
 async def test_read_search_and_trash_message_flow(tmp_path: Path) -> None:
-    app, server, client = await _client(tmp_path)
-    app[MESSAGE_STORE_KEY].upsert_message(
-        account_id="acc-1",
-        message_id="msg-1",
-        thread_id="thr-1",
-        subject="Invoice April",
-        from_email="billing@example.com",
-        snippet="Invoice attached",
-        body_text="Full invoice body",
-        body_html=None,
-        labels=["INBOX"],
-    )
+    fake_api = _FakeGmailApi()
+    app, server, client = await _client(tmp_path, gmail_api=fake_api)
+    _connect_account_for_send(app)
     try:
         search = await client.post(
             "/v1/messages/search",
