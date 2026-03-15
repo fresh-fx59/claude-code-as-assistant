@@ -14,8 +14,9 @@ from aiogram import Bot
 from . import bridge, config, metrics
 from .formatter import markdown_to_html, split_message, strip_html
 from .media import extract_media_directives, send_media, strip_tool_directive_lines
-from .telegram_status_throttle import EphemeralStatusSuppressedError, send_ephemeral_status
+from .providers import codex_family_providers
 from .sessions import make_scope_key
+from .telegram_status_throttle import EphemeralStatusSuppressedError, send_ephemeral_status
 
 logger = logging.getLogger(__name__)
 _STEP_PLAN_HINT_RE = re.compile(r"\bcontinue\b.*\bplan\b", re.IGNORECASE)
@@ -506,6 +507,7 @@ class TaskManager:
             transient_error_retries_left = self._TRANSIENT_ERROR_RETRIES
             observed_tools: list[str] = []
             provider_attempts = 0
+            attempted_provider_clis: set[str] = {task.provider_cli}
 
             while True:
                 response, tool_timeout, attempt_tools = await self._run_provider_attempt(task)
@@ -536,7 +538,7 @@ class TaskManager:
                         and response.is_error
                         and self._is_fallback_rate_limit_error(response.text)
                     ):
-                        if self._advance_task_provider(task):
+                        if self._advance_task_provider(task, attempted_provider_clis):
                             task.session_id = None
                             await asyncio.sleep(0.3)
                             continue
@@ -713,11 +715,29 @@ class TaskManager:
             matched_provider.cli,
         )
 
-    def _advance_task_provider(self, task: BackgroundTask) -> bool:
+    def _advance_task_provider(self, task: BackgroundTask, attempted_provider_clis: set[str] | None = None) -> bool:
         if self._provider_manager is None:
             return False
 
         self._ensure_task_provider_scope(task)
+        attempted_provider_clis = attempted_provider_clis or {task.provider_cli}
+        if task.provider_cli.startswith("codex"):
+            next_provider = self._advance_task_codex_provider(task, attempted_provider_clis)
+            if next_provider is not None:
+                logger.warning(
+                    "Background task %s falling back within codex family from provider_cli=%s to provider=%s (cli=%s)",
+                    task.id,
+                    task.provider_cli,
+                    getattr(next_provider, "name", "unknown"),
+                    next_provider.cli,
+                )
+                task.provider_cli = next_provider.cli
+                task.resume_arg = getattr(next_provider, "resume_arg", None)
+                if getattr(next_provider, "model", None):
+                    task.model = next_provider.model
+                attempted_provider_clis.add(task.provider_cli)
+                return True
+
         scope_key = self._task_scope_key(task)
         next_provider = self._provider_manager.advance(scope_key)
         if next_provider is None:
@@ -734,7 +754,43 @@ class TaskManager:
         task.resume_arg = getattr(next_provider, "resume_arg", None)
         if task.provider_cli.startswith("codex") and getattr(next_provider, "model", None):
             task.model = next_provider.model
+        attempted_provider_clis.add(task.provider_cli)
         return True
+
+    def _advance_task_codex_provider(
+        self,
+        task: BackgroundTask,
+        attempted_provider_clis: set[str],
+    ):
+        providers = getattr(self._provider_manager, "providers", None)
+        if not providers:
+            return None
+
+        codex_providers = codex_family_providers(list(providers))
+        if len(codex_providers) < 2:
+            return None
+
+        current_idx = next(
+            (
+                idx
+                for idx, provider in enumerate(codex_providers)
+                if getattr(provider, "cli", None) == task.provider_cli
+                or getattr(provider, "name", None) == task.provider_cli
+            ),
+            None,
+        )
+        if current_idx is None:
+            return None
+
+        for offset in range(1, len(codex_providers)):
+            candidate = codex_providers[(current_idx + offset) % len(codex_providers)]
+            candidate_cli = getattr(candidate, "cli", None)
+            if not candidate_cli or candidate_cli in attempted_provider_clis:
+                continue
+            if getattr(self._provider_manager, "set_provider", None):
+                self._provider_manager.set_provider(self._task_scope_key(task), getattr(candidate, "name", candidate_cli))
+            return candidate
+        return None
 
     async def _typing_loop(self, task: BackgroundTask) -> None:
         send_failures = 0

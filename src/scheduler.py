@@ -32,9 +32,6 @@ _RATE_LIMIT_ERROR_RE = re.compile(
 _TRY_AGAIN_AT_RE = re.compile(r"try again at\s+(.+?)(?:[.]|$)", re.IGNORECASE)
 _ORDINAL_DAY_RE = re.compile(r"(\d{1,2})(st|nd|rd|th)\b", re.IGNORECASE)
 _NO_UPDATE = object()
-_SCHEDULED_CODEX_PROVIDER_CLI = "codex3"
-
-
 @dataclass(frozen=True)
 class NativeScheduleSpec:
     command: list[str]
@@ -547,8 +544,6 @@ class ScheduleManager:
     @staticmethod
     def _normalize_provider_runtime(provider_cli: str | None, resume_arg: str | None) -> tuple[str, str | None]:
         cli_name = (provider_cli or "claude").strip() or "claude"
-        if cli_name.startswith("codex") and cli_name != _SCHEDULED_CODEX_PROVIDER_CLI:
-            return _SCHEDULED_CODEX_PROVIDER_CLI, resume_arg
         return cli_name, resume_arg
 
     async def _worker_loop(self) -> None:

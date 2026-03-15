@@ -825,7 +825,7 @@ class TestScheduleCommands:
             await cmd_schedule_every(mock_message)
 
         kwargs = sched_mock.create_every.await_args.kwargs
-        assert kwargs["provider_cli"] == "codex3"
+        assert kwargs["provider_cli"] == "codex2"
         assert kwargs["resume_arg"] == "resume"
         assert kwargs["model"] == "gpt-5-codex"
 
