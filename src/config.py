@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.51.23"
+VERSION: str = "0.51.22"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -187,19 +187,6 @@ TELEGRAM_PROXY_ENCRYPTED_CREDENTIALS: str = os.getenv(
     "TELEGRAM_PROXY_ENCRYPTED_CREDENTIALS",
     "",
 ).strip()
-CODEX_PROXY_BIND_HOST: str = os.getenv("CODEX_PROXY_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
-CODEX_PROXY_BIND_PORT: int = int(os.getenv("CODEX_PROXY_BIND_PORT", "8797"))
-CODEX_PROXY_API_KEY: str = os.getenv("CODEX_PROXY_API_KEY", "").strip()
-CODEX_PROXY_MODEL_ALIAS: str = os.getenv("CODEX_PROXY_MODEL_ALIAS", "codex-cli").strip() or "codex-cli"
-CODEX_PROXY_CLI_NAME: str = os.getenv("CODEX_PROXY_CLI_NAME", "codex").strip() or "codex"
-CODEX_PROXY_TIMEOUT_SECONDS: float = max(1.0, float(os.getenv("CODEX_PROXY_TIMEOUT_SECONDS", "120")))
-CODEX_PROXY_MAX_INFLIGHT: int = max(1, int(os.getenv("CODEX_PROXY_MAX_INFLIGHT", "4")))
-CODEX_PROXY_MAX_OUTPUT_BYTES: int = max(
-    16_384,
-    int(os.getenv("CODEX_PROXY_MAX_OUTPUT_BYTES", str(1024 * 1024))),
-)
-_raw_codex_proxy_workdir = os.getenv("CODEX_PROXY_WORKDIR", "").strip()
-CODEX_PROXY_WORKDIR: str = os.path.expanduser(_raw_codex_proxy_workdir) if _raw_codex_proxy_workdir else ""
 TELEGRAM_DIGEST_COLLECT_LIMIT: int = max(10, int(os.getenv("TELEGRAM_DIGEST_COLLECT_LIMIT", "200")))
 TELEGRAM_DIGEST_SOURCE_LIMIT: int = max(1, int(os.getenv("TELEGRAM_DIGEST_SOURCE_LIMIT", "200")))
 TELEGRAM_DIGEST_COLLECT_INTERVAL_MINUTES: int = max(

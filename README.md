@@ -350,10 +350,8 @@ GitHub Actions deploys can restart services independently via repo variables:
 - `RESTART_MAIN_APP_ON_PUSH=true` — restart `telegram-bot.service`
 - `RESTART_SCHEDULER_ON_PUSH=true` — restart `telegram-scheduler.service`
 - `RESTART_PROXY_ON_PUSH=true` — restart `telegram-proxy.service`
-- `RESTART_GMAIL_GATEWAY_ON_PUSH=true` — restart `gmail-gateway.service`
-- `RESTART_CODEX_PROXY_ON_PUSH=true` — restart `codex-proxy.service`
 
-If all restart flags are unset or false, pushes still deploy code to disk but do not restart any service.
+If all three are unset or false, pushes still deploy code to disk but do not restart any service.
 
 The same workflow also supports manual `workflow_dispatch` runs in GitHub Actions. Each restart target can be set to `inherit`, `true`, or `false` for that run:
 
@@ -561,41 +559,6 @@ sudo install -m 0644 telegram-proxy.service /etc/systemd/system/telegram-proxy.s
 sudo systemctl daemon-reload
 sudo systemctl enable --now telegram-proxy.service
 ```
-
-### OpenAI-Compatible Codex Proxy (MVP)
-
-This repo includes a standalone OpenAI-compatible HTTP proxy for Codex CLI:
-
-- module: `python3 -m src.codex_proxy`
-- endpoint: `POST /v1/chat/completions`
-- mode: non-streaming MVP only (`stream=true` is rejected)
-- execution: fixed workdir only via `CODEX_PROXY_WORKDIR`
-
-Minimum `.env` values:
-
-```bash
-CODEX_PROXY_API_KEY=replace-me
-CODEX_PROXY_MODEL_ALIAS=codex-cli
-CODEX_PROXY_CLI_NAME=codex
-CODEX_PROXY_WORKDIR=/home/claude-developer/iron-lady-assistant/work-dir/codex-proxy
-```
-
-Run locally:
-
-```bash
-python3 -m src.codex_proxy
-```
-
-Smoke test:
-
-```bash
-curl -sS http://127.0.0.1:8797/v1/chat/completions \
-  -H "Authorization: Bearer $CODEX_PROXY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"codex-cli","messages":[{"role":"user","content":"Say hello in one short sentence."}]}'
-```
-
-Systemd unit template is available at `codex-proxy.service`.
 
 ### F08 Governance Validator (Monitor-Only)
 
