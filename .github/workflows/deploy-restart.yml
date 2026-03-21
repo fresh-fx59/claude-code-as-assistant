@@ -42,6 +42,15 @@ on:
           - inherit
           - true
           - false
+      restart_codex_proxy:
+        description: Restart codex-proxy.service
+        required: false
+        default: inherit
+        type: choice
+        options:
+          - inherit
+          - true
+          - false
 
 concurrency:
   group: deploy-restart-${{ github.ref }}
@@ -60,6 +69,7 @@ jobs:
           restart_scheduler="${{ vars.RESTART_SCHEDULER_ON_PUSH }}"
           restart_proxy="${{ vars.RESTART_PROXY_ON_PUSH }}"
           restart_gmail_gateway="${{ vars.RESTART_GMAIL_GATEWAY_ON_PUSH }}"
+          restart_codex_proxy="${{ vars.RESTART_CODEX_PROXY_ON_PUSH }}"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "${{ inputs.restart_main_app }}" != "inherit" ]; then
@@ -74,12 +84,16 @@ jobs:
             if [ "${{ inputs.restart_gmail_gateway }}" != "inherit" ]; then
               restart_gmail_gateway="${{ inputs.restart_gmail_gateway }}"
             fi
+            if [ "${{ inputs.restart_codex_proxy }}" != "inherit" ]; then
+              restart_codex_proxy="${{ inputs.restart_codex_proxy }}"
+            fi
           fi
 
           echo "restart_main_app=${restart_main_app}" >> "$GITHUB_OUTPUT"
           echo "restart_scheduler=${restart_scheduler}" >> "$GITHUB_OUTPUT"
           echo "restart_proxy=${restart_proxy}" >> "$GITHUB_OUTPUT"
           echo "restart_gmail_gateway=${restart_gmail_gateway}" >> "$GITHUB_OUTPUT"
+          echo "restart_codex_proxy=${restart_codex_proxy}" >> "$GITHUB_OUTPUT"
 
       - name: Protected Deploy with Rollback
         uses: appleboy/ssh-action@v1.0.0
@@ -103,4 +117,5 @@ jobs:
             export RESTART_SCHEDULER="${{ steps.restart_flags.outputs.restart_scheduler }}"
             export RESTART_PROXY="${{ steps.restart_flags.outputs.restart_proxy }}"
             export RESTART_GMAIL_GATEWAY="${{ steps.restart_flags.outputs.restart_gmail_gateway }}"
+            export RESTART_CODEX_PROXY="${{ steps.restart_flags.outputs.restart_codex_proxy }}"
             bash ./deploy.sh

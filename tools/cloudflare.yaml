@@ -1,0 +1,40 @@
+name: cloudflare
+description: Manage Cloudflare DNS zones and records with API token auth (add/update/proxy toggle).
+tier: extended
+triggers:
+- cloudflare
+- dns
+- zone
+- orange-cloud
+- proxied
+instructions: |
+  # Cloudflare DNS Tool
+
+  Use this tool when DNS records in Cloudflare need to be listed, added, updated, or switched between orange-cloud/gray-cloud.
+
+  Auth:
+  - Use API token from environment variable `CLOUDFLARE_API_TOKEN`.
+  - Recommended local secret file (not committed): `~/.config/cloudflare/env`
+  - Example shell usage:
+    - `set -a; source ~/.config/cloudflare/env; set +a`
+
+  Commands:
+  - Help:
+    - `python -m src.cloudflare_tool --help`
+  - List zones:
+    - `python -m src.cloudflare_tool zones list`
+  - List records in a zone:
+    - `python -m src.cloudflare_tool records list --zone example.com`
+  - Add new DNS record:
+    - `python -m src.cloudflare_tool records add --zone example.com --type A --name api.example.com --content 203.0.113.10 --proxied true`
+  - Update existing record content:
+    - `python -m src.cloudflare_tool records update --zone example.com --name api.example.com --type A --content 203.0.113.11`
+  - Turn orange cloud on:
+    - `python -m src.cloudflare_tool records set-proxy --zone example.com --name api.example.com --type A --state on`
+  - Turn orange cloud off:
+    - `python -m src.cloudflare_tool records set-proxy --zone example.com --name api.example.com --type A --state off`
+
+  Notes:
+  - `--zone` accepts either exact zone name or zone id.
+  - For update/proxy operations, prefer `--record-id` when available to avoid ambiguity.
+setup: 'Ensure command is available: python -m src.cloudflare_tool --help'
