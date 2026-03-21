@@ -595,10 +595,7 @@ async def _chat_completions(request: web.Request) -> web.Response:
 
     semaphore = request.app[SEMAPHORE_KEY]
     try:
-        await asyncio.wait_for(
-            semaphore.acquire(),
-            timeout=config.CODEX_PROXY_QUEUE_TIMEOUT_SECONDS,
-        )
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.001)
     except asyncio.TimeoutError as exc:
         raise ProxyHttpError(
             status=429,
@@ -619,7 +616,7 @@ async def _chat_completions(request: web.Request) -> web.Response:
             prompt=prompt,
             cli_name=config.CODEX_PROXY_CLI_NAME,
             working_dir=config.CODEX_PROXY_WORKDIR,
-            timeout_seconds=max(config.CODEX_PROXY_TIMEOUT_SECONDS, 300.0),
+            timeout_seconds=config.CODEX_PROXY_TIMEOUT_SECONDS,
             max_output_bytes=config.CODEX_PROXY_MAX_OUTPUT_BYTES,
         )
 
@@ -699,10 +696,7 @@ async def _responses(request: web.Request) -> web.Response:
     parsed = _parse_responses_request(payload)
     semaphore = request.app[SEMAPHORE_KEY]
     try:
-        await asyncio.wait_for(
-            semaphore.acquire(),
-            timeout=config.CODEX_PROXY_QUEUE_TIMEOUT_SECONDS,
-        )
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.001)
     except asyncio.TimeoutError as exc:
         raise ProxyHttpError(
             status=429,
@@ -722,7 +716,7 @@ async def _responses(request: web.Request) -> web.Response:
             prompt=prompt,
             cli_name=config.CODEX_PROXY_CLI_NAME,
             working_dir=config.CODEX_PROXY_WORKDIR,
-            timeout_seconds=max(config.CODEX_PROXY_TIMEOUT_SECONDS, 300.0),
+            timeout_seconds=config.CODEX_PROXY_TIMEOUT_SECONDS,
             max_output_bytes=config.CODEX_PROXY_MAX_OUTPUT_BYTES,
         )
         response = _responses_success_payload(parsed=parsed, prompt=prompt, result=result)
