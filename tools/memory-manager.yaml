@@ -17,7 +17,7 @@ instructions: |
   Prefer this tool over manual `bash` parsing commands.
 
   Command:
-  - `python -m src.memory_tool <subcommand> [flags]`
+  - `bash -lc '"${ILA_REPO_ROOT:-$HOME/iron-lady-assistant}"/scripts/memory-manager <subcommand> [flags]'`
 
   Subcommands:
   - `list --type <fact_type> --min-confidence 0.6 [--include-deleted]`
@@ -36,4 +36,4 @@ instructions: |
   4. If taxonomy drifted, run `reclassify`
   5. Confirm with `list`
 
-setup: 'Ensure python module is available: python -m src.memory_tool --help'
+setup: 'Ensure wrapper is available: bash -lc ''"${ILA_REPO_ROOT:-$HOME/iron-lady-assistant}"/scripts/memory-manager --help'''

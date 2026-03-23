@@ -450,7 +450,7 @@ Use the memory-manager tool to list/upsert/delete/reclassify facts.
 - `MEMORY_DIR` env var (default: `memory/` relative to working directory)
 - Facts use schema: `key`, `value`, `type`, `confidence`, `source`, `updated`, `status`, `deleted_at`
 - Supported fact types: `identity`, `preference`, `workflow`, `infrastructure`, `communication`, `project`, `operation`, `tooling`, `schedule`, `misc`
-- Optional CLI for structured edits: `python -m src.memory_tool list|upsert|delete|reclassify`
+- Optional CLI for structured edits: `bash -lc '"${ILA_REPO_ROOT:-$HOME/iron-lady-assistant}"/scripts/memory-manager list|upsert|delete|reclassify'`
 - `upsert --mode append|replace` controls add-vs-replace behavior; `delete` performs soft-delete
 - Facts with confidence < 0.6 are stored but not injected into context
 - Episode search returns top 5 FTS5 matches, falls back to most recent if no keyword match

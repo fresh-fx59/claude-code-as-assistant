@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MEMORY_DIR_DEFAULT="${REPO_ROOT}/memory"
+
+if [[ -x "${REPO_ROOT}/venv/bin/python3" ]]; then
+  PYTHON_BIN="${REPO_ROOT}/venv/bin/python3"
+elif [[ -x "${REPO_ROOT}/venv/bin/python" ]]; then
+  PYTHON_BIN="${REPO_ROOT}/venv/bin/python"
+else
+  PYTHON_BIN="$(command -v python3)"
+fi
+
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
+if [[ $# -gt 0 && "$1" == "--memory-dir" ]]; then
+  exec "${PYTHON_BIN}" -m src.memory_tool "$@"
+fi
+
+exec "${PYTHON_BIN}" -m src.memory_tool --memory-dir "${MEMORY_DIR_DEFAULT}" "$@"

@@ -227,6 +227,23 @@ def test_memory_tool_upsert_and_delete(tmp_path: Path, capsys) -> None:
     assert "test_fact" in listed_with_deleted
 
 
+def test_memory_manager_wrapper_works_outside_repo_cwd(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    wrapper = repo_root / "scripts" / "memory-manager"
+    memory_dir = tmp_path / "memory"
+
+    result = subprocess.run(
+        [str(wrapper), "--memory-dir", str(memory_dir), "list", "--type", "workflow"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip().startswith("[")
+
+
 def test_upsert_append_and_replace_modes(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     manager.upsert_fact(
