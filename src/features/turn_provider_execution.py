@@ -54,6 +54,9 @@ async def run_provider_execution_loop(
     inject_tool_request_fn: Callable[[str, str], str],
     build_steering_patch_fn: Callable[[str, list[Any]], str],
     has_high_risk_conflict_fn: Callable[[list[Any]], bool],
+    provider_switch_context_sync_enabled: bool = False,
+    provider_sync_store: Any | None = None,
+    build_provider_sync_payload_fn: Callable[[str, str, int], dict[str, object]] | None = None,
 ) -> TurnExecutionResult:
     final_response: Any = None
     provider = provider_manager.get_provider(scope_key)
@@ -62,6 +65,7 @@ async def run_provider_execution_loop(
     steering_events_applied = 0
     final_provider_name = provider.name
     final_model_name = current_model_label_fn(session, provider)
+    sync_targets: dict[str, tuple[int, str | None]] = {}
 
     try:
         if provider.cli != "claude" and find_provider_cli_fn(provider.cli) is None:
@@ -77,6 +81,31 @@ async def run_provider_execution_loop(
         pending_apply_ids: list[str] = []
         while True:
             effective_prompt = as_text_fn(turn_prompt) or raw_prompt
+            if (
+                provider_switch_context_sync_enabled
+                and provider_sync_store is not None
+                and build_provider_sync_payload_fn is not None
+            ):
+                cursor = provider_sync_store.get(scope_key=scope_key, provider_name=provider.name)
+                payload_meta = build_provider_sync_payload_fn(
+                    scope_key,
+                    provider.name,
+                    int(cursor.last_synced_worklog_id),
+                )
+                latest_worklog_id = int(payload_meta.get("latest_worklog_id", cursor.last_synced_worklog_id) or 0)
+                payload_text = str(payload_meta.get("payload_text", "") or "")
+                payload_hash = str(payload_meta.get("payload_hash", "") or "")
+                sync_targets[provider.name] = (latest_worklog_id, None)
+                if payload_text and payload_hash != cursor.last_injected_hash:
+                    effective_prompt = (
+                        "<provider_sync_delta>\n"
+                        "Apply these updates as the latest source of truth for this topic.\n"
+                        + payload_text
+                        + "\n</provider_sync_delta>\n\n"
+                        + effective_prompt
+                    )
+                    sync_targets[provider.name] = (latest_worklog_id, payload_hash)
+                    await progress.report_tool("context_sync", f"{provider.name}: +{max(0, latest_worklog_id - int(cursor.last_synced_worklog_id))} update(s)")
             env = worklog_subprocess_env_fn(
                 provider_manager.subprocess_env(provider),
                 chat_id=chat_id,
@@ -338,12 +367,20 @@ async def run_provider_execution_loop(
                 final_response
                 and not final_response.is_error
                 and not state.cancel_requested
-                and final_response.session_id
             ):
-                if is_codex_family_cli_fn(provider.cli):
-                    session_manager.update_codex_session_id(chat_id, final_response.session_id, thread_id)
-                else:
-                    session_manager.update_session_id(chat_id, final_response.session_id, thread_id)
+                if final_response.session_id:
+                    if is_codex_family_cli_fn(provider.cli):
+                        session_manager.update_codex_session_id(chat_id, final_response.session_id, thread_id)
+                    else:
+                        session_manager.update_session_id(chat_id, final_response.session_id, thread_id)
+                if provider_switch_context_sync_enabled and provider_sync_store is not None:
+                    latest_worklog_id, payload_hash = sync_targets.get(provider.name, (0, None))
+                    provider_sync_store.mark_synced(
+                        scope_key=scope_key,
+                        provider_name=provider.name,
+                        latest_worklog_id=int(latest_worklog_id),
+                        injected_hash=payload_hash,
+                    )
 
             if (
                 pending_apply_ids

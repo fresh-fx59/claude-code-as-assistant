@@ -259,3 +259,98 @@ class SteeringLedgerStore:
             if scope_key in rows:
                 rows.pop(scope_key, None)
                 self._save_all_unlocked(rows)
+
+
+@dataclass
+class ProviderSyncCursor:
+    scope_key: str
+    provider_name: str
+    last_synced_worklog_id: int
+    last_injected_hash: str
+    updated_at: str
+
+
+class ProviderSyncStore:
+    """Persist per-scope/per-provider sync cursors for context injection."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _key(scope_key: str, provider_name: str) -> str:
+        return f"{scope_key}|{provider_name}"
+
+    def _load_all_unlocked(self) -> dict[str, ProviderSyncCursor]:
+        if not self._path.exists():
+            return {}
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+
+        cursors: dict[str, ProviderSyncCursor] = {}
+        for key, row in data.items():
+            if not isinstance(row, dict):
+                continue
+            try:
+                cursors[key] = ProviderSyncCursor(**row)
+            except TypeError:
+                continue
+        return cursors
+
+    def _save_all_unlocked(self, cursors: dict[str, ProviderSyncCursor]) -> None:
+        payload = {k: asdict(v) for k, v in cursors.items()}
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self._path)
+
+    def get(self, *, scope_key: str, provider_name: str) -> ProviderSyncCursor:
+        key = self._key(scope_key, provider_name)
+        with self._lock:
+            cursors = self._load_all_unlocked()
+            current = cursors.get(key)
+            if current is not None:
+                return current
+            return ProviderSyncCursor(
+                scope_key=scope_key,
+                provider_name=provider_name,
+                last_synced_worklog_id=0,
+                last_injected_hash="",
+                updated_at=_now_iso(),
+            )
+
+    def mark_synced(
+        self,
+        *,
+        scope_key: str,
+        provider_name: str,
+        latest_worklog_id: int,
+        injected_hash: str | None = None,
+    ) -> ProviderSyncCursor:
+        key = self._key(scope_key, provider_name)
+        with self._lock:
+            cursors = self._load_all_unlocked()
+            current = cursors.get(key)
+            if current is None:
+                current = ProviderSyncCursor(
+                    scope_key=scope_key,
+                    provider_name=provider_name,
+                    last_synced_worklog_id=0,
+                    last_injected_hash="",
+                    updated_at=_now_iso(),
+                )
+
+            if latest_worklog_id >= current.last_synced_worklog_id:
+                current.last_synced_worklog_id = latest_worklog_id
+            if injected_hash is not None:
+                current.last_injected_hash = injected_hash
+            current.updated_at = _now_iso()
+
+            cursors[key] = current
+            self._save_all_unlocked(cursors)
+            return current

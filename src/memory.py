@@ -1481,6 +1481,77 @@ class MemoryManager:
         finally:
             con.close()
 
+    def get_scope_worklog_delta(
+        self,
+        *,
+        scope_key: str,
+        after_worklog_id: int = 0,
+        limit: int = 8,
+    ) -> dict[str, object]:
+        """Return recent worklog rows for a scope after a known worklog id."""
+        self._ensure_storage()
+        con = self._connect()
+        con.row_factory = sqlite3.Row
+        try:
+            latest_row = con.execute(
+                "SELECT COALESCE(MAX(id), 0) AS latest_id FROM worklog_sessions WHERE scope_key = ?",
+                (scope_key,),
+            ).fetchone()
+            latest_id = int(latest_row["latest_id"]) if latest_row else 0
+            rows = con.execute(
+                """
+                SELECT
+                    w.id,
+                    w.scope_key,
+                    w.provider,
+                    w.session_type,
+                    w.session_id,
+                    w.topic_label,
+                    w.summary,
+                    w.started_at,
+                    w.last_seen_at,
+                    e.decisions AS episode_decisions
+                FROM worklog_sessions w
+                LEFT JOIN episodes e ON e.id = w.episode_id
+                WHERE w.scope_key = ? AND w.id > ?
+                ORDER BY w.id ASC
+                LIMIT ?
+                """,
+                (scope_key, int(after_worklog_id), int(max(1, limit))),
+            ).fetchall()
+
+            parsed: list[dict[str, object]] = []
+            for row in rows:
+                decisions_raw = row["episode_decisions"]
+                decisions: list[str] = []
+                if isinstance(decisions_raw, str) and decisions_raw.strip():
+                    try:
+                        loaded = json.loads(decisions_raw)
+                        if isinstance(loaded, list):
+                            decisions = [str(item).strip() for item in loaded if str(item).strip()]
+                    except Exception:
+                        decisions = []
+                parsed.append(
+                    {
+                        "id": int(row["id"]),
+                        "scope_key": row["scope_key"],
+                        "provider": row["provider"],
+                        "session_type": row["session_type"],
+                        "session_id": row["session_id"],
+                        "topic_label": row["topic_label"],
+                        "summary": row["summary"],
+                        "started_at": row["started_at"],
+                        "last_seen_at": row["last_seen_at"],
+                        "decisions": decisions,
+                    }
+                )
+            return {
+                "latest_worklog_id": latest_id,
+                "rows": parsed,
+            }
+        finally:
+            con.close()
+
     def search_episodes(
         self,
         query: str,

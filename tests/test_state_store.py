@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from src.features.state_store import ResumeStateStore, SteeringEvent, SteeringLedgerStore
+from src.features.state_store import ProviderSyncStore, ResumeStateStore, SteeringEvent, SteeringLedgerStore
 
 
 def test_record_start_and_success_persists(tmp_path) -> None:
@@ -100,3 +100,33 @@ def test_steering_ledger_append_get_mark_and_clear(tmp_path) -> None:
     store.clear(scope_key="123:main")
     payload = json.loads((tmp_path / "steering_ledger.json").read_text(encoding="utf-8"))
     assert "123:main" not in payload
+
+
+def test_provider_sync_store_defaults_and_mark_synced(tmp_path) -> None:
+    store = ProviderSyncStore(tmp_path / "provider_sync_cursors.json")
+
+    cursor = store.get(scope_key="123:main", provider_name="codex2")
+    assert cursor.last_synced_worklog_id == 0
+    assert cursor.last_injected_hash == ""
+
+    updated = store.mark_synced(
+        scope_key="123:main",
+        provider_name="codex2",
+        latest_worklog_id=42,
+        injected_hash="abc",
+    )
+    assert updated.last_synced_worklog_id == 42
+    assert updated.last_injected_hash == "abc"
+
+    reloaded = store.get(scope_key="123:main", provider_name="codex2")
+    assert reloaded.last_synced_worklog_id == 42
+    assert reloaded.last_injected_hash == "abc"
+
+
+def test_provider_sync_store_does_not_regress_version(tmp_path) -> None:
+    store = ProviderSyncStore(tmp_path / "provider_sync_cursors.json")
+    store.mark_synced(scope_key="123:main", provider_name="codex", latest_worklog_id=10, injected_hash="x")
+    store.mark_synced(scope_key="123:main", provider_name="codex", latest_worklog_id=5, injected_hash=None)
+
+    cursor = store.get(scope_key="123:main", provider_name="codex")
+    assert cursor.last_synced_worklog_id == 10
