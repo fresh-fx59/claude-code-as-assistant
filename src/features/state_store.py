@@ -491,6 +491,63 @@ class TopicStateStore:
             self._save_all_unlocked(states)
             return current
 
+    def backfill_scope(
+        self,
+        *,
+        scope_key: str,
+        events: list[dict[str, object]],
+        total_event_count: int | None = None,
+        max_events: int = 80,
+        skip_if_populated: bool = True,
+    ) -> tuple[TopicState, bool]:
+        """Seed a scope with historical events while preserving compact storage."""
+        with self._lock:
+            states = self._load_all_unlocked()
+            current = states.get(scope_key)
+            if (
+                skip_if_populated
+                and current is not None
+                and (int(current.topic_version) > 0 or bool(current.events))
+            ):
+                return current, False
+
+            total = int(total_event_count) if total_event_count is not None else len(events)
+            total = max(0, total)
+            tail_size = max(1, int(max_events))
+            tail = list(events[-tail_size:])
+            start_version = max(1, total - len(tail) + 1) if tail else 1
+
+            compact_events: list[TopicDeltaEvent] = []
+            for idx, item in enumerate(tail):
+                summary = str(item.get("summary", "") or "").strip()
+                decisions = [str(v).strip() for v in (item.get("decisions") or []) if str(v).strip()]
+                open_tasks = [str(v).strip() for v in (item.get("open_tasks") or []) if str(v).strip()]
+                artifacts = [str(v).strip() for v in (item.get("artifacts") or []) if str(v).strip()]
+                provider_name = str(item.get("provider_name", "") or "").strip()
+                updated_at = str(item.get("updated_at", "") or "").strip() or _now_iso()
+                compact_events.append(
+                    TopicDeltaEvent(
+                        version=start_version + idx,
+                        provider_name=provider_name,
+                        summary=summary,
+                        decisions=decisions,
+                        open_tasks=open_tasks,
+                        artifacts=artifacts,
+                        updated_at=updated_at,
+                    )
+                )
+
+            updated_at = compact_events[-1].updated_at if compact_events else _now_iso()
+            state = TopicState(
+                scope_key=scope_key,
+                topic_version=total,
+                updated_at=updated_at,
+                events=compact_events,
+            )
+            states[scope_key] = state
+            self._save_all_unlocked(states)
+            return state, True
+
     def delta_since(self, *, scope_key: str, after_version: int, limit: int = 8) -> dict[str, object]:
         state = self.get(scope_key=scope_key)
         filtered = [event for event in state.events if int(event.version) > int(after_version)]

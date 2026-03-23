@@ -28,6 +28,7 @@ from .config import (
 )
 from . import bot as bot_module
 from .bot import router, provider_manager, task_manager, schedule_manager
+from .features.provider_sync_backfill import run_one_time_provider_sync_backfill
 from .metrics import start_metrics_server
 from .tasks import TaskNotificationMode
 
@@ -397,6 +398,21 @@ async def initialize_runtime(bot: Bot) -> tuple[object, object]:
     # Keep bot module globals in sync so command handlers use live managers after restart.
     bot_module.task_manager = task_manager
     bot_module.schedule_manager = schedule_manager
+    try:
+        codex_provider_names = [
+            str(provider.name)
+            for provider in bot_module.provider_manager.providers
+            if str(getattr(provider, "cli", "")).lower().startswith("codex")
+        ]
+        backfill_result = run_one_time_provider_sync_backfill(
+            memory_dir=MEMORY_DIR,
+            topic_state_store=bot_module.topic_state_store,
+            provider_sync_store=bot_module.provider_sync_store,
+            codex_provider_names=codex_provider_names,
+        )
+        logging.info("Provider sync backfill result: %s", backfill_result)
+    except Exception:
+        logging.exception("Provider sync one-time backfill failed")
     await task_manager.start()
     if _lifecycle_replay_task is None:
         _lifecycle_replay_task = asyncio.create_task(lifecycle_replay_loop(bot))

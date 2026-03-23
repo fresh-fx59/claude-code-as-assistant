@@ -172,3 +172,32 @@ def test_topic_state_store_delta_since_returns_recent_events(tmp_path) -> None:
     assert len(events) == 2
     assert events[0]["version"] == 2
     assert events[1]["version"] == 3
+
+
+def test_topic_state_store_backfill_scope_seeds_compact_history(tmp_path) -> None:
+    store = TopicStateStore(tmp_path / "topic_state_store.json")
+    rows = [
+        {"provider_name": "codex", "summary": "v1", "updated_at": "2026-03-01T10:00:00+00:00"},
+        {"provider_name": "codex2", "summary": "v2", "updated_at": "2026-03-01T10:01:00+00:00"},
+        {"provider_name": "codex", "summary": "v3", "updated_at": "2026-03-01T10:02:00+00:00"},
+    ]
+    state, applied = store.backfill_scope(
+        scope_key="123:main",
+        events=rows,
+        total_event_count=3,
+        max_events=2,
+    )
+
+    assert applied is True
+    assert state.topic_version == 3
+    assert len(state.events) == 2
+    assert state.events[0].version == 2
+    assert state.events[1].version == 3
+
+    state2, applied2 = store.backfill_scope(
+        scope_key="123:main",
+        events=rows,
+        total_event_count=3,
+    )
+    assert applied2 is False
+    assert state2.topic_version == 3
