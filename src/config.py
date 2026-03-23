@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION: str = "0.51.25"
+VERSION: str = "0.51.26"
 
 # ── Bot token (required) ────────────────────────────────────
 BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -38,6 +38,12 @@ if not ALLOWED_USER_IDS and not ALLOWED_CHAT_IDS:
         "WARNING: ALLOWED_USER_IDS and ALLOWED_CHAT_IDS are empty — the bot will ignore ALL messages.\n"
         "  Add Telegram user IDs and/or chat IDs to .env.\n"
     )
+
+
+def _first_or_none(values: set[int]) -> int | None:
+    if not values:
+        return None
+    return sorted(values)[0]
 
 # ── Model & optional settings ───────────────────────────────
 DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "sonnet")
@@ -114,6 +120,17 @@ TELEGRAM_STATUS_MESSAGE_COOLDOWN_SECONDS: float = float(
 TELEGRAM_BACKGROUND_STATUS_MESSAGE_COOLDOWN_SECONDS: float = float(
     os.getenv("TELEGRAM_BACKGROUND_STATUS_MESSAGE_COOLDOWN_SECONDS", "45.0")
 )
+PROVIDER_SWITCH_CONTEXT_SYNC_ENABLED: bool = (
+    os.getenv("PROVIDER_SWITCH_CONTEXT_SYNC_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+)
+PROVIDER_SWITCH_CONTEXT_SYNC_MAX_ITEMS: int = max(
+    1,
+    int(os.getenv("PROVIDER_SWITCH_CONTEXT_SYNC_MAX_ITEMS", "6")),
+)
+PROVIDER_SWITCH_CONTEXT_SYNC_MAX_CHARS: int = max(
+    200,
+    int(os.getenv("PROVIDER_SWITCH_CONTEXT_SYNC_MAX_CHARS", "1800")),
+)
 VOICE_TRANSCRIPTION_MAX_CONCURRENCY: int = max(
     1,
     int(os.getenv("VOICE_TRANSCRIPTION_MAX_CONCURRENCY", "1")),
@@ -139,6 +156,51 @@ SCHEDULER_NOTIFY_THREAD_ID: int | None = (
     int(_raw_scheduler_notify_thread_id) if _raw_scheduler_notify_thread_id else None
 )
 SCHEDULER_NOTIFY_LEVEL: str = os.getenv("SCHEDULER_NOTIFY_LEVEL", "failures").strip().lower() or "failures"
+MONITORING_WATCHDOG_AUTOINSTALL: bool = (
+    os.getenv("MONITORING_WATCHDOG_AUTOINSTALL", "1").strip().lower() not in {"0", "false", "no"}
+)
+MONITORING_WATCHDOG_HOST: str = os.getenv("MONITORING_WATCHDOG_HOST", "45.151.30.146").strip() or "45.151.30.146"
+_raw_monitoring_watchdog_ports = os.getenv("MONITORING_WATCHDOG_PORTS", "22,15443")
+MONITORING_WATCHDOG_PORTS: tuple[int, ...] = tuple(
+    int(item.strip()) for item in _raw_monitoring_watchdog_ports.split(",") if item.strip()
+)
+MONITORING_WATCHDOG_TIMEOUT_SECONDS: float = max(
+    1.0,
+    float(os.getenv("MONITORING_WATCHDOG_TIMEOUT_SECONDS", "4")),
+)
+MONITORING_WATCHDOG_FAIL_THRESHOLD: int = max(
+    1,
+    int(os.getenv("MONITORING_WATCHDOG_FAIL_THRESHOLD", "3")),
+)
+MONITORING_WATCHDOG_INTERVAL_MINUTES: int = max(
+    1,
+    int(os.getenv("MONITORING_WATCHDOG_INTERVAL_MINUTES", "1")),
+)
+_raw_monitoring_watchdog_chat_id = os.getenv("MONITORING_WATCHDOG_CHAT_ID", "").strip()
+MONITORING_WATCHDOG_CHAT_ID: int | None = (
+    int(_raw_monitoring_watchdog_chat_id)
+    if _raw_monitoring_watchdog_chat_id
+    else (SCHEDULER_NOTIFY_CHAT_ID if SCHEDULER_NOTIFY_CHAT_ID is not None else _first_or_none(ALLOWED_CHAT_IDS))
+)
+_raw_monitoring_watchdog_thread_id = os.getenv("MONITORING_WATCHDOG_THREAD_ID", "").strip()
+MONITORING_WATCHDOG_THREAD_ID: int | None = (
+    int(_raw_monitoring_watchdog_thread_id)
+    if _raw_monitoring_watchdog_thread_id
+    else SCHEDULER_NOTIFY_THREAD_ID
+)
+_raw_monitoring_watchdog_user_id = os.getenv("MONITORING_WATCHDOG_USER_ID", "").strip()
+MONITORING_WATCHDOG_USER_ID: int | None = (
+    int(_raw_monitoring_watchdog_user_id)
+    if _raw_monitoring_watchdog_user_id
+    else _first_or_none(ALLOWED_USER_IDS)
+)
+MONITORING_WATCHDOG_PROVIDER_CLI: str = (
+    os.getenv("MONITORING_WATCHDOG_PROVIDER_CLI", "codex").strip() or "codex"
+)
+MONITORING_WATCHDOG_MODEL: str = (
+    os.getenv("MONITORING_WATCHDOG_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+)
+MONITORING_WATCHDOG_RESUME_ARG: str | None = os.getenv("MONITORING_WATCHDOG_RESUME_ARG", "").strip() or None
 AUTONOMY_ENABLED: bool = os.getenv("AUTONOMY_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 AUTONOMY_FAILURE_THRESHOLD: int = int(os.getenv("AUTONOMY_FAILURE_THRESHOLD", "3"))
 AUTONOMY_FAILURE_WINDOW_MINUTES: int = int(os.getenv("AUTONOMY_FAILURE_WINDOW_MINUTES", "60"))
@@ -201,6 +263,14 @@ MEMORY_DIR: Path = Path(
     os.path.expanduser(_raw_memory_dir) if _raw_memory_dir else "memory"
 )
 os.makedirs(MEMORY_DIR, exist_ok=True)
+MONITORING_WATCHDOG_STATE_PATH: Path = Path(
+    os.path.expanduser(
+        os.getenv(
+            "MONITORING_WATCHDOG_STATE_PATH",
+            str(MEMORY_DIR / "monitoring_watchdog_state.json"),
+        )
+    )
+)
 LIFECYCLE_DB_PATH: Path = MEMORY_DIR / "lifecycle.db"
 TELEGRAM_DIGEST_DB_PATH: Path = MEMORY_DIR / "telegram_digest.db"
 TELEGRAM_DIGEST_BRIEF_PATH: Path = MEMORY_DIR / "telegram_digest_brief.md"
