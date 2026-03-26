@@ -149,14 +149,14 @@ class ToolRegistry:
         return None
 
     def match_tools(self, user_message: str) -> tuple[list[ToolDefinition], list[str], list[str]]:
-        """Select active tools with core-vs-extended policy and guardrails.
+        """Select active tools by explicit request or trigger match.
 
         Returns:
-            active tools, suggested extended tools, blocked tool names.
+            active tools, reserved hints, blocked tool names.
         """
         msg_lower = user_message.lower()
         matched: list[ToolDefinition] = []
-        suggested_extended: list[str] = []
+        reserved_hints: list[str] = []
         blocked: list[str] = []
         seen_names: set[str] = set()
         requested_names = set(self.extract_requested_tools(user_message))
@@ -174,13 +174,6 @@ class ToolRegistry:
                 seen_names.add(full.manifest.name)
 
         for manifest in self._manifests:
-            # Extended tools only activate via explicit USE_TOOL.
-            if manifest.tier == "extended":
-                if manifest.name.lower() in requested_names:
-                    continue
-                if any(trigger.lower() in msg_lower for trigger in manifest.triggers):
-                    suggested_extended.append(manifest.name)
-                continue
             for trigger in manifest.triggers:
                 if trigger.lower() in msg_lower:
                     full = self._load_full(manifest.name)
@@ -192,7 +185,7 @@ class ToolRegistry:
                         matched.append(full)
                         seen_names.add(full.manifest.name)
                     break
-        return matched, suggested_extended, blocked
+        return matched, reserved_hints, blocked
 
     def build_context(self, user_message: str) -> str:
         """Build XML <tools> block for matched tools."""
@@ -201,19 +194,17 @@ class ToolRegistry:
 
         available_lines = [f"- {m.name}: {m.description}" for m in self._manifests]
         available_lines.append(
-            'If a tool is needed, respond with exactly: USE_TOOL: <tool_name>.'
+            "Tools auto-activate from intent/triggers in the current message."
         )
         available_lines.append(
-            "Only core tools auto-activate from triggers; extended tools require explicit USE_TOOL."
+            "Optional explicit request still works: USE_TOOL: <tool_name>"
         )
         available_section = "<available>\n" + "\n".join(available_lines) + "\n</available>"
 
-        matched, suggested_extended, blocked = self.match_tools(user_message)
+        matched, reserved_hints, blocked = self.match_tools(user_message)
         hints_lines: list[str] = []
-        if suggested_extended:
-            deduped = ", ".join(dict.fromkeys(suggested_extended))
-            hints_lines.append(f"Extended tools matched by intent: {deduped}")
-            hints_lines.append("Activate one explicitly with: USE_TOOL: <tool_name>")
+        if reserved_hints:
+            hints_lines.extend(reserved_hints)
         if blocked:
             hints_lines.append(f"Guardrail-blocked tools: {', '.join(dict.fromkeys(blocked))}")
         hints_section = (

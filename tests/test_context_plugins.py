@@ -80,7 +80,7 @@ def test_tools_plugin_explicit_use_tool_directive(tmp_path: Path) -> None:
     context = registry.build_context("Please decide.\nUSE_TOOL: web_search")
 
     assert '<tool name="web_search">' in context
-    assert "If a tool is needed, respond with exactly: USE_TOOL: <tool_name>." in context
+    assert "Optional explicit request still works: USE_TOOL: <tool_name>" in context
 
 
 def test_extract_requested_tools_deduplicates_and_normalizes() -> None:
@@ -90,7 +90,7 @@ def test_extract_requested_tools_deduplicates_and_normalizes() -> None:
     assert requested == ["web_search", "github_pr"]
 
 
-def test_extended_tool_does_not_auto_activate_from_trigger(tmp_path: Path) -> None:
+def test_extended_tool_auto_activates_from_trigger(tmp_path: Path) -> None:
     (tmp_path / "discord.yaml").write_text(
         "\n".join(
             [
@@ -106,9 +106,7 @@ def test_extended_tool_does_not_auto_activate_from_trigger(tmp_path: Path) -> No
     registry = PluginToolRegistry(tmp_path)
     context = registry.build_context("post this in discord")
 
-    assert '<tool name="discord">' not in context
-    assert "Extended tools matched by intent: discord" in context
-    assert "Activate one explicitly with: USE_TOOL: <tool_name>" in context
+    assert '<tool name="discord">' in context
 
 
 def test_core_tool_auto_activates_from_trigger(tmp_path: Path) -> None:
