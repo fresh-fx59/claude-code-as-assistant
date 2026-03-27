@@ -17,3 +17,4 @@ resume-work.md
 node_modules/
 whisper.cpp/
 .claude/
+.agent-tmp/

@@ -26,6 +26,8 @@ from watchdog.events import FileSystemEventHandler
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "providers.json"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPTS_BIN_DIR = _REPO_ROOT / "scripts"
 
 
 def _normalized_subprocess_path(existing_path: str) -> str:
@@ -34,6 +36,7 @@ def _normalized_subprocess_path(existing_path: str) -> str:
     user = getpass.getuser()
     home = Path.home()
     candidate_parts = [
+        str(_SCRIPTS_BIN_DIR),
         str(home / f".npm-{user}" / "bin"),
         str(home / ".local" / "bin"),
         "/usr/local/bin",
@@ -252,6 +255,7 @@ class ProviderManager:
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)
         env["PATH"] = _normalized_subprocess_path(env.get("PATH", ""))
+        env.setdefault("ILA_REPO_ROOT", str(_REPO_ROOT))
         env.update(provider.env)
         return env
 

@@ -169,6 +169,46 @@ def test_guardrail_blocks_risky_when_approval_required(tmp_path: Path) -> None:
     assert "Guardrail-blocked tools: discord (requires-approval)" in context
 
 
+def test_memory_manager_is_always_active_without_trigger(tmp_path: Path) -> None:
+    (tmp_path / "memory-manager.yaml").write_text(
+        "\n".join(
+            [
+                "name: memory-manager",
+                "description: Structured memory updates",
+                "tier: core",
+                "triggers: [memory, remember]",
+                "instructions: |",
+                "  Use memory manager.",
+            ]
+        )
+    )
+    registry = PluginToolRegistry(tmp_path)
+    context = registry.build_context("расскажи шутку")
+
+    assert '<tool name="memory-manager">' in context
+    assert "Use memory manager." in context
+
+
+def test_memory_manager_always_active_respects_denylist(tmp_path: Path) -> None:
+    (tmp_path / "memory-manager.yaml").write_text(
+        "\n".join(
+            [
+                "name: memory-manager",
+                "description: Structured memory updates",
+                "tier: core",
+                "triggers: [memory, remember]",
+                "instructions: |",
+                "  Use memory manager.",
+            ]
+        )
+    )
+    registry = PluginToolRegistry(tmp_path, denylist={"memory-manager"})
+    context = registry.build_context("расскажи шутку")
+
+    assert '<tool name="memory-manager">' not in context
+    assert "Guardrail-blocked tools: memory-manager (denylisted)" in context
+
+
 def test_real_summarize_manifest_is_model_agnostic() -> None:
     manifest_path = Path(__file__).resolve().parents[1] / "tools" / "summarize.yaml"
     manifest = yaml.safe_load(manifest_path.read_text())

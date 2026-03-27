@@ -28,6 +28,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 _USE_TOOL_PATTERN = re.compile(r"^\s*USE_TOOL:\s*([A-Za-z0-9_.-]+)\s*$", re.IGNORECASE | re.MULTILINE)
+_ALWAYS_ACTIVE_TOOL_NAMES = ("memory-manager",)
 ToolTier = Literal["core", "extended"]
 
 
@@ -160,6 +161,18 @@ class ToolRegistry:
         blocked: list[str] = []
         seen_names: set[str] = set()
         requested_names = set(self.extract_requested_tools(user_message))
+
+        for name in _ALWAYS_ACTIVE_TOOL_NAMES:
+            full = self._load_full(name)
+            if not full:
+                continue
+            blocked_reason = self._check_guardrails(full.manifest)
+            if blocked_reason:
+                blocked.append(f"{full.manifest.name} ({blocked_reason})")
+                continue
+            if full.manifest.name not in seen_names:
+                matched.append(full)
+                seen_names.add(full.manifest.name)
 
         for name in requested_names:
             full = self._load_full(name)
