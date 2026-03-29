@@ -201,6 +201,43 @@ MONITORING_WATCHDOG_MODEL: str = (
     os.getenv("MONITORING_WATCHDOG_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 )
 MONITORING_WATCHDOG_RESUME_ARG: str | None = os.getenv("MONITORING_WATCHDOG_RESUME_ARG", "").strip() or None
+PROACTIVE_TOPIC_AUTOINSTALL: bool = (
+    os.getenv("PROACTIVE_TOPIC_AUTOINSTALL", "0").strip().lower() not in {"0", "false", "no"}
+)
+PROACTIVE_TOPIC_INTERVAL_MINUTES: int = max(
+    1,
+    int(os.getenv("PROACTIVE_TOPIC_INTERVAL_MINUTES", "60")),
+)
+_raw_proactive_topic_chat_id = os.getenv("PROACTIVE_TOPIC_CHAT_ID", "").strip()
+PROACTIVE_TOPIC_CHAT_ID: int | None = (
+    int(_raw_proactive_topic_chat_id)
+    if _raw_proactive_topic_chat_id
+    else (SCHEDULER_NOTIFY_CHAT_ID if SCHEDULER_NOTIFY_CHAT_ID is not None else _first_or_none(ALLOWED_CHAT_IDS))
+)
+_raw_proactive_topic_thread_id = os.getenv("PROACTIVE_TOPIC_THREAD_ID", "").strip()
+PROACTIVE_TOPIC_THREAD_ID: int | None = (
+    int(_raw_proactive_topic_thread_id)
+    if _raw_proactive_topic_thread_id
+    else SCHEDULER_NOTIFY_THREAD_ID
+)
+_raw_proactive_topic_user_id = os.getenv("PROACTIVE_TOPIC_USER_ID", "").strip()
+PROACTIVE_TOPIC_USER_ID: int | None = (
+    int(_raw_proactive_topic_user_id)
+    if _raw_proactive_topic_user_id
+    else _first_or_none(ALLOWED_USER_IDS)
+)
+PROACTIVE_TOPIC_PROVIDER_CLI: str = (
+    os.getenv("PROACTIVE_TOPIC_PROVIDER_CLI", "codex").strip() or "codex"
+)
+PROACTIVE_TOPIC_MODEL: str = (
+    os.getenv("PROACTIVE_TOPIC_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+)
+PROACTIVE_TOPIC_RESUME_ARG: str | None = os.getenv("PROACTIVE_TOPIC_RESUME_ARG", "").strip() or None
+PROACTIVE_TOPIC_MAX_TOPICS: int = max(1, int(os.getenv("PROACTIVE_TOPIC_MAX_TOPICS", "5")))
+PROACTIVE_TOPIC_COOLDOWN_HOURS: float = max(
+    0.0,
+    float(os.getenv("PROACTIVE_TOPIC_COOLDOWN_HOURS", "6")),
+)
 AUTONOMY_ENABLED: bool = os.getenv("AUTONOMY_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 AUTONOMY_FAILURE_THRESHOLD: int = int(os.getenv("AUTONOMY_FAILURE_THRESHOLD", "3"))
 AUTONOMY_FAILURE_WINDOW_MINUTES: int = int(os.getenv("AUTONOMY_FAILURE_WINDOW_MINUTES", "60"))
@@ -268,6 +305,22 @@ MONITORING_WATCHDOG_STATE_PATH: Path = Path(
         os.getenv(
             "MONITORING_WATCHDOG_STATE_PATH",
             str(MEMORY_DIR / "monitoring_watchdog_state.json"),
+        )
+    )
+)
+PROACTIVE_TOPIC_STATE_PATH: Path = Path(
+    os.path.expanduser(
+        os.getenv(
+            "PROACTIVE_TOPIC_STATE_PATH",
+            str(MEMORY_DIR / "topic_proactive_state.json"),
+        )
+    )
+)
+PROACTIVE_TOPIC_SESSIONS_PATH: Path = Path(
+    os.path.expanduser(
+        os.getenv(
+            "PROACTIVE_TOPIC_SESSIONS_PATH",
+            "sessions.json",
         )
     )
 )

@@ -126,6 +126,14 @@ if ! command -v codex2 &>/dev/null; then
     warn "Codex2 CLI not found in PATH. Install/configure it if you plan to use the codex2 provider."
 fi
 
+if ! command -v codex3 &>/dev/null; then
+    warn "Codex3 CLI not found in PATH. Install/configure it if you plan to use the codex3 provider."
+fi
+
+if ! command -v codex4 &>/dev/null; then
+    warn "Codex4 CLI not found in PATH. Install/configure it if you plan to use the codex4 provider."
+fi
+
 # ── Check .env exists ────────────────────────────────────────
 if [ ! -f .env ]; then
     error "No .env file found!"

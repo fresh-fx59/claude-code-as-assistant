@@ -1,6 +1,6 @@
 # Telegram Persona Assistant
 
-Chat with your assistant directly from Telegram. The bot supports multiple providers and CLIs, including Claude, Codex, Codex2, and Codex3.
+Chat with your assistant directly from Telegram. The bot supports multiple providers and CLIs, including Claude, Codex, Codex2, Codex3, and Codex4.
 
 The runtime can switch providers per chat, preserve session state, and fall back between configured backends from `providers.json`.
 
@@ -16,6 +16,7 @@ Before starting, make sure you have:
    - Codex: `codex`
    - Codex2: `codex2`
    - Codex3: `codex3`
+   - Codex4: `codex4`
 
 ## Setup (5 minutes)
 
@@ -47,6 +48,12 @@ Codex3:
 # install/configure the codex3 CLI so `codex3` is available in PATH
 ```
 
+Codex4:
+
+```bash
+# install/configure the codex4 CLI so `codex4` is available in PATH
+```
+
 Then authenticate the providers you installed:
 
 ```bash
@@ -54,6 +61,7 @@ claude   # follow the prompts to log in
 codex    # optional
 codex2   # optional
 codex3   # optional
+codex4   # optional
 ```
 
 ### 2. Clone this repo
@@ -634,6 +642,24 @@ Optional monitoring topic:
 - set `SCHEDULER_NOTIFY_THREAD_ID`
 - optional: set `SCHEDULER_NOTIFY_LEVEL=all|failures|off` (default: `failures`)
 
+Optional proactive topic loop (hourly by default):
+
+- set `PROACTIVE_TOPIC_AUTOINSTALL=1`
+- optional: set `PROACTIVE_TOPIC_INTERVAL_MINUTES` (default: `60`)
+- optional: set `PROACTIVE_TOPIC_MAX_TOPICS` (default: `5`)
+- optional: set `PROACTIVE_TOPIC_COOLDOWN_HOURS` (default: `6`)
+- optional: set `PROACTIVE_TOPIC_CHAT_ID`, `PROACTIVE_TOPIC_THREAD_ID`, `PROACTIVE_TOPIC_USER_ID`
+
+The proactive loop uses a native schedule (`python -m src.topic_proactive_tool check`) to classify topic deltas into:
+- actionable topics with bounded outcomes (eligible for immediate execution)
+- long-running topics without a strict terminal outcome (eligible for one bounded progress step, not forced closure)
+
+To install manually instead of daemon auto-install:
+
+```bash
+python3 -m src.topic_proactive_tool install
+```
+
 The daemon will execute due schedules in the background and mirror only high-signal events by default: new failures, warn/critical task results, and recoveries from prior problems.
 Routine submitted/started/success noise stays silent unless you explicitly set `SCHEDULER_NOTIFY_LEVEL=all`.
 Scheduled jobs also preserve the provider runtime they were created with, so a task created from a `codex*` thread will continue running through that same Codex CLI when the standalone daemon picks it up.
@@ -653,7 +679,7 @@ The bundled systemd units include the per-user npm bin path so `codex` CLIs inst
 - Run `npm install -g @anthropic-ai/claude-code`
 - Make sure Node.js 18+ is installed
 
-**"Provider CLI 'codex', 'codex2', or 'codex3' is not installed"**
+**"Provider CLI 'codex', 'codex2', 'codex3', or 'codex4' is not installed"**
 - Install or configure the missing CLI so it is available on `PATH`
 - Switch providers with `/provider` only after the CLI is installed
 

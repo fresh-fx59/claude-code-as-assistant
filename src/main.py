@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,18 @@ from .config import (
     TELEGRAM_BACKOFF_FACTOR,
     TELEGRAM_BACKOFF_JITTER,
     EMBEDDED_SCHEDULER_ENABLED,
+    PROACTIVE_TOPIC_AUTOINSTALL,
+    PROACTIVE_TOPIC_CHAT_ID,
+    PROACTIVE_TOPIC_COOLDOWN_HOURS,
+    PROACTIVE_TOPIC_INTERVAL_MINUTES,
+    PROACTIVE_TOPIC_MAX_TOPICS,
+    PROACTIVE_TOPIC_MODEL,
+    PROACTIVE_TOPIC_PROVIDER_CLI,
+    PROACTIVE_TOPIC_RESUME_ARG,
+    PROACTIVE_TOPIC_SESSIONS_PATH,
+    PROACTIVE_TOPIC_STATE_PATH,
+    PROACTIVE_TOPIC_THREAD_ID,
+    PROACTIVE_TOPIC_USER_ID,
     PROVIDER_SWITCH_CONTEXT_SYNC_MAX_ITEMS,
     SCHEDULER_NOTIFY_LEVEL,
 )
@@ -33,6 +46,7 @@ from .features.provider_sync_backfill import run_one_time_provider_sync_backfill
 from .features.provider_sync_backfill import auto_prepare_new_codex_providers
 from .metrics import start_metrics_server
 from .tasks import TaskNotificationMode
+from .topic_proactive_tool import ensure_proactive_topic_schedule
 
 _startup_notice_sent_at: dict[tuple[int, int | None], datetime] = {}
 _lifecycle_replay_task: asyncio.Task | None = None
@@ -428,6 +442,42 @@ async def initialize_runtime(bot: Bot) -> tuple[object, object]:
     if EMBEDDED_SCHEDULER_ENABLED:
         task_manager.add_observer(schedule_manager)
         await schedule_manager.start()
+        if PROACTIVE_TOPIC_AUTOINSTALL:
+            ensured = await ensure_proactive_topic_schedule(
+                manager=schedule_manager,
+                chat_id=PROACTIVE_TOPIC_CHAT_ID,
+                user_id=PROACTIVE_TOPIC_USER_ID,
+                message_thread_id=PROACTIVE_TOPIC_THREAD_ID,
+                model=PROACTIVE_TOPIC_MODEL,
+                provider_cli=PROACTIVE_TOPIC_PROVIDER_CLI,
+                resume_arg=PROACTIVE_TOPIC_RESUME_ARG,
+                interval_minutes=PROACTIVE_TOPIC_INTERVAL_MINUTES,
+                memory_dir=MEMORY_DIR,
+                state_path=PROACTIVE_TOPIC_STATE_PATH,
+                sessions_path=PROACTIVE_TOPIC_SESSIONS_PATH,
+                max_topics=PROACTIVE_TOPIC_MAX_TOPICS,
+                cooldown_hours=PROACTIVE_TOPIC_COOLDOWN_HOURS,
+                python_bin=sys.executable,
+            )
+            if ensured is None:
+                logging.warning(
+                    "Embedded proactive topic schedule auto-install skipped: missing chat_id/user_id "
+                    "(chat_id=%s user_id=%s)",
+                    PROACTIVE_TOPIC_CHAT_ID,
+                    PROACTIVE_TOPIC_USER_ID,
+                )
+            else:
+                schedule_id, created = ensured
+                logging.info(
+                    "Embedded proactive topic schedule %s: %s (chat=%s thread=%s interval=%sm max_topics=%s cooldown_hours=%s)",
+                    "created" if created else "already_present",
+                    schedule_id[:8],
+                    PROACTIVE_TOPIC_CHAT_ID,
+                    PROACTIVE_TOPIC_THREAD_ID,
+                    PROACTIVE_TOPIC_INTERVAL_MINUTES,
+                    PROACTIVE_TOPIC_MAX_TOPICS,
+                    PROACTIVE_TOPIC_COOLDOWN_HOURS,
+                )
     else:
         logging.info("Embedded scheduler worker disabled; expecting external scheduler daemon")
     return task_manager, schedule_manager

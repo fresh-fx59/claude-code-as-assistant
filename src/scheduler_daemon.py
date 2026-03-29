@@ -21,6 +21,18 @@ from .config import (
     MONITORING_WATCHDOG_THREAD_ID,
     MONITORING_WATCHDOG_TIMEOUT_SECONDS,
     MONITORING_WATCHDOG_USER_ID,
+    PROACTIVE_TOPIC_AUTOINSTALL,
+    PROACTIVE_TOPIC_CHAT_ID,
+    PROACTIVE_TOPIC_COOLDOWN_HOURS,
+    PROACTIVE_TOPIC_INTERVAL_MINUTES,
+    PROACTIVE_TOPIC_MAX_TOPICS,
+    PROACTIVE_TOPIC_MODEL,
+    PROACTIVE_TOPIC_PROVIDER_CLI,
+    PROACTIVE_TOPIC_RESUME_ARG,
+    PROACTIVE_TOPIC_SESSIONS_PATH,
+    PROACTIVE_TOPIC_STATE_PATH,
+    PROACTIVE_TOPIC_THREAD_ID,
+    PROACTIVE_TOPIC_USER_ID,
     SCHEDULER_NOTIFY_CHAT_ID,
     SCHEDULER_NOTIFY_LEVEL,
     SCHEDULER_NOTIFY_THREAD_ID,
@@ -30,6 +42,7 @@ from .monitoring_watchdog_tool import ensure_monitoring_watchdog_schedule
 from .providers import ProviderManager
 from .scheduler import ScheduleManager
 from .tasks import TaskManager
+from .topic_proactive_tool import ensure_proactive_topic_schedule
 
 
 async def main() -> None:
@@ -89,6 +102,42 @@ async def main() -> None:
                 ",".join(str(port) for port in MONITORING_WATCHDOG_PORTS),
                 MONITORING_WATCHDOG_INTERVAL_MINUTES,
                 MONITORING_WATCHDOG_FAIL_THRESHOLD,
+            )
+    if PROACTIVE_TOPIC_AUTOINSTALL:
+        ensured = await ensure_proactive_topic_schedule(
+            manager=schedule_manager,
+            chat_id=PROACTIVE_TOPIC_CHAT_ID,
+            user_id=PROACTIVE_TOPIC_USER_ID,
+            message_thread_id=PROACTIVE_TOPIC_THREAD_ID,
+            model=PROACTIVE_TOPIC_MODEL,
+            provider_cli=PROACTIVE_TOPIC_PROVIDER_CLI,
+            resume_arg=PROACTIVE_TOPIC_RESUME_ARG,
+            interval_minutes=PROACTIVE_TOPIC_INTERVAL_MINUTES,
+            memory_dir=MEMORY_DIR,
+            state_path=PROACTIVE_TOPIC_STATE_PATH,
+            sessions_path=PROACTIVE_TOPIC_SESSIONS_PATH,
+            max_topics=PROACTIVE_TOPIC_MAX_TOPICS,
+            cooldown_hours=PROACTIVE_TOPIC_COOLDOWN_HOURS,
+            python_bin=sys.executable,
+        )
+        if ensured is None:
+            logging.warning(
+                "Proactive topic schedule auto-install skipped: missing chat_id/user_id "
+                "(chat_id=%s user_id=%s)",
+                PROACTIVE_TOPIC_CHAT_ID,
+                PROACTIVE_TOPIC_USER_ID,
+            )
+        else:
+            schedule_id, created = ensured
+            logging.info(
+                "Proactive topic schedule %s: %s (chat=%s thread=%s interval=%sm max_topics=%s cooldown_hours=%s)",
+                "created" if created else "already_present",
+                schedule_id[:8],
+                PROACTIVE_TOPIC_CHAT_ID,
+                PROACTIVE_TOPIC_THREAD_ID,
+                PROACTIVE_TOPIC_INTERVAL_MINUTES,
+                PROACTIVE_TOPIC_MAX_TOPICS,
+                PROACTIVE_TOPIC_COOLDOWN_HOURS,
             )
     logging.info(
         "Scheduler daemon started (notify_chat=%s notify_thread=%s notify_level=%s)",
