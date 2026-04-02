@@ -16,6 +16,7 @@ from . import bridge, config, metrics
 from .formatter import markdown_to_html, split_message, strip_html
 from .media import extract_media_directives, send_media, strip_tool_directive_lines
 from .providers import codex_family_providers
+from .provider_errors import is_stale_codex_session_error
 from .sessions import make_scope_key
 from .telegram_status_throttle import EphemeralStatusSuppressedError, send_ephemeral_status
 
@@ -365,7 +366,7 @@ class TaskManager:
         text = (error_text or "").strip().lower()
         if not text:
             return False
-        return any(marker in text for marker in cls._TRANSIENT_CODEX_ERRORS)
+        return any(marker in text for marker in cls._TRANSIENT_CODEX_ERRORS) or is_stale_codex_session_error(text)
 
     async def _terminate_process(self, process_handle: dict | None) -> None:
         if not process_handle:
@@ -529,8 +530,11 @@ class TaskManager:
                             transient_error_retries_left,
                             (response.text or "")[:200],
                         )
-                        # Service-restart interruptions can invalidate provider-side resume state.
-                        if "interrupted by service restart" in (response.text or "").lower():
+                        # Some provider-side failures invalidate the stored resume state.
+                        if (
+                            "interrupted by service restart" in (response.text or "").lower()
+                            or is_stale_codex_session_error(response.text)
+                        ):
                             task.session_id = None
                         await asyncio.sleep(0.3)
                         continue

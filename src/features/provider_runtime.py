@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Awaitable, Callable
 
 from .. import bridge, config
+from ..provider_errors import is_stale_codex_session_error
 
 
 async def run_claude(
@@ -143,9 +144,13 @@ async def run_codex_with_retries(
         )
         if not response:
             return None
-        if state.cancel_requested or not response.is_error or not is_transient_error_fn(response.text):
+        is_stale_session_error = is_stale_codex_session_error(response.text)
+        is_transient_error = is_transient_error_fn(response.text)
+        if state.cancel_requested or not response.is_error or (not is_transient_error and not is_stale_session_error):
             return response
         if retries_left <= 0:
+            if is_stale_session_error:
+                return response
             return sanitize_transient_error_fn(response, attempts=attempt)
 
         retries_left -= 1
@@ -156,7 +161,7 @@ async def run_codex_with_retries(
             retries_left,
             response.text[:200],
         )
-        if next_session_id:
+        if next_session_id and (is_transient_error or is_stale_session_error):
             next_session_id = None
         await asyncio.sleep(max(0.0, config.CODEX_TRANSIENT_RETRY_BACKOFF_SECONDS))
 

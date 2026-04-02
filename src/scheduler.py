@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
+from .provider_errors import is_stale_codex_session_error
 from .tasks import BackgroundTask, TaskManager, TaskNotificationMode
 
 logger = logging.getLogger(__name__)
@@ -875,6 +876,13 @@ class ScheduleManager:
                     f"<b>Started:</b> {started_at}\n"
                     f"<b>Target:</b> {self._format_schedule_target(run['chat_id'], run['message_thread_id'])}"
                 )
+                )
+
+    def _set_schedule_session_id(self, schedule_id: str, session_id: str | None) -> None:
+        with self._connect() as con:
+            con.execute(
+                "UPDATE scheduled_tasks SET session_id = ? WHERE id = ?",
+                (session_id, schedule_id),
             )
 
     async def on_task_finished(self, task: BackgroundTask) -> None:
@@ -893,6 +901,18 @@ class ScheduleManager:
             task.response,
         )
         if run:
+            if status_value == "completed" and getattr(task, "session_id", None):
+                await asyncio.to_thread(
+                    self._set_schedule_session_id,
+                    run["schedule_id"],
+                    task.session_id,
+                )
+            elif status_value == "failed" and is_stale_codex_session_error(task.error):
+                await asyncio.to_thread(
+                    self._set_schedule_session_id,
+                    run["schedule_id"],
+                    None,
+                )
             if rate_limit_retry_at:
                 await asyncio.to_thread(
                     self._defer_schedule_next_run,

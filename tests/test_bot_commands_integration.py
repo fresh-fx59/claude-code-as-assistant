@@ -1647,3 +1647,48 @@ class TestCodexTransientRetries:
         assert result.is_error
         assert "Codex stream disconnected repeatedly" in result.text
         assert "Connection reset by peer" not in result.text
+
+    @pytest.mark.asyncio
+    async def test_stale_codex_thread_retry_resets_resume_session(self, mock_message):
+        response_error = type("obj", (object,), {
+            "text": "Error: thread/resume failed: no rollout found for thread id 019d1c41-e3d2-7ff3-8edf-d001b6e6a567",
+            "session_id": "sess-stale",
+            "is_error": True,
+            "cost_usd": 0.0,
+            "duration_ms": 0,
+            "num_turns": 0,
+        })()
+        response_ok = type("obj", (object,), {
+            "text": "Recovered answer",
+            "session_id": "sess-fresh",
+            "is_error": False,
+            "cost_usd": 0.0,
+            "duration_ms": 0,
+            "num_turns": 0,
+        })()
+
+        state = _ChatState(
+            lock=asyncio.Lock(),
+            process_handle=None,
+            cancel_requested=False,
+            reset_requested=False,
+        )
+        with (
+            patch("src.bot._run_codex", new=AsyncMock(side_effect=[response_error, response_ok])) as run_mock,
+            patch("src.bot.config.CODEX_TRANSIENT_MAX_RETRIES", 1),
+            patch("src.bot.config.CODEX_TRANSIENT_RETRY_BACKOFF_SECONDS", 0),
+        ):
+            result = await _run_codex_with_retries(
+                message=mock_message,
+                state=state,
+                session=object(),
+                progress=AsyncMock(),
+                model=None,
+                session_id="sess-stale",
+                resume_arg=None,
+                subprocess_env=None,
+            )
+
+        assert result is response_ok
+        assert run_mock.await_count == 2
+        assert run_mock.await_args_list[1].args[5] is None

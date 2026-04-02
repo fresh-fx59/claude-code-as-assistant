@@ -491,6 +491,59 @@ async def test_execute_task_falls_back_to_next_provider_on_usage_limit(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_execute_task_retries_stale_codex_session_without_resume(monkeypatch) -> None:
+    bot = AsyncMock()
+    manager = TaskManager(bot)
+    task = BackgroundTask(
+        id="task-stale-session",
+        chat_id=123,
+        message_thread_id=None,
+        user_id=123,
+        prompt="x",
+        model="gpt-5-codex",
+        session_id="sess-stale",
+        provider_cli="codex",
+        status=TaskStatus.RUNNING,
+        created_at=datetime.now(),
+    )
+
+    attempts: list[str | None] = []
+
+    async def fake_stream_codex_message(**kwargs):
+        attempts.append(kwargs.get("session_id"))
+        if len(attempts) == 1:
+            yield bridge.StreamEvent(
+                event_type=bridge.StreamEventType.RESULT,
+                response=bridge.ClaudeResponse(
+                    text="Error: thread/resume failed: no rollout found for thread id 019d1c41-e3d2-7ff3-8edf-d001b6e6a567",
+                    session_id="sess-stale",
+                    is_error=True,
+                    cost_usd=0.0,
+                ),
+            )
+            return
+
+        yield bridge.StreamEvent(
+            event_type=bridge.StreamEventType.RESULT,
+            response=bridge.ClaudeResponse(
+                text="ok-after-session-reset",
+                session_id="sess-fresh",
+                is_error=False,
+                cost_usd=0.0,
+            ),
+        )
+
+    monkeypatch.setattr("src.tasks.bridge.stream_codex_message", fake_stream_codex_message)
+
+    await manager._execute_task(task)  # noqa: SLF001
+
+    assert attempts == ["sess-stale", None]
+    assert task.status == TaskStatus.COMPLETED
+    assert task.response == "ok-after-session-reset"
+    assert task.session_id == "sess-fresh"
+
+
+@pytest.mark.asyncio
 async def test_execute_task_realigns_provider_scope_before_usage_limit_fallback(monkeypatch) -> None:
     bot = AsyncMock()
     providers = [

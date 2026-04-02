@@ -572,6 +572,82 @@ async def test_schedule_run_updated_when_background_task_finishes(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_schedule_run_completion_refreshes_persisted_session_id(tmp_path) -> None:
+    stub = _StubTaskManager()
+    manager = ScheduleManager(stub, tmp_path / "schedules.db")
+    sid = await manager.create_every(
+        chat_id=42,
+        user_id=7,
+        prompt="scheduled prompt",
+        interval_minutes=1,
+        model="gpt-5-codex",
+        session_id="sess-old",
+        provider_cli="codex",
+    )
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
+
+    await manager._run_due_once()  # noqa: SLF001
+    background_task_id = stub.submissions[0]["task_id"]
+
+    finished_task = type(
+        "FinishedTask",
+        (),
+        {
+            "id": background_task_id,
+            "status": type("TaskStatusValue", (), {"value": "completed"})(),
+            "started_at": datetime.now(timezone.utc),
+            "completed_at": datetime.now(timezone.utc),
+            "error": None,
+            "response": "report delivered",
+            "session_id": "sess-new",
+        },
+    )()
+    await manager.on_task_finished(finished_task)
+
+    schedule = (await manager.list_for_chat(42))[0]
+    assert schedule.session_id == "sess-new"
+
+
+@pytest.mark.asyncio
+async def test_schedule_run_stale_codex_failure_clears_persisted_session_id(tmp_path) -> None:
+    stub = _StubTaskManager()
+    manager = ScheduleManager(stub, tmp_path / "schedules.db")
+    sid = await manager.create_every(
+        chat_id=42,
+        user_id=7,
+        prompt="scheduled prompt",
+        interval_minutes=1,
+        model="gpt-5-codex",
+        session_id="sess-stale",
+        provider_cli="codex",
+    )
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    await asyncio.to_thread(manager._update_next_run, sid, past)  # noqa: SLF001
+
+    await manager._run_due_once()  # noqa: SLF001
+    background_task_id = stub.submissions[0]["task_id"]
+
+    finished_task = type(
+        "FinishedTask",
+        (),
+        {
+            "id": background_task_id,
+            "status": type("TaskStatusValue", (), {"value": "failed"})(),
+            "started_at": datetime.now(timezone.utc),
+            "completed_at": datetime.now(timezone.utc),
+            "error": "Error: thread/resume failed: no rollout found for thread id 019d1c41-e3d2-7ff3-8edf-d001b6e6a567",
+            "response": None,
+            "session_id": "sess-stale",
+        },
+    )()
+    await manager.on_task_finished(finished_task)
+
+    schedule = (await manager.list_for_chat(42))[0]
+    assert schedule.session_id is None
+
+
+@pytest.mark.asyncio
 async def test_schedule_rate_limit_failure_defers_next_run_until_retry_time(tmp_path) -> None:
     stub = _StubTaskManager()
     notifier = AsyncMock()
@@ -598,9 +674,11 @@ async def test_schedule_rate_limit_failure_defers_next_run_until_retry_time(tmp_
     background_task_id = stub.submissions[0]["task_id"]
     started_at = datetime.now(timezone.utc)
     completed_at = datetime.now(timezone.utc)
+    retry_at_local = (completed_at.astimezone() + timedelta(days=14)).replace(second=0, microsecond=0)
     error_text = (
         "You've hit your usage limit. To get more access now, send a request to your admin "
-        "or try again at Mar 17th, 2026 1:36 PM."
+        f"or try again at {retry_at_local.strftime('%b')} {retry_at_local.day}th, "
+        f"{retry_at_local.year} {retry_at_local.strftime('%I:%M %p').lstrip('0')}."
     )
     finished_task = type(
         "FinishedTask",
@@ -620,7 +698,7 @@ async def test_schedule_rate_limit_failure_defers_next_run_until_retry_time(tmp_
     updated_run = (await manager.list_runs_for_chat(42, schedule_id=sid))[0]
     assert updated_run.status == "deferred_rate_limited"
     schedule = (await manager.list_for_chat(42))[0]
-    expected_retry = datetime(2026, 3, 17, 13, 36, tzinfo=completed_at.astimezone().tzinfo).astimezone(timezone.utc)
+    expected_retry = retry_at_local.astimezone(timezone.utc)
     assert schedule.next_run_at == expected_retry
     assert schedule.current_status is None
     assert notifier.send_message.await_count == 2
