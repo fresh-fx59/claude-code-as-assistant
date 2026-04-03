@@ -18,8 +18,7 @@
         "gpt-5-codex-mini"
       ],
       "env": {
-        "OPENAI_BASE_URL": "http://127.0.0.1:8317/v1",
-        "OPENAI_API_KEY": "97248f409b4f2228839a01709fa5527c434a80db9808e6e9"
+        "OPENAI_BASE_URL": "http://127.0.0.1:8317/v1"
       }
     },
     {
