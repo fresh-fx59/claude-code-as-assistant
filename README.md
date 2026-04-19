@@ -10,54 +10,51 @@ Before starting, make sure you have:
 
 1. **A Linux server** (or any machine that stays online) — a $5/month VPS works fine
 2. **Python 3.10+** — pre-installed on most Linux systems
-3. **Node.js 18+** — needed to install Claude Code CLI
-4. **At least one provider CLI configured**:
-   - Claude: [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-   - Codex: `codex`
+3. **Node.js 18+** — used to install the Codex CLI (`setup.sh` installs the CLI for you; you just need `node`/`npm` on `PATH`)
+
+Codex is the primary provider. Claude Code is optional and can be installed later if you want a second backend.
 
 ## Setup (5 minutes)
 
-### 1. Install provider CLIs
-
-Install the CLIs you plan to use.
-
-Claude:
+### 1. Clone this repo
 
 ```bash
-npm install -g @anthropic-ai/claude-code
+git clone https://github.com/fresh-fx59/iron-lady-assistant.git
+cd iron-lady-assistant
 ```
 
-Codex:
-
-```bash
-npm install -g @openai/codex
-```
-
-Then authenticate the providers you installed:
-
-```bash
-claude   # follow the prompts to log in
-codex    # optional
-```
-
-### 2. Clone this repo
-
-```bash
-git clone https://github.com/YOUR_USERNAME/claude-code-as-assistant.git
-cd claude-code-as-assistant
-```
-
-### 3. Run the setup wizard
+### 2. Run the setup wizard
 
 ```bash
 bash setup.sh
 ```
 
 The wizard walks you through everything step by step:
+- Installing the **Codex CLI** (`@openai/codex`) automatically if it isn't on `PATH` yet
+- Optionally installing **CLIProxyAPI** (the local OAuth proxy from [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI)) and registering a `codex-proxy` provider in `providers.json`
 - Creating a Telegram bot (via @BotFather)
 - Finding your Telegram user ID
-- Choosing a Claude model
+- Choosing a default model
 - Optionally setting up auto-start on boot
+
+After the wizard finishes, authenticate Codex once (interactive):
+
+```bash
+codex                  # follow the prompts to sign in
+```
+
+If you opted in to CLIProxyAPI, run the Codex OAuth flow against the proxy too. The device-code variant is the one to use on a headless server:
+
+```bash
+./third_party/cli-proxy-api/cli-proxy-api --config ~/.cli-proxy-api/config.yaml --codex-device-login
+```
+
+Claude Code is optional. To add it later:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude                 # authenticate
+```
 
 That's it. Your bot is running.
 
@@ -647,13 +644,19 @@ The bundled systemd units include the per-user npm bin path so `codex` CLIs inst
 - Find your ID by messaging @userinfobot on Telegram
 - For channels/groups, add their numeric chat IDs to `ALLOWED_CHAT_IDS` (e.g. `-100...`)
 
+**"Provider CLI 'codex' is not installed"**
+- Re-run `bash setup.sh` — it installs `@openai/codex` when missing
+- Or install manually: `npm install -g @openai/codex`
+- Then run `codex` once to complete the OAuth login
+- Switch providers with `/provider` only after the CLI is installed
+
 **"Claude Code CLI is not installed"**
-- Run `npm install -g @anthropic-ai/claude-code`
+- Claude is optional; install it only if you want it as a fallback: `npm install -g @anthropic-ai/claude-code`
 - Make sure Node.js 18+ is installed
 
-**"Provider CLI 'codex*' is not installed"**
-- Install or configure the missing CLI so it is available on `PATH`
-- Switch providers with `/provider` only after the CLI is installed
+**"codex-proxy" provider fails to connect**
+- CLIProxyAPI must be running on `127.0.0.1:8317`. Check `systemctl status cli-proxy-api` or `third_party/cli-proxy-api/cli-proxy-api --config ~/.cli-proxy-api/config.yaml`
+- Run `--codex-device-login` (or `--codex-login` on a desktop) to authenticate the proxy against your ChatGPT account
 
 **"TELEGRAM_BOT_TOKEN is not set"**
 - Run `bash setup.sh` or edit `.env` with your token from @BotFather

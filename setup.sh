@@ -36,8 +36,8 @@ if ! command -v pip3 &>/dev/null && ! python3 -m pip --version &>/dev/null 2>&1;
     MISSING+=("pip (python3-pip)")
 fi
 
-if ! command -v claude &>/dev/null; then
-    MISSING+=("claude (Claude Code CLI)")
+if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
+    MISSING+=("node + npm (Node.js 18+)")
 fi
 
 if [ ${#MISSING[@]} -gt 0 ]; then
@@ -48,13 +48,166 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     echo ""
     echo "Install the missing tools first:"
     echo "  - Python 3:   https://www.python.org/downloads/"
-    echo "  - Claude CLI:  npm install -g @anthropic-ai/claude-code"
+    echo "  - Node.js 18+: https://nodejs.org/ (or your OS package manager)"
     echo ""
     exit 1
 fi
 
 success "Python 3 found: $(python3 --version)"
-success "Claude CLI found: $(claude --version 2>/dev/null || echo 'installed')"
+success "Node found:     $(node --version)"
+
+# ── Codex CLI (primary provider) ─────────────────────────────────────
+header "Codex CLI"
+
+if command -v codex &>/dev/null; then
+    success "Codex CLI found: $(codex --version 2>/dev/null || echo 'installed')"
+else
+    info "Codex CLI not found. Installing @openai/codex globally..."
+    # Prefer user-scoped npm prefix to avoid sudo; falls back to system prefix.
+    if npm config get prefix >/dev/null 2>&1; then
+        NPM_PREFIX="$(npm config get prefix)"
+    else
+        NPM_PREFIX=""
+    fi
+    if [ -n "$NPM_PREFIX" ] && [ -w "$NPM_PREFIX/bin" ]; then
+        npm install -g @openai/codex
+    elif [ -w "/usr/local/lib/node_modules" ] 2>/dev/null; then
+        npm install -g @openai/codex
+    else
+        # Configure a user-scoped npm prefix so the install does not need sudo.
+        USER_NPM_PREFIX="$HOME/.npm-$(whoami)"
+        mkdir -p "$USER_NPM_PREFIX"
+        npm config set prefix "$USER_NPM_PREFIX"
+        case ":$PATH:" in
+            *":$USER_NPM_PREFIX/bin:"*) ;;
+            *)
+                warn "Adding $USER_NPM_PREFIX/bin to your PATH in ~/.bashrc"
+                echo "export PATH=\"$USER_NPM_PREFIX/bin:\$PATH\"" >> "$HOME/.bashrc"
+                export PATH="$USER_NPM_PREFIX/bin:$PATH"
+                ;;
+        esac
+        npm install -g @openai/codex
+    fi
+    if command -v codex &>/dev/null; then
+        success "Codex CLI installed: $(codex --version 2>/dev/null || echo 'installed')"
+    else
+        warn "Codex CLI install appears to have failed. Install manually with: npm install -g @openai/codex"
+        if command -v claude &>/dev/null; then
+            warn "Falling back to Claude CLI as the primary provider."
+        else
+            error "Neither codex nor claude CLI is available. Install at least one:"
+            echo "  npm install -g @openai/codex"
+            echo "  npm install -g @anthropic-ai/claude-code"
+            exit 1
+        fi
+    fi
+fi
+
+if command -v claude &>/dev/null; then
+    success "Claude CLI found (optional fallback): $(claude --version 2>/dev/null || echo 'installed')"
+else
+    info "Claude CLI not installed (optional). Run 'npm install -g @anthropic-ai/claude-code' later if you want a Claude fallback."
+fi
+
+# ── Optional: CLIProxyAPI ────────────────────────────────────────────
+header "CLIProxyAPI (optional)"
+
+echo "CLIProxyAPI is a local OAuth proxy from router-for-me/CLIProxyAPI."
+echo "It lets the bot use your ChatGPT Codex subscription over an"
+echo "OpenAI-compatible endpoint on 127.0.0.1:8317, and makes a second"
+echo "codex-proxy provider available for fallback alongside the native CLI."
+echo ""
+read -rp "Install CLIProxyAPI? [y/N]: " INSTALL_CLIPROXYAPI
+INSTALL_CLIPROXYAPI="${INSTALL_CLIPROXYAPI:-N}"
+
+if [[ "$INSTALL_CLIPROXYAPI" =~ ^[Yy]$ ]]; then
+    CLIPROXY_DIR="$SCRIPT_DIR/third_party/cli-proxy-api"
+    CLIPROXY_CONFIG_DIR="$HOME/.cli-proxy-api"
+    CLIPROXY_CONFIG="$CLIPROXY_CONFIG_DIR/config.yaml"
+
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH_RAW="$(uname -m)"
+    case "$ARCH_RAW" in
+        x86_64|amd64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        *)
+            error "Unsupported architecture: $ARCH_RAW. Install CLIProxyAPI manually from https://github.com/router-for-me/CLIProxyAPI/releases"
+            ARCH=""
+            ;;
+    esac
+
+    if [ -n "$ARCH" ]; then
+        mkdir -p "$CLIPROXY_DIR" "$CLIPROXY_CONFIG_DIR"
+
+        info "Fetching latest CLIProxyAPI release metadata..."
+        RELEASE_JSON="$(curl -fsSL https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest)"
+        TAG="$(echo "$RELEASE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+        VERSION_NUMBER="${TAG#v}"
+        ASSET_NAME="CLIProxyAPI_${VERSION_NUMBER}_${OS}_${ARCH}.tar.gz"
+        ASSET_URL="https://github.com/router-for-me/CLIProxyAPI/releases/download/${TAG}/${ASSET_NAME}"
+
+        info "Downloading $ASSET_NAME..."
+        TMP_TGZ="$(mktemp --suffix=.tar.gz)"
+        trap 'rm -f "$TMP_TGZ"' EXIT
+        curl -fsSL -o "$TMP_TGZ" "$ASSET_URL"
+        tar -xzf "$TMP_TGZ" -C "$CLIPROXY_DIR"
+        rm -f "$TMP_TGZ"
+        trap - EXIT
+
+        chmod +x "$CLIPROXY_DIR/cli-proxy-api"
+        success "CLIProxyAPI $TAG installed at $CLIPROXY_DIR/cli-proxy-api"
+
+        if [ ! -f "$CLIPROXY_CONFIG" ]; then
+            # Minimal, Codex-focused config. Bind to localhost, empty api-keys (OAuth-only).
+            cat > "$CLIPROXY_CONFIG" << YAMLEOF
+host: "127.0.0.1"
+port: 8317
+auth-dir: "$CLIPROXY_CONFIG_DIR"
+api-keys: []
+debug: false
+remote-management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+YAMLEOF
+            success "Wrote starter config at $CLIPROXY_CONFIG"
+        else
+            info "Existing config at $CLIPROXY_CONFIG left untouched."
+        fi
+
+        # Register codex-proxy provider in providers.json if not already present.
+        python3 - <<PYEOF
+import json, pathlib
+p = pathlib.Path("$SCRIPT_DIR/providers.json")
+data = json.loads(p.read_text())
+names = {entry.get("name") for entry in data.get("providers", [])}
+if "codex-proxy" not in names:
+    entry = {
+        "name": "codex-proxy",
+        "description": "OpenAI Codex via local CLIProxyAPI (127.0.0.1:8317)",
+        "cli": "codex",
+        "models": [
+            "gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex",
+            "gpt-5.1-codex-max", "gpt-5.1-codex",
+            "gpt-5.2", "gpt-5.1", "gpt-5-codex", "gpt-5",
+            "gpt-5.1-codex-mini", "gpt-5-codex-mini",
+        ],
+        "env": {"OPENAI_BASE_URL": "http://127.0.0.1:8317/v1"},
+    }
+    data["providers"].insert(0, entry)
+    p.write_text(json.dumps(data, indent=2) + "\n")
+    print("  [OK] Registered codex-proxy provider in providers.json")
+else:
+    print("  [INFO] codex-proxy already present in providers.json")
+PYEOF
+
+        info "Next: authenticate the proxy against your ChatGPT Codex account."
+        info "  Headless server: $CLIPROXY_DIR/cli-proxy-api --config $CLIPROXY_CONFIG --codex-device-login"
+        info "  With browser:    $CLIPROXY_DIR/cli-proxy-api --config $CLIPROXY_CONFIG --codex-login"
+    fi
+else
+    info "Skipping CLIProxyAPI. You can run setup.sh again later to install it."
+fi
 
 # ── Step 1: Telegram Bot Token ───────────────────────────────────────
 header "Step 1 — Telegram Bot Token"
@@ -256,10 +409,42 @@ SCHSVCEOF
         sudo cp "$SCHEDULER_SERVICE_FILE" /etc/systemd/system/telegram-scheduler.service
     fi
 
+    if [[ "$INSTALL_CLIPROXYAPI" =~ ^[Yy]$ ]] && [ -x "$SCRIPT_DIR/third_party/cli-proxy-api/cli-proxy-api" ]; then
+        CLIPROXY_SERVICE_FILE="$SCRIPT_DIR/cli-proxy-api.service"
+        cat > "$CLIPROXY_SERVICE_FILE" << CLIPROXYEOF
+[Unit]
+Description=CLIProxyAPI (Codex OAuth proxy for Iron Lady Assistant)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+WorkingDirectory=$SCRIPT_DIR/third_party/cli-proxy-api
+ExecStart=$SCRIPT_DIR/third_party/cli-proxy-api/cli-proxy-api --config $HOME/.cli-proxy-api/config.yaml
+Restart=always
+RestartSec=5
+Environment=HOME=$HOME
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=$HOME
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+CLIPROXYEOF
+
+        sudo cp "$CLIPROXY_SERVICE_FILE" /etc/systemd/system/cli-proxy-api.service
+    fi
+
     sudo systemctl daemon-reload
     sudo systemctl enable --now telegram-bot.service
     if [[ "$EXTERNAL_SCHEDULER" =~ ^[Yy]$ ]]; then
         sudo systemctl enable --now telegram-scheduler.service
+    fi
+    if [[ "$INSTALL_CLIPROXYAPI" =~ ^[Yy]$ ]] && [ -f /etc/systemd/system/cli-proxy-api.service ]; then
+        sudo systemctl enable --now cli-proxy-api.service
     fi
 
     success "Service installed and started!"
@@ -280,10 +465,16 @@ SCHSVCEOF
     if [[ "$EXTERNAL_SCHEDULER" =~ ^[Yy]$ ]]; then
         echo "                 sudo systemctl restart telegram-scheduler.service"
     fi
+    if [[ "$INSTALL_CLIPROXYAPI" =~ ^[Yy]$ ]] && [ -f /etc/systemd/system/cli-proxy-api.service ]; then
+        echo "                 sudo systemctl restart cli-proxy-api.service"
+    fi
 else
     info "Skipped. You can run the bot manually with: ./run.sh"
     if [[ "$EXTERNAL_SCHEDULER" =~ ^[Yy]$ ]]; then
         info "Run the standalone scheduler manually with: venv/bin/python3 -m src.scheduler_daemon"
+    fi
+    if [[ "$INSTALL_CLIPROXYAPI" =~ ^[Yy]$ ]] && [ -x "$SCRIPT_DIR/third_party/cli-proxy-api/cli-proxy-api" ]; then
+        info "Run CLIProxyAPI manually with: $SCRIPT_DIR/third_party/cli-proxy-api/cli-proxy-api --config \$HOME/.cli-proxy-api/config.yaml"
     fi
 fi
 

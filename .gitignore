@@ -18,3 +18,6 @@ node_modules/
 whisper.cpp/
 .claude/
 .agent-tmp/
+.omx/
+third_party/
+cli-proxy-api.service

@@ -29,11 +29,15 @@ async def test_compose_incoming_prompt_without_photo_uses_caption(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_compose_incoming_prompt_with_photo_appends_local_path(monkeypatch):
+async def test_compose_incoming_prompt_with_photo_appends_local_path(monkeypatch, tmp_path):
     message = _MessageStub(text="what is on the image?", caption=None)
 
+    # _attachment_blocks_for_message now skips images whose path does not exist on disk.
+    image_path = tmp_path / "test.jpg"
+    image_path.write_bytes(b"\xff\xd8\xff\xe0")  # minimal JPEG magic bytes
+
     async def _fake_download(_m):
-        return "/tmp/incoming/test.jpg"
+        return str(image_path)
 
     def _fake_ocr(_path):
         return "Total: 1234"
@@ -45,7 +49,7 @@ async def test_compose_incoming_prompt_with_photo_appends_local_path(monkeypatch
 
     assert "what is on the image?" in prompt
     assert "User attached an image." in prompt
-    assert "Local image path: /tmp/incoming/test.jpg" in prompt
+    assert f"Local image path: {image_path}" in prompt
     assert "Local OCR text (best-effort; low-quality images may include misreads):" in prompt
     assert "Total: 1234" in prompt
 
